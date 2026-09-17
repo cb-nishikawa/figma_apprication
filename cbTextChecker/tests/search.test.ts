@@ -5,8 +5,11 @@ import {
   findMatches,
   isExactMatch,
   normalizeForSearch,
+  parseIgnoreInput,
   parseKeywords,
+  stripIgnoreStrings,
 } from "../src/search";
+import { DEFAULT_IGNORE_CATEGORIES } from "../src/types";
 
 describe("normalizeForSearch", () => {
   it("removes newlines and whitespace", () => {
@@ -16,6 +19,19 @@ describe("normalizeForSearch", () => {
     expect(normalizeForSearch("お問い 合わせ　は\tこちら")).toBe(
       "お問い合わせはこちら"
     );
+  });
+});
+
+describe("stripIgnoreStrings", () => {
+  it("removes ignore substrings longest first", () => {
+    expect(stripIgnoreStrings("・本校の特長", ["・"])).toBe("本校の特長");
+    expect(stripIgnoreStrings("xxAxx", ["xx", "x"])).toBe("A");
+  });
+});
+
+describe("parseIgnoreInput", () => {
+  it("splits whitespace-separated tokens", () => {
+    expect(parseIgnoreInput(" ・  - ")).toEqual(["・", "-"]);
   });
 });
 
@@ -126,6 +142,40 @@ describe("isExactMatch", () => {
     expect(
       isExactMatch("お問い合わせは\nこちら", "お問い合わせは\nこちら", false)
     ).toBe(true);
+  });
+
+  it("treats bullet-prefixed text as exact when ・ is ignored", () => {
+    expect(
+      isExactMatch("本校の特長", "・本校の特長", true, ["・"])
+    ).toBe(true);
+  });
+
+  it("treats bullet as exact when kinsoku/symbol/punct categories are on", () => {
+    expect(
+      isExactMatch("本校の特長", "・本校の特長", true, [], {
+        ...DEFAULT_IGNORE_CATEGORIES,
+        emoji: false,
+      })
+    ).toBe(true);
+  });
+
+  it("treats emoji as ignorable when emoji category is on", () => {
+    expect(
+      isExactMatch("Hello🎉", "Hello", true, [], {
+        emoji: true,
+        kinsoku: false,
+        symbol: false,
+        punct: false,
+      })
+    ).toBe(true);
+  });
+});
+
+describe("findMatches with ignoreStrings", () => {
+  it("matches after stripping ignore strings and maps ranges to original", () => {
+    expect(findMatches("・本校の特長", "本校の特長", true, ["・"])).toEqual([
+      { start: 1, end: 6 },
+    ]);
   });
 });
 

@@ -3,6 +3,8 @@ export interface MatchRange {
   end: number;
 }
 
+export type CompareSide = "A" | "B";
+
 export interface TextMatch {
   nodeId: string;
   nodeName: string;
@@ -10,6 +12,8 @@ export interface TextMatch {
   ranges: MatchRange[];
   /** True when the whole TEXT node equals the keyword (newline-aware). */
   exact: boolean;
+  /** Compare mode: which side the match belongs to. */
+  side?: CompareSide;
 }
 
 export interface CheckResult {
@@ -18,7 +22,7 @@ export interface CheckResult {
   matches: TextMatch[];
 }
 
-export type SearchMode = "selection" | "page" | "pinned";
+export type SearchMode = "selection" | "page" | "pinned" | "compare";
 
 export type HoverHighlightStyle = "component" | "instance";
 
@@ -47,3 +51,18 @@ export interface KeywordQuery {
   keyword: string;
   ignoreNewlines: boolean;
 }
+
+/** Category toggles for characters ignored during match. */
+export interface IgnoreCategories {
+  emoji: boolean;
+  kinsoku: boolean;
+  symbol: boolean;
+  punct: boolean;
+}
+
+export const DEFAULT_IGNORE_CATEGORIES: IgnoreCategories = {
+  emoji: true,
+  kinsoku: true,
+  symbol: true,
+  punct: true,
+};

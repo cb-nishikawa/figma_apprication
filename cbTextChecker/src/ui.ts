@@ -2,16 +2,27 @@ import "./ui.css";
 import clearIcon from "./assets/clear.svg?raw";
 import pinIcon from "./assets/pin.svg?raw";
 import resetIcon from "./assets/reset.svg?raw";
+import selectIcon from "./assets/select.svg?raw";
+import {
+  COMPARE_EXACT,
+  COMPARE_ONLY_A,
+  COMPARE_ONLY_B,
+  COMPARE_PARTIAL,
+} from "./compare";
+import { parseIgnoreInput } from "./search";
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
 import type {
   CheckResult,
+  CompareSide,
   HighlightColor,
   HoverHighlightItem,
+  IgnoreCategories,
   KeywordQuery,
   PinTarget,
   SearchMode,
   TextMatch,
 } from "./types";
+import { DEFAULT_IGNORE_CATEGORIES } from "./types";
 
 const DEBOUNCE_MS = 300;
 const MIN_UI_HEIGHT = 320;
@@ -37,6 +48,58 @@ const pinInputEl = document.getElementById(
 const pinListEl = document.getElementById(
   "pin-combobox-list"
 ) as HTMLUListElement;
+const compareInline = document.getElementById(
+  "compare-inline"
+) as HTMLDivElement;
+const compareAInput = document.getElementById(
+  "compare-a-input"
+) as HTMLInputElement;
+const compareAList = document.getElementById(
+  "compare-a-list"
+) as HTMLUListElement;
+const compareBInput = document.getElementById(
+  "compare-b-input"
+) as HTMLInputElement;
+const compareBList = document.getElementById(
+  "compare-b-list"
+) as HTMLUListElement;
+const compareAFromSelectionBtn = document.getElementById(
+  "compare-a-from-selection"
+) as HTMLButtonElement;
+const compareBFromSelectionBtn = document.getElementById(
+  "compare-b-from-selection"
+) as HTMLButtonElement;
+const pinFromSelectionBtn = document.getElementById(
+  "pin-from-selection"
+) as HTMLButtonElement;
+const keywordsSection = document.getElementById(
+  "keywords-section"
+) as HTMLElement;
+const keywordsDivider = document.getElementById(
+  "keywords-divider"
+) as HTMLHRElement;
+const ignoreStringsEl = document.getElementById(
+  "ignore-strings"
+) as HTMLInputElement;
+const ignoreToggleBtn = document.getElementById(
+  "ignore-toggle"
+) as HTMLButtonElement;
+const ignoreBodyEl = document.getElementById("ignore-body") as HTMLDivElement;
+const ignoreToggleChevron = ignoreToggleBtn.querySelector(
+  ".ignore-toggle-chevron"
+) as HTMLSpanElement;
+const ignoreEmojiEl = document.getElementById(
+  "ignore-emoji"
+) as HTMLInputElement;
+const ignoreKinsokuEl = document.getElementById(
+  "ignore-kinsoku"
+) as HTMLInputElement;
+const ignoreSymbolEl = document.getElementById(
+  "ignore-symbol"
+) as HTMLInputElement;
+const ignorePunctEl = document.getElementById(
+  "ignore-punct"
+) as HTMLInputElement;
 const keywordRowsEl = document.getElementById("keyword-rows") as HTMLDivElement;
 const addKeywordBtn = document.getElementById("add-keyword") as HTMLButtonElement;
 const clearKeywordsBtn = document.getElementById(
@@ -52,9 +115,18 @@ const resizeHandle = document.getElementById("resize-handle") as HTMLDivElement;
 let mode: SearchMode = "selection";
 let pinTargets: PinTarget[] = [];
 let pinnedNodeId: string | null = null;
+let compareNodeIdA: string | null = null;
+let compareNodeIdB: string | null = null;
+let compareTargets: PinTarget[] = [];
 let pinFilterQuery = "";
 let pinListOpen = false;
 let pinActiveIndex = -1;
+let compareFilterA = "";
+let compareFilterB = "";
+let compareListOpenA = false;
+let compareListOpenB = false;
+let compareActiveIndexA = -1;
+let compareActiveIndexB = -1;
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 /** Keywords whose accordion is expanded. */
 const expandedKeywords = new Set<string>();
@@ -110,8 +182,21 @@ function publishVisibleHighlights(extraItems: HoverHighlightItem[] = []): void {
   postToPlugin({ type: "HOVER_HIGHLIGHT", items });
 }
 
-function colorForKeyword(keyword: string): HighlightColor {
-  return keywordColors.get(keyword) ?? DEFAULT_HIGHLIGHT_COLOR;
+function defaultColorForResult(result: CheckResult): HighlightColor {
+  if (result.keyword === COMPARE_ONLY_A || result.keyword === COMPARE_ONLY_B) {
+    return "red";
+  }
+  if (result.keyword === COMPARE_EXACT) {
+    return "green";
+  }
+  if (result.keyword === COMPARE_PARTIAL) {
+    return "yellow";
+  }
+  return DEFAULT_HIGHLIGHT_COLOR;
+}
+
+function colorForResult(result: CheckResult): HighlightColor {
+  return keywordColors.get(result.keyword) ?? defaultColorForResult(result);
 }
 
 function applyKeywordColor(keyword: string, color: HighlightColor): void {
@@ -139,7 +224,7 @@ function syncHighlightPrefsAfterSearch(): void {
     if (result.count === 0) {
       continue;
     }
-    applyKeywordColor(result.keyword, colorForKeyword(result.keyword));
+    applyKeywordColor(result.keyword, colorForResult(result));
   }
   publishVisibleHighlights();
 }
@@ -184,21 +269,49 @@ function collectQueries(): KeywordQuery[] {
   return queries;
 }
 
+function collectIgnoreStrings(): string[] {
+  return parseIgnoreInput(ignoreStringsEl.value);
+}
+
+function collectIgnoreCategories(): IgnoreCategories {
+  return {
+    emoji: ignoreEmojiEl.checked,
+    kinsoku: ignoreKinsokuEl.checked,
+    symbol: ignoreSymbolEl.checked,
+    punct: ignorePunctEl.checked,
+  };
+}
+
 function runSearch(): void {
   showError(null);
+  const ignoreStrings = collectIgnoreStrings();
+  const ignoreCategories = collectIgnoreCategories();
+  if (mode === "compare") {
+    postToPlugin({ type: "RUN_COMPARE", ignoreStrings, ignoreCategories });
+    return;
+  }
   const queries = collectQueries();
   if (queries.length === 0) {
     renderResults([]);
     postToPlugin({ type: "CLEAR_HIGHLIGHT" });
-    postToPlugin({ type: "SEARCH", queries: [] });
+    postToPlugin({
+      type: "SEARCH",
+      queries: [],
+      ignoreStrings,
+      ignoreCategories,
+    });
     return;
   }
 
-  postToPlugin({ type: "SEARCH", queries });
+  postToPlugin({ type: "SEARCH", queries, ignoreStrings, ignoreCategories });
 }
 
-function updatePinRowVisibility(): void {
+function updateScopeVisibility(): void {
   pinInline.hidden = mode !== "pinned";
+  compareInline.hidden = mode !== "compare";
+  const hideKeywords = mode === "compare";
+  keywordsSection.hidden = hideKeywords;
+  keywordsDivider.hidden = hideKeywords;
 }
 
 function syncBrToggle(btn: HTMLButtonElement, ignoreNewlines: boolean): void {
@@ -248,6 +361,8 @@ function commitPinnedNode(nextId: string | null): void {
 }
 
 function openPinList(): void {
+  closeCompareList("A");
+  closeCompareList("B");
   pinListOpen = true;
   pinListEl.hidden = false;
   pinInputEl.setAttribute("aria-expanded", "true");
@@ -328,6 +443,230 @@ function refreshPinCombobox(preserveInput = false): void {
   if (pinListOpen) {
     renderPinList();
   }
+}
+
+function getCompareTarget(side: CompareSide): PinTarget | null {
+  const id = side === "A" ? compareNodeIdA : compareNodeIdB;
+  if (!id) {
+    return null;
+  }
+  return compareTargets.find((t) => t.id === id) ?? null;
+}
+
+function filteredCompareTargets(side: CompareSide): PinTarget[] {
+  const query = (side === "A" ? compareFilterA : compareFilterB)
+    .trim()
+    .toLowerCase();
+  if (!query) {
+    return compareTargets;
+  }
+  return compareTargets.filter((target) => {
+    return (
+      target.label.toLowerCase().includes(query) ||
+      target.name.toLowerCase().includes(query)
+    );
+  });
+}
+
+function setCompareInputToSelection(side: CompareSide): void {
+  const selected = getCompareTarget(side);
+  const input = side === "A" ? compareAInput : compareBInput;
+  if (side === "A") {
+    compareFilterA = "";
+  } else {
+    compareFilterB = "";
+  }
+  input.value = selected ? selected.label : "";
+}
+
+function closeCompareList(side: CompareSide): void {
+  const list = side === "A" ? compareAList : compareBList;
+  const input = side === "A" ? compareAInput : compareBInput;
+  if (side === "A") {
+    compareListOpenA = false;
+    compareActiveIndexA = -1;
+  } else {
+    compareListOpenB = false;
+    compareActiveIndexB = -1;
+  }
+  list.hidden = true;
+  input.setAttribute("aria-expanded", "false");
+}
+
+function renderCompareList(side: CompareSide): void {
+  const list = side === "A" ? compareAList : compareBList;
+  const selectedId = side === "A" ? compareNodeIdA : compareNodeIdB;
+  let activeIndex = side === "A" ? compareActiveIndexA : compareActiveIndexB;
+  list.replaceChildren();
+
+  if (compareTargets.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "pin-combobox-empty";
+    empty.textContent = "候補がありません";
+    list.append(empty);
+    return;
+  }
+
+  const filtered = filteredCompareTargets(side);
+  if (filtered.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "pin-combobox-empty";
+    empty.textContent = "該当なし";
+    list.append(empty);
+    if (side === "A") {
+      compareActiveIndexA = -1;
+    } else {
+      compareActiveIndexB = -1;
+    }
+    return;
+  }
+
+  if (activeIndex >= filtered.length) {
+    activeIndex = filtered.length - 1;
+    if (side === "A") {
+      compareActiveIndexA = activeIndex;
+    } else {
+      compareActiveIndexB = activeIndex;
+    }
+  }
+
+  filtered.forEach((target, index) => {
+    const item = document.createElement("li");
+    item.setAttribute("role", "option");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "pin-combobox-option";
+    if (target.id === selectedId) {
+      button.classList.add("is-selected");
+    }
+    if (index === activeIndex) {
+      button.classList.add("is-active");
+    }
+    button.textContent = target.label;
+    button.title = target.label;
+    button.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+    });
+    button.addEventListener("click", () => {
+      commitCompareNode(side, target.id);
+    });
+    item.append(button);
+    list.append(item);
+  });
+}
+
+function openCompareList(side: CompareSide): void {
+  closeCompareList(side === "A" ? "B" : "A");
+  closePinList();
+  const list = side === "A" ? compareAList : compareBList;
+  const input = side === "A" ? compareAInput : compareBInput;
+  if (side === "A") {
+    compareListOpenA = true;
+  } else {
+    compareListOpenB = true;
+  }
+  list.hidden = false;
+  input.setAttribute("aria-expanded", "true");
+  renderCompareList(side);
+}
+
+function commitCompareNode(side: CompareSide, nextId: string | null): void {
+  if (side === "A") {
+    compareNodeIdA = nextId;
+  } else {
+    compareNodeIdB = nextId;
+  }
+  setCompareInputToSelection(side);
+  closeCompareList(side);
+  postToPlugin({ type: "SET_COMPARE_NODE", side, nodeId: nextId });
+}
+
+function refreshCompareComboboxes(): void {
+  if (
+    compareNodeIdA &&
+    !compareTargets.some((t) => t.id === compareNodeIdA)
+  ) {
+    compareNodeIdA = null;
+  }
+  if (
+    compareNodeIdB &&
+    !compareTargets.some((t) => t.id === compareNodeIdB)
+  ) {
+    compareNodeIdB = null;
+  }
+  setCompareInputToSelection("A");
+  setCompareInputToSelection("B");
+  if (compareListOpenA) {
+    renderCompareList("A");
+  }
+  if (compareListOpenB) {
+    renderCompareList("B");
+  }
+}
+
+function wireCompareCombobox(side: CompareSide): void {
+  const input = side === "A" ? compareAInput : compareBInput;
+  input.addEventListener("focus", () => {
+    openCompareList(side);
+  });
+  input.addEventListener("input", () => {
+    if (side === "A") {
+      compareFilterA = input.value;
+      compareActiveIndexA = 0;
+    } else {
+      compareFilterB = input.value;
+      compareActiveIndexB = 0;
+    }
+    openCompareList(side);
+  });
+  input.addEventListener("keydown", (event) => {
+    const filtered = filteredCompareTargets(side);
+    const activeIndex =
+      side === "A" ? compareActiveIndexA : compareActiveIndexB;
+    const listOpen = side === "A" ? compareListOpenA : compareListOpenB;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (!listOpen) {
+        openCompareList(side);
+      }
+      const next = Math.min(activeIndex + 1, filtered.length - 1);
+      if (side === "A") {
+        compareActiveIndexA = next < 0 && filtered.length > 0 ? 0 : next;
+      } else {
+        compareActiveIndexB = next < 0 && filtered.length > 0 ? 0 : next;
+      }
+      renderCompareList(side);
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      const next = Math.max(activeIndex - 1, 0);
+      if (side === "A") {
+        compareActiveIndexA = next;
+      } else {
+        compareActiveIndexB = next;
+      }
+      renderCompareList(side);
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (activeIndex >= 0 && filtered[activeIndex]) {
+        commitCompareNode(side, filtered[activeIndex].id);
+      }
+      return;
+    }
+    if (event.key === "Escape") {
+      closeCompareList(side);
+      setCompareInputToSelection(side);
+    }
+  });
+  input.addEventListener("blur", () => {
+    window.setTimeout(() => {
+      closeCompareList(side);
+      setCompareInputToSelection(side);
+    }, 120);
+  });
 }
 
 function updateRemoveButtons(): void {
@@ -505,7 +844,7 @@ function createResultColorSelect(result: CheckResult): HTMLDivElement {
   menu.hidden = true;
   menu.setAttribute("role", "listbox");
 
-  const current = colorForKeyword(result.keyword);
+  const current = colorForResult(result);
   setColorTriggerSwatch(trigger, current);
 
   for (const color of HIGHLIGHT_COLOR_OPTIONS) {
@@ -679,16 +1018,27 @@ function renderResults(results: CheckResult[]): void {
         matchItem.className = "match-item";
         matchItem.title = "クリックでこのテキストへジャンプ";
 
+        const head = document.createElement("div");
+        head.className = "match-item-head";
+
+        if (match.side) {
+          const side = document.createElement("span");
+          side.className = "match-side";
+          side.textContent = match.side;
+          head.append(side);
+        }
+
         const name = document.createElement("span");
         name.className = "match-name";
         name.textContent = match.preview || result.keyword;
         name.title = match.nodeName;
+        head.append(name);
 
         const preview = document.createElement("span");
         preview.className = "match-preview";
         preview.textContent = match.nodeName;
 
-        matchItem.append(name, preview);
+        matchItem.append(head, preview);
 
         matchItem.addEventListener("mouseenter", () => {
           publishVisibleHighlights([matchToHoverItem(match)]);
@@ -719,7 +1069,7 @@ Array.from(
     }
     const previousMode = mode;
     mode = input.value as SearchMode;
-    updatePinRowVisibility();
+    updateScopeVisibility();
 
     const nextPinnedNodeId =
       mode === "pinned"
@@ -732,9 +1082,52 @@ Array.from(
       type: "SET_MODE",
       mode,
       pinnedNodeId: nextPinnedNodeId,
+      compareNodeIdA: mode === "compare" ? compareNodeIdA : undefined,
+      compareNodeIdB: mode === "compare" ? compareNodeIdB : undefined,
     });
   });
 });
+
+wireCompareCombobox("A");
+wireCompareCombobox("B");
+
+compareAFromSelectionBtn.innerHTML = selectIcon;
+compareBFromSelectionBtn.innerHTML = selectIcon;
+pinFromSelectionBtn.innerHTML = selectIcon;
+
+compareAFromSelectionBtn.addEventListener("click", () => {
+  postToPlugin({ type: "SET_COMPARE_FROM_SELECTION", side: "A" });
+});
+compareBFromSelectionBtn.addEventListener("click", () => {
+  postToPlugin({ type: "SET_COMPARE_FROM_SELECTION", side: "B" });
+});
+pinFromSelectionBtn.addEventListener("click", () => {
+  postToPlugin({ type: "SET_PINNED_FROM_SELECTION" });
+});
+
+ignoreToggleBtn.addEventListener("click", () => {
+  const open = ignoreToggleBtn.getAttribute("aria-expanded") === "true";
+  const nextOpen = !open;
+  ignoreToggleBtn.setAttribute("aria-expanded", nextOpen ? "true" : "false");
+  ignoreBodyEl.hidden = !nextOpen;
+  ignoreToggleChevron.textContent = nextOpen ? "▾" : "▸";
+});
+
+function onIgnoreOptionsChanged(): void {
+  debounceSearch();
+}
+
+ignoreStringsEl.addEventListener("input", onIgnoreOptionsChanged);
+ignoreEmojiEl.addEventListener("change", onIgnoreOptionsChanged);
+ignoreKinsokuEl.addEventListener("change", onIgnoreOptionsChanged);
+ignoreSymbolEl.addEventListener("change", onIgnoreOptionsChanged);
+ignorePunctEl.addEventListener("change", onIgnoreOptionsChanged);
+
+// Ensure defaults match DEFAULT_IGNORE_CATEGORIES
+ignoreEmojiEl.checked = DEFAULT_IGNORE_CATEGORIES.emoji;
+ignoreKinsokuEl.checked = DEFAULT_IGNORE_CATEGORIES.kinsoku;
+ignoreSymbolEl.checked = DEFAULT_IGNORE_CATEGORIES.symbol;
+ignorePunctEl.checked = DEFAULT_IGNORE_CATEGORIES.punct;
 
 pinInputEl.addEventListener("focus", () => {
   openPinList();
@@ -898,6 +1291,14 @@ window.onmessage = (event: MessageEvent) => {
     return;
   }
 
+  if (msg.type === "COMPARE_STATE") {
+    compareTargets = msg.targets;
+    compareNodeIdA = msg.nodeIdA;
+    compareNodeIdB = msg.nodeIdB;
+    refreshCompareComboboxes();
+    return;
+  }
+
   if (msg.type === "SEARCH_RESULT") {
     showError(null);
     renderResults(msg.results);
@@ -905,7 +1306,7 @@ window.onmessage = (event: MessageEvent) => {
   }
 };
 
-updatePinRowVisibility();
+updateScopeVisibility();
 addKeywordRow();
 renderResults([]);
 postToPlugin({ type: "LIST_PIN_TARGETS" });

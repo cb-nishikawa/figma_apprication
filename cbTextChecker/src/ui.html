@@ -21,7 +21,13 @@
             <input type="radio" name="mode" value="pinned" />
             <span>固定</span>
           </label>
-          <div id="pin-inline" class="pin-inline" hidden>
+          <label class="radio">
+            <input type="radio" name="mode" value="compare" />
+            <span>比較</span>
+          </label>
+        </div>
+        <div id="pin-inline" class="pin-inline" hidden>
+          <div class="pin-row">
             <div class="pin-combobox">
               <input
                 id="pin-combobox-input"
@@ -42,13 +48,90 @@
                 hidden
               ></ul>
             </div>
+            <button
+              id="pin-from-selection"
+              class="btn-icon"
+              type="button"
+              title="選択を固定に"
+              aria-label="選択を固定に"
+            ></button>
+          </div>
+        </div>
+        <div id="compare-inline" class="compare-inline" hidden>
+          <div class="compare-side">
+            <div class="compare-side-top">
+              <span class="compare-side-label">A</span>
+              <div class="pin-combobox">
+                <input
+                  id="compare-a-input"
+                  class="pin-combobox-input"
+                  type="text"
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-controls="compare-a-list"
+                  aria-expanded="false"
+                  aria-label="比較 A"
+                  placeholder="Section / Frame"
+                  autocomplete="off"
+                />
+                <ul
+                  id="compare-a-list"
+                  class="pin-combobox-list"
+                  role="listbox"
+                  hidden
+                ></ul>
+              </div>
+              <button
+                id="compare-a-from-selection"
+                class="btn-icon"
+                type="button"
+                title="選択を A に"
+                aria-label="選択を A に"
+              ></button>
+            </div>
+          </div>
+          <div class="compare-side">
+            <div class="compare-side-top">
+              <span class="compare-side-label">B</span>
+              <div class="pin-combobox">
+                <input
+                  id="compare-b-input"
+                  class="pin-combobox-input"
+                  type="text"
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-controls="compare-b-list"
+                  aria-expanded="false"
+                  aria-label="比較 B"
+                  placeholder="Section / Frame"
+                  autocomplete="off"
+                />
+                <ul
+                  id="compare-b-list"
+                  class="pin-combobox-list"
+                  role="listbox"
+                  hidden
+                ></ul>
+              </div>
+              <button
+                id="compare-b-from-selection"
+                class="btn-icon"
+                type="button"
+                title="選択を B に"
+                aria-label="選択を B に"
+              ></button>
+            </div>
           </div>
         </div>
       </section>
 
-      <hr class="divider" />
+      <hr id="keywords-divider" class="divider" />
 
-      <section class="section keywords-section" aria-labelledby="keywords-label">
+      <section
+        id="keywords-section"
+        class="section keywords-section"
+        aria-labelledby="keywords-label"
+      >
         <div class="keywords-head">
           <h2 id="keywords-label">チェックする文字列</h2>
           <div class="keywords-head-actions">
@@ -78,6 +161,53 @@
           </div>
         </div>
         <div id="keyword-rows" class="keyword-rows"></div>
+      </section>
+
+      <hr class="divider" />
+
+      <section
+        id="ignore-section"
+        class="section ignore-section"
+        aria-labelledby="ignore-label"
+      >
+        <button
+          id="ignore-toggle"
+          class="ignore-toggle"
+          type="button"
+          aria-expanded="false"
+          aria-controls="ignore-body"
+        >
+          <span class="ignore-toggle-chevron" aria-hidden="true">▸</span>
+          <h2 id="ignore-label">無視する文字列</h2>
+        </button>
+        <div id="ignore-body" class="ignore-body" hidden>
+          <input
+            id="ignore-strings"
+            class="ignore-input"
+            type="text"
+            placeholder="追加で無視（空白区切り）例: ・"
+            spellcheck="false"
+            autocomplete="off"
+          />
+          <div class="ignore-categories" role="group" aria-label="無視する種類">
+            <label class="ignore-check">
+              <input type="checkbox" id="ignore-emoji" checked />
+              <span>絵文字</span>
+            </label>
+            <label class="ignore-check">
+              <input type="checkbox" id="ignore-kinsoku" checked />
+              <span>禁則文字</span>
+            </label>
+            <label class="ignore-check">
+              <input type="checkbox" id="ignore-symbol" checked />
+              <span>記号</span>
+            </label>
+            <label class="ignore-check">
+              <input type="checkbox" id="ignore-punct" checked />
+              <span>句読点</span>
+            </label>
+          </div>
+        </div>
       </section>
 
       <hr class="divider" />

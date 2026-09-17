@@ -1,10 +1,14 @@
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
 import type {
   CheckResult,
+  CompareSide,
   HoverHighlightItem,
+  IgnoreCategories,
   KeywordQuery,
   SearchMode,
 } from "./types";
+import { DEFAULT_IGNORE_CATEGORIES } from "./types";
+import { compareDiffToResults, compareTextNodes } from "./compare";
 import {
   buildHighlightPool,
   clearHoverHighlight,
@@ -43,7 +47,11 @@ const SELECTION_DEBOUNCE_MS = 150;
 
 let mode: SearchMode = "selection";
 let pinnedNodeId: string | null = null;
+let compareNodeIdA: string | null = null;
+let compareNodeIdB: string | null = null;
 let lastQueries: KeywordQuery[] = [];
+let lastIgnoreStrings: string[] = [];
+let lastIgnoreCategories: IgnoreCategories = { ...DEFAULT_IGNORE_CATEGORIES };
 let lastResults: CheckResult[] = [];
 let selectionTimer: ReturnType<typeof setTimeout> | null = null;
 /** Skip selection-driven re-search while creating/removing highlight overlays. */
@@ -68,15 +76,32 @@ function isPinTargetNode(node: BaseNode): node is FrameNode | SectionNode {
   return node.type === "FRAME" || node.type === "SECTION";
 }
 
+function isEffectivelyVisible(node: BaseNode): boolean {
+  let current: BaseNode | null = node;
+  while (current && current.type !== "PAGE" && current.type !== "DOCUMENT") {
+    if ("visible" in current && current.visible === false) {
+      return false;
+    }
+    current = current.parent;
+  }
+  return true;
+}
+
+function isVisibleTextNode(node: BaseNode): node is TextNode {
+  return node.type === "TEXT" && isEffectivelyVisible(node);
+}
+
 function collectTextFromRoot(root: BaseNode & ChildrenMixin): TextNode[] {
-  return root.findAll((n) => n.type === "TEXT") as TextNode[];
+  return root.findAll((n) => isVisibleTextNode(n)) as TextNode[];
 }
 
 function collectTextFromSelection(selection: readonly SceneNode[]): TextNode[] {
   const texts: TextNode[] = [];
   for (const node of selection) {
     if (node.type === "TEXT") {
-      texts.push(node);
+      if (isEffectivelyVisible(node)) {
+        texts.push(node);
+      }
       continue;
     }
     if ("findAll" in node) {
@@ -134,6 +159,26 @@ function postPinTargets(): void {
   });
 }
 
+function sanitizeCompareIds(targets: ReturnType<typeof collectPinTargets>): void {
+  if (compareNodeIdA && !targets.some((t) => t.id === compareNodeIdA)) {
+    compareNodeIdA = null;
+  }
+  if (compareNodeIdB && !targets.some((t) => t.id === compareNodeIdB)) {
+    compareNodeIdB = null;
+  }
+}
+
+function postCompareState(): void {
+  const targets = collectPinTargets();
+  sanitizeCompareIds(targets);
+  postToUi({
+    type: "COMPARE_STATE",
+    targets,
+    nodeIdA: compareNodeIdA,
+    nodeIdB: compareNodeIdB,
+  });
+}
+
 /** Prefer selected SECTION/FRAME, else nearest SECTION/FRAME ancestor. */
 function resolvePinTargetFromSelection(): string | null {
   const selection = figma.currentPage.selection;
@@ -168,7 +213,11 @@ async function getSearchNodes(): Promise<TextNode[] | { error: string }> {
   }
 
   if (mode === "page") {
-    return figma.currentPage.findAll((n) => n.type === "TEXT") as TextNode[];
+    return figma.currentPage.findAll((n) => isVisibleTextNode(n)) as TextNode[];
+  }
+
+  if (mode === "compare") {
+    return { error: "比較モードではキーワード検索は使えません" };
   }
 
   // pinned
@@ -201,11 +250,22 @@ function resultsToHighlightItems(results: CheckResult[]): HoverHighlightItem[] {
   return items;
 }
 
-async function handleSearch(queries: KeywordQuery[]): Promise<void> {
+async function handleSearch(
+  queries: KeywordQuery[],
+  ignoreStrings: string[] = lastIgnoreStrings,
+  ignoreCategories: IgnoreCategories = lastIgnoreCategories
+): Promise<void> {
+  if (mode === "compare") {
+    await handleCompare(ignoreStrings, ignoreCategories);
+    return;
+  }
+
   await withHighlightMutation(async () => {
     clearHoverHighlight();
   });
   lastQueries = queries;
+  lastIgnoreStrings = ignoreStrings;
+  lastIgnoreCategories = ignoreCategories;
 
   if (queries.length === 0) {
     lastResults = [];
@@ -229,7 +289,9 @@ async function handleSearch(queries: KeywordQuery[]): Promise<void> {
 
   const rawResults = checkKeywords(
     nodes.map((n) => ({ id: n.id, characters: n.characters })),
-    queries
+    queries,
+    ignoreStrings,
+    ignoreCategories
   );
 
   const results = enrichResults(rawResults, nodes);
@@ -242,7 +304,83 @@ async function handleSearch(queries: KeywordQuery[]): Promise<void> {
   postToUi({ type: "SEARCH_RESULT", results });
 }
 
+async function resolveCompareRoot(
+  nodeId: string | null,
+  label: string
+): Promise<FrameNode | SectionNode | { error: string }> {
+  if (!nodeId) {
+    return { error: `${label} が未選択です` };
+  }
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node || !isPinTargetNode(node)) {
+    return { error: `${label} が見つかりません` };
+  }
+  return node;
+}
+
+async function handleCompare(
+  ignoreStrings: string[] = lastIgnoreStrings,
+  ignoreCategories: IgnoreCategories = lastIgnoreCategories
+): Promise<void> {
+  lastIgnoreStrings = ignoreStrings;
+  lastIgnoreCategories = ignoreCategories;
+  await withHighlightMutation(async () => {
+    clearHoverHighlight();
+  });
+
+  const targets = collectPinTargets();
+  sanitizeCompareIds(targets);
+
+  const rootA = await resolveCompareRoot(compareNodeIdA, "比較 A");
+  if ("error" in rootA) {
+    lastResults = [];
+    postCompareState();
+    postToUi({ type: "ERROR", message: rootA.error });
+    return;
+  }
+
+  const rootB = await resolveCompareRoot(compareNodeIdB, "比較 B");
+  if ("error" in rootB) {
+    lastResults = [];
+    postCompareState();
+    postToUi({ type: "ERROR", message: rootB.error });
+    return;
+  }
+
+  if (rootA.id === rootB.id) {
+    lastResults = [];
+    postToUi({
+      type: "ERROR",
+      message: "比較 A と B には異なる Section / Frame を指定してください",
+    });
+    return;
+  }
+
+  const nodesA = dedupeTextNodes(collectTextFromRoot(rootA));
+  const nodesB = dedupeTextNodes(collectTextFromRoot(rootB));
+  const allNodes = dedupeTextNodes([...nodesA, ...nodesB]);
+
+  const diff = compareTextNodes(
+    nodesA.map((n) => ({ id: n.id, characters: n.characters })),
+    nodesB.map((n) => ({ id: n.id, characters: n.characters })),
+    ignoreStrings,
+    ignoreCategories
+  );
+  const results = enrichResults(compareDiffToResults(diff), allNodes);
+  lastResults = results;
+
+  await withHighlightMutation(async () => {
+    await buildHighlightPool(resultsToHighlightItems(results));
+  });
+
+  postToUi({ type: "SEARCH_RESULT", results });
+}
+
 async function rerunSearch(): Promise<void> {
+  if (mode === "compare") {
+    await handleCompare();
+    return;
+  }
   await handleSearch(lastQueries);
 }
 
@@ -289,11 +427,22 @@ function scheduleSelectionSearch(): void {
   }, SELECTION_DEBOUNCE_MS);
 }
 
+function setCompareNode(side: CompareSide, nodeId: string | null): void {
+  if (side === "A") {
+    compareNodeIdA = nodeId;
+  } else {
+    compareNodeIdB = nodeId;
+  }
+}
+
 figma.ui.onmessage = async (msg: UiToPluginMessage) => {
   try {
     switch (msg.type) {
       case "LIST_PIN_TARGETS":
         postPinTargets();
+        break;
+      case "LIST_COMPARE_TARGETS":
+        postCompareState();
         break;
       case "SET_MODE": {
         const previousMode = mode;
@@ -323,6 +472,28 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
           });
         }
 
+        if (mode === "compare") {
+          const targets = collectPinTargets();
+          if (msg.compareNodeIdA !== undefined) {
+            compareNodeIdA = msg.compareNodeIdA;
+          }
+          if (msg.compareNodeIdB !== undefined) {
+            compareNodeIdB = msg.compareNodeIdB;
+          }
+          if (previousMode === "selection") {
+            const fromSelection = resolvePinTargetFromSelection();
+            if (
+              fromSelection &&
+              targets.some((t) => t.id === fromSelection) &&
+              !compareNodeIdA
+            ) {
+              compareNodeIdA = fromSelection;
+            }
+          }
+          sanitizeCompareIds(targets);
+          postCompareState();
+        }
+
         await rerunSearch();
         break;
       }
@@ -334,8 +505,67 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
           postPinTargets();
         }
         break;
+      case "SET_PINNED_FROM_SELECTION": {
+        const fromSelection = resolvePinTargetFromSelection();
+        const targets = collectPinTargets();
+        const nodeId =
+          fromSelection && targets.some((t) => t.id === fromSelection)
+            ? fromSelection
+            : null;
+        if (!nodeId) {
+          postToUi({
+            type: "ERROR",
+            message: "選択から Section / Frame を解決できません",
+          });
+          break;
+        }
+        pinnedNodeId = nodeId;
+        postPinTargets();
+        if (mode === "pinned") {
+          await rerunSearch();
+        }
+        break;
+      }
+      case "SET_COMPARE_NODE":
+        setCompareNode(msg.side, msg.nodeId);
+        postCompareState();
+        if (mode === "compare") {
+          await handleCompare();
+        }
+        break;
+      case "SET_COMPARE_FROM_SELECTION": {
+        const fromSelection = resolvePinTargetFromSelection();
+        const targets = collectPinTargets();
+        const nodeId =
+          fromSelection && targets.some((t) => t.id === fromSelection)
+            ? fromSelection
+            : null;
+        if (!nodeId) {
+          postToUi({
+            type: "ERROR",
+            message: "選択から Section / Frame を解決できません",
+          });
+          break;
+        }
+        setCompareNode(msg.side, nodeId);
+        postCompareState();
+        if (mode === "compare") {
+          await handleCompare();
+        }
+        break;
+      }
       case "SEARCH":
-        await handleSearch(msg.queries);
+        await handleSearch(
+          msg.queries,
+          msg.ignoreStrings ?? [],
+          msg.ignoreCategories ?? lastIgnoreCategories
+        );
+        break;
+      case "RUN_COMPARE":
+        await handleCompare(
+          msg.ignoreStrings ?? lastIgnoreStrings,
+          msg.ignoreCategories ?? lastIgnoreCategories
+        );
         break;
       case "FOCUS_RESULT":
         await handleFocus(msg.keyword);
@@ -382,6 +612,9 @@ figma.on("selectionchange", () => {
 
 figma.on("currentpagechange", () => {
   postPinTargets();
+  if (mode === "compare") {
+    postCompareState();
+  }
   void rerunSearch();
 });
 

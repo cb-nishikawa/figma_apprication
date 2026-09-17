@@ -1,16 +1,219 @@
 import type {
   CheckResult,
+  IgnoreCategories,
   KeywordQuery,
   MatchRange,
   TextMatch,
   TextNodeLike,
 } from "./types";
+import { DEFAULT_IGNORE_CATEGORIES } from "./types";
+
+export type { IgnoreCategories };
+export { DEFAULT_IGNORE_CATEGORIES };
+
+const NO_CATEGORIES: IgnoreCategories = {
+  emoji: false,
+  kinsoku: false,
+  symbol: false,
+  punct: false,
+};
 
 /** Characters removed/ignored during search normalization. */
 const IGNORE_CHARS = /[\n\r\t \u3000]/;
 
+/** Representative Japanese kinsoku / line-break sensitive characters. */
+export const KINSOKU_CHARS = new Set(
+  Array.from("、。．，．・：；！？々ー〜「」『』（）〔〕［］【】〈〉《》")
+);
+
+/** Punctuation characters. */
+export const PUNCT_CHARS = new Set(
+  Array.from("、。．，．!！?？…‥,.;:・")
+);
+
+/** Common symbol marks (overlaps with kinsoku/punct are fine). */
+const SYMBOL_CHARS = new Set(
+  Array.from(
+    "・…‥ー〜※＊★☆●○◆◇■□▲△▼▽♪†‡§¶©®™°′″≒≠≦≧±×÷∞∴∵←→↑↓⇔⇒"
+  )
+);
+
+const ASCII_SYMBOL = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/;
+const FULLWIDTH_SYMBOL =
+  /[！＂＃＄％＆＇（）＊＋，－．／：；＜＝＞？＠［＼］＾＿｀｛｜｝～]/;
+
 function isIgnoredChar(ch: string): boolean {
   return IGNORE_CHARS.test(ch);
+}
+
+function isEmojiCodePoint(cp: number): boolean {
+  return (
+    (cp >= 0x1f300 && cp <= 0x1faff) ||
+    (cp >= 0x1f600 && cp <= 0x1f64f) ||
+    (cp >= 0x1f680 && cp <= 0x1f6ff) ||
+    (cp >= 0x2600 && cp <= 0x26ff) ||
+    (cp >= 0x2700 && cp <= 0x27bf) ||
+    (cp >= 0xfe00 && cp <= 0xfe0f) ||
+    cp === 0x200d ||
+    cp === 0x20e3 ||
+    (cp >= 0x1f1e6 && cp <= 0x1f1ff)
+  );
+}
+
+function isLetterOrNumberOrKana(cp: number): boolean {
+  if (cp >= 0x30 && cp <= 0x39) return true; // 0-9
+  if (cp >= 0x41 && cp <= 0x5a) return true; // A-Z
+  if (cp >= 0x61 && cp <= 0x7a) return true; // a-z
+  if (cp >= 0xff10 && cp <= 0xff19) return true; // fullwidth digits
+  if (cp >= 0xff21 && cp <= 0xff3a) return true;
+  if (cp >= 0xff41 && cp <= 0xff5a) return true;
+  if (cp >= 0x3040 && cp <= 0x309f) return true; // hiragana
+  if (cp >= 0x30a0 && cp <= 0x30ff) return true; // katakana
+  if (cp >= 0x3400 && cp <= 0x9fff) return true; // CJK
+  if (cp >= 0xf900 && cp <= 0xfaff) return true;
+  return false;
+}
+
+export function shouldSkipByCategory(
+  ch: string,
+  cp: number,
+  categories: IgnoreCategories
+): boolean {
+  if (categories.emoji && isEmojiCodePoint(cp)) {
+    return true;
+  }
+  if (categories.kinsoku && KINSOKU_CHARS.has(ch)) {
+    return true;
+  }
+  if (categories.punct && PUNCT_CHARS.has(ch)) {
+    return true;
+  }
+  if (categories.symbol) {
+    if (SYMBOL_CHARS.has(ch) || ASCII_SYMBOL.test(ch) || FULLWIDTH_SYMBOL.test(ch)) {
+      return true;
+    }
+    // Other non-letter/number marks in common symbol blocks
+    if (
+      !isLetterOrNumberOrKana(cp) &&
+      !isIgnoredChar(ch) &&
+      ((cp >= 0x2000 && cp <= 0x206f) ||
+        (cp >= 0x2190 && cp <= 0x21ff) ||
+        (cp >= 0x2200 && cp <= 0x22ff) ||
+        (cp >= 0x2500 && cp <= 0x257f) ||
+        (cp >= 0x25a0 && cp <= 0x25ff) ||
+        (cp >= 0x3000 && cp <= 0x303f))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Remove user-configured ignore substrings (longest first).
+ * Does not mutate the original text.
+ */
+export function stripIgnoreStrings(text: string, ignores: string[]): string {
+  const sorted = uniqueSortedIgnores(ignores);
+  if (sorted.length === 0) {
+    return text;
+  }
+
+  let result = "";
+  let i = 0;
+  while (i < text.length) {
+    let skipped = false;
+    for (const ignore of sorted) {
+      if (text.startsWith(ignore, i)) {
+        i += ignore.length;
+        skipped = true;
+        break;
+      }
+    }
+    if (skipped) {
+      continue;
+    }
+    result += text[i];
+    i++;
+  }
+  return result;
+}
+
+function uniqueSortedIgnores(ignores: string[]): string[] {
+  const seen = new Set<string>();
+  const list: string[] = [];
+  for (const raw of ignores) {
+    const value = raw.trim();
+    if (!value || seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    list.push(value);
+  }
+  list.sort((a, b) => b.length - a.length);
+  return list;
+}
+
+/**
+ * Parse single-line ignore input (whitespace-separated tokens).
+ */
+export function parseIgnoreInput(raw: string): string[] {
+  return raw
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
+}
+
+/**
+ * Build searchable string and map each searchable index back to original UTF-16.
+ * Optionally strips ignore substrings, category characters, and/or whitespace.
+ */
+export function buildSearchIndex(
+  original: string,
+  ignores: string[] = [],
+  ignoreNewlines = true,
+  categories: IgnoreCategories = NO_CATEGORIES
+): { searchable: string; indexMap: number[] } {
+  const sorted = uniqueSortedIgnores(ignores);
+  const indexMap: number[] = [];
+  let searchable = "";
+  let i = 0;
+
+  while (i < original.length) {
+    let skipped = false;
+    for (const ignore of sorted) {
+      if (original.startsWith(ignore, i)) {
+        i += ignore.length;
+        skipped = true;
+        break;
+      }
+    }
+    if (skipped) {
+      continue;
+    }
+
+    const cp = original.codePointAt(i)!;
+    const unitLen = cp > 0xffff ? 2 : 1;
+    const ch = original.slice(i, i + unitLen);
+
+    if (shouldSkipByCategory(ch, cp, categories)) {
+      i += unitLen;
+      continue;
+    }
+
+    if (ignoreNewlines && unitLen === 1 && isIgnoredChar(ch)) {
+      i++;
+      continue;
+    }
+
+    for (let u = 0; u < unitLen; u++) {
+      searchable += original[i + u];
+      indexMap.push(i + u);
+    }
+    i += unitLen;
+  }
+
+  return { searchable, indexMap };
 }
 
 /**
@@ -18,26 +221,14 @@ function isIgnoredChar(ch: string): boolean {
  * Does not mutate the original text.
  */
 export function normalizeForSearch(text: string): string {
-  let result = "";
-  for (let i = 0; i < text.length; i++) {
-    if (!isIgnoredChar(text[i])) {
-      result += text[i];
-    }
-  }
-  return result;
+  return buildSearchIndex(text, [], true).searchable;
 }
 
 /**
  * Map each index in the normalized string back to the original UTF-16 index.
  */
 export function createIndexMap(original: string): number[] {
-  const map: number[] = [];
-  for (let i = 0; i < original.length; i++) {
-    if (!isIgnoredChar(original[i])) {
-      map.push(i);
-    }
-  }
-  return map;
+  return buildSearchIndex(original, [], true).indexMap;
 }
 
 /**
@@ -53,14 +244,22 @@ export function parseKeywords(raw: string): string[] {
 /**
  * Find all non-overlapping substring matches.
  * When ignoreNewlines is true (default), newlines/whitespace are ignored.
- * Returned ranges use original-text indices (end exclusive).
+ * ignoreStrings / categories are stripped before matching. Ranges use original indices.
  */
 export function findMatches(
   original: string,
   keyword: string,
-  ignoreNewlines = true
+  ignoreNewlines = true,
+  ignoreStrings: string[] = [],
+  categories: IgnoreCategories = NO_CATEGORIES
 ): MatchRange[] {
-  if (!ignoreNewlines) {
+  const hasCategory =
+    categories.emoji ||
+    categories.kinsoku ||
+    categories.symbol ||
+    categories.punct;
+
+  if (!ignoreNewlines && ignoreStrings.length === 0 && !hasCategory) {
     const exactKeyword = keyword.trim();
     if (!exactKeyword) {
       return [];
@@ -79,13 +278,25 @@ export function findMatches(
     return ranges;
   }
 
-  const normalizedKeyword = normalizeForSearch(keyword);
+  const textIndex = buildSearchIndex(
+    original,
+    ignoreStrings,
+    ignoreNewlines,
+    categories
+  );
+  const keywordIndex = buildSearchIndex(
+    keyword,
+    ignoreStrings,
+    ignoreNewlines,
+    categories
+  );
+  const normalizedKeyword = keywordIndex.searchable;
   if (!normalizedKeyword) {
     return [];
   }
 
-  const normalizedText = normalizeForSearch(original);
-  const indexMap = createIndexMap(original);
+  const normalizedText = textIndex.searchable;
+  const indexMap = textIndex.indexMap;
   const ranges: MatchRange[] = [];
 
   let from = 0;
@@ -116,25 +327,31 @@ export function findMatches(
 /**
  * Whether the whole TEXT content equals the keyword.
  * When ignoreNewlines is true, compare after stripping newlines/whitespace.
+ * ignoreStrings / categories are stripped before comparison.
  */
 export function isExactMatch(
   characters: string,
   keyword: string,
-  ignoreNewlines = true
+  ignoreNewlines = true,
+  ignoreStrings: string[] = [],
+  categories: IgnoreCategories = NO_CATEGORIES
 ): boolean {
-  if (ignoreNewlines) {
-    const normalizedKeyword = normalizeForSearch(keyword);
-    if (!normalizedKeyword) {
-      return false;
-    }
-    return normalizeForSearch(characters) === normalizedKeyword;
-  }
-
-  const exactKeyword = keyword.trim();
-  if (!exactKeyword) {
+  const left = buildSearchIndex(
+    characters,
+    ignoreStrings,
+    ignoreNewlines,
+    categories
+  ).searchable;
+  const right = buildSearchIndex(
+    keyword,
+    ignoreStrings,
+    ignoreNewlines,
+    categories
+  ).searchable;
+  if (!right) {
     return false;
   }
-  return characters === exactKeyword;
+  return left === right;
 }
 
 /**
@@ -144,17 +361,31 @@ export function isExactMatch(
  */
 export function checkKeywords(
   nodes: TextNodeLike[],
-  queries: KeywordQuery[]
+  queries: KeywordQuery[],
+  ignoreStrings: string[] = [],
+  categories: IgnoreCategories = NO_CATEGORIES
 ): CheckResult[] {
   return queries.map(({ keyword, ignoreNewlines }) => {
     const matches: TextMatch[] = [];
 
     for (const node of nodes) {
-      const ranges = findMatches(node.characters, keyword, ignoreNewlines);
+      const ranges = findMatches(
+        node.characters,
+        keyword,
+        ignoreNewlines,
+        ignoreStrings,
+        categories
+      );
       if (ranges.length === 0) {
         continue;
       }
-      const exact = isExactMatch(node.characters, keyword, ignoreNewlines);
+      const exact = isExactMatch(
+        node.characters,
+        keyword,
+        ignoreNewlines,
+        ignoreStrings,
+        categories
+      );
       for (const range of ranges) {
         matches.push({
           nodeId: node.id,
