@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { splitRangeByNewlines } from "../src/highlightRanges";
+import {
+  splitRangeByHeightBreaks,
+  splitRangeByNewlines,
+} from "../src/highlightRanges";
 
 describe("splitRangeByNewlines", () => {
   it("returns the range unchanged when there is no newline", () => {
@@ -42,5 +45,40 @@ describe("splitRangeByNewlines", () => {
       { start: 2, end: 3 },
       { start: 4, end: 5 },
     ]);
+  });
+
+  it("splits 入ります across a hard newline", () => {
+    expect(
+      splitRangeByNewlines("入り\nます", { start: 0, end: 5 })
+    ).toEqual([
+      { start: 0, end: 2 },
+      { start: 3, end: 5 },
+    ]);
+  });
+});
+
+describe("splitRangeByHeightBreaks", () => {
+  it("returns the range unchanged when height never increases", () => {
+    expect(
+      splitRangeByHeightBreaks({ start: 0, end: 4 }, () => 12)
+    ).toEqual([{ start: 0, end: 4 }]);
+  });
+
+  it("splits when height jumps mid-range (soft wrap)", () => {
+    // Simulate "入ります" wrapping after 2 chars: height 12 then 24.
+    const heightBefore = (endExclusive: number) =>
+      endExclusive <= 2 ? 12 : 24;
+    expect(
+      splitRangeByHeightBreaks({ start: 0, end: 4 }, heightBefore)
+    ).toEqual([
+      { start: 0, end: 2 },
+      { start: 2, end: 4 },
+    ]);
+  });
+
+  it("returns empty for empty range", () => {
+    expect(
+      splitRangeByHeightBreaks({ start: 2, end: 2 }, () => 0)
+    ).toEqual([]);
   });
 });

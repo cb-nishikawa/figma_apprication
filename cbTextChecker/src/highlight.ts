@@ -1,8 +1,11 @@
 import type { HoverHighlightItem, HoverHighlightStyle, MatchRange } from "./types";
-import { splitRangeByNewlines } from "./highlightRanges";
+import {
+  splitRangeByHeightBreaks,
+  splitRangeByNewlines,
+} from "./highlightRanges";
 
 export type { HoverHighlightItem, HoverHighlightStyle };
-export { splitRangeByNewlines };
+export { splitRangeByHeightBreaks, splitRangeByNewlines };
 
 export const HOVER_HIGHLIGHT_NAME = "__CB_TC_HIGHLIGHT__";
 export const HIGHLIGHT_POOL_NAME = "__CB_TC_HIGHLIGHT_POOL__";
@@ -85,16 +88,6 @@ function applyHighlightPaint(rect: RectangleNode, style: HoverHighlightStyle): v
   rect.dashPattern = [10, 10];
 }
 
-function solidFill(color: RGB, opacity: number): SolidPaint[] {
-  return [
-    {
-      type: "SOLID",
-      color,
-      opacity,
-    },
-  ];
-}
-
 async function loadTextFonts(textNode: TextNode): Promise<void> {
   const length = textNode.characters.length;
   if (length === 0) {
@@ -106,15 +99,51 @@ async function loadTextFonts(textNode: TextNode): Promise<void> {
   }
 }
 
-function collectPartialSegments(
-  characters: string,
+async function collectPartialSegments(
+  textNode: TextNode,
   ranges: MatchRange[]
-): MatchRange[] {
-  const segments: MatchRange[] = [];
+): Promise<MatchRange[]> {
+  const characters = textNode.characters;
+  const hardSegments: MatchRange[] = [];
   for (const range of ranges) {
-    segments.push(...splitRangeByNewlines(characters, range));
+    hardSegments.push(...splitRangeByNewlines(characters, range));
   }
-  return segments;
+  if (hardSegments.length === 0) {
+    return [];
+  }
+
+  return withFixedWidthProbe(textNode, (probe) => {
+    const segments: MatchRange[] = [];
+    for (const hard of hardSegments) {
+      segments.push(
+        ...splitRangeByHeightBreaks(hard, (endExclusive) => {
+          if (endExclusive <= 0) {
+            return 0;
+          }
+          return probeTextHeight(
+            probe,
+            characters.slice(0, endExclusive)
+          );
+        })
+      );
+    }
+    return segments;
+  });
+}
+
+/** Height used for y placement; trailing hard newline must not count as an empty line. */
+function prefixHeightForPlacement(
+  probe: TextNode,
+  characters: string,
+  start: number
+): number {
+  if (start <= 0) {
+    return 0;
+  }
+  if (characters[start - 1] === "\n") {
+    return probeTextHeight(probe, characters.slice(0, start - 1));
+  }
+  return probeTextHeight(probe, characters.slice(0, start));
 }
 
 function resolveLineHeightPx(textNode: TextNode): number {
@@ -286,7 +315,13 @@ async function createPartialSegmentRect(
   }
 
   const layout = await withFixedWidthProbe(textNode, (probe) => {
-    const prefixHeight =
+    const prefixHeight = prefixHeightForPlacement(
+      probe,
+      characters,
+      segment.start
+    );
+    // Raw height including a trailing \n (used only for soft-wrap detection).
+    const rawPrefixHeight =
       segment.start === 0
         ? 0
         : probeTextHeight(probe, characters.slice(0, segment.start));
@@ -296,7 +331,7 @@ async function createPartialSegmentRect(
       characters[segment.start - 1] === "\n" ||
       (segment.start < characters.length &&
         probeTextHeight(probe, characters.slice(0, segment.start + 1)) >
-          prefixHeight + HEIGHT_EPS);
+          rawPrefixHeight + HEIGHT_EPS);
 
     let visualLineStart = segment.start;
     if (!atVisualLineStart) {
@@ -304,7 +339,7 @@ async function createPartialSegmentRect(
         probe,
         characters,
         segment.start,
-        prefixHeight
+        rawPrefixHeight
       );
     }
 
@@ -312,7 +347,7 @@ async function createPartialSegmentRect(
     const lineHeightTarget =
       atVisualLineStart && segment.start < characters.length
         ? probeTextHeight(probe, characters.slice(0, segment.start + 1))
-        : prefixHeight;
+        : rawPrefixHeight;
     const softEnd = firstIndexWithHeightAbove(
       probe,
       characters,
@@ -365,43 +400,6 @@ async function createPartialSegmentRect(
   return rect;
 }
 
-async function createPartialTextClone(
-  textNode: TextNode,
-  style: HoverHighlightStyle,
-  segments: MatchRange[],
-  box: Rect
-): Promise<SceneNode | null> {
-  let clone: TextNode | null = null;
-  try {
-    clone = textNode.clone();
-    figma.currentPage.appendChild(clone);
-    clone.x = box.x;
-    clone.y = box.y;
-
-    await loadTextFonts(clone);
-    const length = clone.characters.length;
-    if (length === 0) {
-      clone.remove();
-      return null;
-    }
-
-    clone.setRangeFills(0, length, solidFill({ r: 0, g: 0, b: 0 }, 0));
-    const color = styleColor(style);
-    for (const segment of segments) {
-      if (segment.start >= segment.end || segment.end > length) {
-        continue;
-      }
-      clone.setRangeFills(segment.start, segment.end, solidFill(color, 0.4));
-    }
-
-    clone.visible = true;
-    return clone;
-  } catch {
-    clone?.remove();
-    return null;
-  }
-}
-
 async function createPartialHighlight(
   textNode: TextNode,
   style: HoverHighlightStyle,
@@ -412,36 +410,23 @@ async function createPartialHighlight(
     return [];
   }
 
-  const segments = collectPartialSegments(textNode.characters, ranges);
+  const segments = await collectPartialSegments(textNode, ranges);
   if (segments.length === 0) {
     return [];
   }
 
   const lineHeightPx = resolveLineHeightPx(textNode);
-
-  const [rectNodes, clone] = await Promise.all([
-    Promise.all(
-      segments.map((segment) =>
-        createPartialSegmentRect(
-          textNode,
-          style,
-          segment,
-          box,
-          lineHeightPx
-        )
-      )
-    ),
-    createPartialTextClone(textNode, style, segments, box),
-  ]);
+  const rectNodes = await Promise.all(
+    segments.map((segment) =>
+      createPartialSegmentRect(textNode, style, segment, box, lineHeightPx)
+    )
+  );
 
   const nodes: SceneNode[] = [];
   for (const rect of rectNodes) {
     if (rect) {
       nodes.push(rect);
     }
-  }
-  if (clone) {
-    nodes.push(clone);
   }
   return nodes;
 }
@@ -451,14 +436,19 @@ function packageEntryNodes(key: string, nodes: SceneNode[]): SceneNode | null {
     return null;
   }
 
-  const entry =
-    nodes.length === 1
-      ? nodes[0]
-      : figma.group(nodes, figma.currentPage);
+  if (nodes.length === 1) {
+    const entry = nodes[0];
+    entry.name = `${HOVER_HIGHLIGHT_NAME}:${key}`;
+    entry.locked = true;
+    entry.visible = false;
+    return entry;
+  }
 
+  const entry = figma.group(nodes, figma.currentPage);
   entry.name = `${HOVER_HIGHLIGHT_NAME}:${key}`;
   entry.locked = true;
   entry.visible = false;
+  entry.expanded = false;
   return entry;
 }
 
@@ -523,6 +513,7 @@ export async function buildHighlightPool(
   group.name = HIGHLIGHT_POOL_NAME;
   group.locked = true;
   group.visible = true;
+  group.expanded = false;
   poolRoot = group;
 }
 
