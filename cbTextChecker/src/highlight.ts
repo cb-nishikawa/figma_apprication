@@ -1,23 +1,37 @@
-import type { HoverHighlightItem, HoverHighlightStyle, MatchRange } from "./types";
+import type {
+  HighlightColor,
+  HoverHighlightItem,
+  HoverHighlightStyle,
+  MatchRange,
+} from "./types";
 import {
   splitRangeByHeightBreaks,
   splitRangeByNewlines,
 } from "./highlightRanges";
 
-export type { HoverHighlightItem, HoverHighlightStyle };
+export type { HighlightColor, HoverHighlightItem, HoverHighlightStyle };
 export { splitRangeByHeightBreaks, splitRangeByNewlines };
 
 export const HOVER_HIGHLIGHT_NAME = "__CB_TC_HIGHLIGHT__";
 export const HIGHLIGHT_POOL_NAME = "__CB_TC_HIGHLIGHT_POOL__";
 
-/** Same colors as cbComponentExplorer hoverHighlight. */
-const COMPONENT_COLOR = { r: 161 / 255, g: 84 / 255, b: 242 / 255 };
-const INSTANCE_COLOR = { r: 0, g: 1, b: 64 / 255 };
+const HIGHLIGHT_COLORS: Record<HighlightColor, RGB> = {
+  red: { r: 1, g: 59 / 255, b: 48 / 255 },
+  yellow: { r: 1, g: 204 / 255, b: 0 },
+  green: { r: 0, g: 1, b: 64 / 255 },
+  purple: { r: 161 / 255, g: 84 / 255, b: 242 / 255 },
+};
+
+const DEFAULT_HIGHLIGHT_COLOR: HighlightColor = "green";
 
 const HEIGHT_EPS = 0.5;
 
 let poolRoot: SceneNode | null = null;
 const poolEntries = new Map<string, SceneNode>();
+
+/** Per-text-node scale when fallback fonts were used for measurement. */
+type MeasureScale = { scaleX: number; scaleY: number; replaced: boolean };
+const measureScaleCache = new Map<string, MeasureScale>();
 
 export function highlightItemKey(item: HoverHighlightItem): string {
   const range = item.ranges?.[0];
@@ -30,6 +44,7 @@ export function highlightItemKey(item: HoverHighlightItem): string {
 export function clearHoverHighlight(): void {
   poolEntries.clear();
   poolRoot = null;
+  measureScaleCache.clear();
 
   const page = figma.currentPage;
   for (const child of [...page.children]) {
@@ -65,37 +80,222 @@ function isOnCurrentPage(node: BaseNode): boolean {
   return Boolean(current && current.id === figma.currentPage.id);
 }
 
-function styleColor(style: HoverHighlightStyle): RGB {
-  return style === "component" ? COMPONENT_COLOR : INSTANCE_COLOR;
+function colorRgb(color: HighlightColor): RGB {
+  return HIGHLIGHT_COLORS[color];
 }
 
-function applyHighlightPaint(rect: RectangleNode, style: HoverHighlightStyle): void {
-  const color = styleColor(style);
+function applyHighlightPaint(
+  rect: RectangleNode,
+  color: HighlightColor = DEFAULT_HIGHLIGHT_COLOR
+): void {
+  const rgb = colorRgb(color);
   rect.fills = [
     {
       type: "SOLID",
-      color,
+      color: rgb,
       opacity: 0.4,
     },
   ];
   rect.strokes = [
     {
       type: "SOLID",
-      color,
+      color: rgb,
     },
   ];
   rect.strokeWeight = 1;
   rect.dashPattern = [10, 10];
 }
 
-async function loadTextFonts(textNode: TextNode): Promise<void> {
-  const length = textNode.characters.length;
-  if (length === 0) {
+function recolorNodeTree(node: SceneNode, color: HighlightColor): void {
+  if (node.type === "RECTANGLE") {
+    applyHighlightPaint(node, color);
     return;
   }
-  const fonts = textNode.getRangeAllFontNames(0, length);
-  for (const font of fonts) {
+  if ("children" in node) {
+    for (const child of node.children) {
+      recolorNodeTree(child as SceneNode, color);
+    }
+  }
+}
+
+export function recolorHighlightItems(
+  items: HoverHighlightItem[],
+  color: HighlightColor
+): void {
+  for (const item of items) {
+    const entry = poolEntries.get(highlightItemKey(item));
+    if (!entry || entry.removed) {
+      continue;
+    }
+    recolorNodeTree(entry, color);
+  }
+}
+
+function fontKey(font: FontName): string {
+  return `${font.family}::${font.style}`;
+}
+
+function fontsEqual(a: FontName, b: FontName): boolean {
+  return a.family === b.family && a.style === b.style;
+}
+
+async function tryLoadFont(font: FontName): Promise<boolean> {
+  try {
     await figma.loadFontAsync(font);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Cache: original font key → resolved fallback (or null if none). */
+const fallbackFontCache = new Map<string, FontName | null>();
+
+async function resolveFallbackFont(original: FontName): Promise<FontName | null> {
+  const key = fontKey(original);
+  if (fallbackFontCache.has(key)) {
+    return fallbackFontCache.get(key) ?? null;
+  }
+
+  const candidates: FontName[] = [
+    { family: original.family, style: "Regular" },
+    { family: original.family, style: "Medium" },
+    { family: original.family, style: "Bold" },
+    { family: "Noto Sans JP", style: "Regular" },
+    { family: "Inter", style: "Regular" },
+    { family: "Roboto", style: "Regular" },
+  ];
+
+  for (const candidate of candidates) {
+    if (fontsEqual(candidate, original)) {
+      continue;
+    }
+    if (await tryLoadFont(candidate)) {
+      fallbackFontCache.set(key, candidate);
+      return candidate;
+    }
+  }
+
+  fallbackFontCache.set(key, null);
+  return null;
+}
+
+/**
+ * Load fonts used by the text node. Missing/unloadable fonts are replaced
+ * with a fallback via setRangeFontName.
+ */
+async function ensureTextFontsLoaded(
+  textNode: TextNode
+): Promise<{ ok: boolean; replaced: boolean }> {
+  const length = textNode.characters.length;
+  if (length === 0) {
+    return { ok: true, replaced: false };
+  }
+
+  const fonts = textNode.getRangeAllFontNames(0, length);
+  const failed: FontName[] = [];
+
+  for (const font of fonts) {
+    if (!(await tryLoadFont(font))) {
+      failed.push(font);
+    }
+  }
+
+  if (failed.length === 0) {
+    return { ok: true, replaced: false };
+  }
+
+  const replacements = new Map<string, FontName>();
+  for (const font of failed) {
+    const fallback = await resolveFallbackFont(font);
+    if (!fallback) {
+      return { ok: false, replaced: false };
+    }
+    replacements.set(fontKey(font), fallback);
+  }
+
+  let runStart = 0;
+  let runFont = textNode.getRangeFontName(0, 1);
+
+  for (let i = 1; i <= length; i++) {
+    const atEnd = i === length;
+    const nextFont = atEnd ? null : textNode.getRangeFontName(i, i + 1);
+    const same =
+      !atEnd &&
+      runFont !== figma.mixed &&
+      nextFont !== figma.mixed &&
+      fontsEqual(runFont as FontName, nextFont as FontName);
+
+    if (same) {
+      continue;
+    }
+
+    if (runFont !== figma.mixed) {
+      const replacement = replacements.get(fontKey(runFont as FontName));
+      if (replacement) {
+        textNode.setRangeFontName(runStart, i, replacement);
+      }
+    }
+
+    if (!atEnd && nextFont !== null) {
+      runStart = i;
+      runFont = nextFont;
+    }
+  }
+
+  return { ok: true, replaced: true };
+}
+
+function clampMeasureScale(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 1;
+  }
+  return Math.min(Math.max(value, 0.25), 4);
+}
+
+/**
+ * When fallback fonts are used (or source has missing fonts), scale probe
+ * measurements to the source node's absoluteBoundingBox.
+ */
+async function getMeasureScale(
+  source: TextNode,
+  originBox: Rect
+): Promise<MeasureScale> {
+  const cached = measureScaleCache.get(source.id);
+  if (cached) {
+    return cached;
+  }
+
+  const probe = source.clone();
+  figma.currentPage.appendChild(probe);
+  try {
+    const result = await ensureTextFontsLoaded(probe);
+    if (!result.ok) {
+      const scale: MeasureScale = { scaleX: 1, scaleY: 1, replaced: false };
+      measureScaleCache.set(source.id, scale);
+      return scale;
+    }
+
+    const needScale = result.replaced || source.hasMissingFont;
+    if (!needScale) {
+      const scale: MeasureScale = { scaleX: 1, scaleY: 1, replaced: false };
+      measureScaleCache.set(source.id, scale);
+      return scale;
+    }
+
+    applyFixedWidthLayout(probe, source);
+    probe.characters = source.characters;
+    const probeW = Math.max(probe.width, 0);
+    const probeH = Math.max(probe.height, 0);
+    const scale: MeasureScale = {
+      scaleX: clampMeasureScale(probeW > 0 ? originBox.width / probeW : 1),
+      scaleY: clampMeasureScale(probeH > 0 ? originBox.height / probeH : 1),
+      replaced: true,
+    };
+    measureScaleCache.set(source.id, scale);
+    return scale;
+  } finally {
+    probe.remove();
   }
 }
 
@@ -112,7 +312,7 @@ async function collectPartialSegments(
     return [];
   }
 
-  return withFixedWidthProbe(textNode, (probe) => {
+  const visual = await withFixedWidthProbe(textNode, (probe) => {
     const segments: MatchRange[] = [];
     for (const hard of hardSegments) {
       segments.push(
@@ -120,15 +320,15 @@ async function collectPartialSegments(
           if (endExclusive <= 0) {
             return 0;
           }
-          return probeTextHeight(
-            probe,
-            characters.slice(0, endExclusive)
-          );
+          return probeTextHeight(probe, characters.slice(0, endExclusive));
         })
       );
     }
     return segments;
   });
+
+  // If fonts cannot be loaded, keep hard-newline splits only.
+  return visual ?? hardSegments;
 }
 
 /** Height used for y placement; trailing hard newline must not count as an empty line. */
@@ -181,11 +381,14 @@ function probeTextHeight(probe: TextNode, text: string): number {
 async function withFixedWidthProbe<T>(
   source: TextNode,
   run: (probe: TextNode) => T | Promise<T>
-): Promise<T> {
+): Promise<T | null> {
   const probe = source.clone();
   figma.currentPage.appendChild(probe);
   try {
-    await loadTextFonts(probe);
+    const result = await ensureTextFontsLoaded(probe);
+    if (!result.ok) {
+      return null;
+    }
     applyFixedWidthLayout(probe, source);
     return await run(probe);
   } finally {
@@ -204,7 +407,10 @@ async function measureHugSize(
   const probe = source.clone();
   figma.currentPage.appendChild(probe);
   try {
-    await loadTextFonts(probe);
+    const result = await ensureTextFontsLoaded(probe);
+    if (!result.ok) {
+      return { width: 0, height: 0 };
+    }
     probe.textAutoResize = "WIDTH_AND_HEIGHT";
     probe.characters = text;
     return {
@@ -295,7 +501,7 @@ async function createExactHighlight(
   rect.resize(box.width, box.height);
   rect.x = box.x;
   rect.y = box.y;
-  applyHighlightPaint(rect, style);
+  applyHighlightPaint(rect);
   rect.visible = true;
   figma.currentPage.appendChild(rect);
   return rect;
@@ -313,6 +519,8 @@ async function createPartialSegmentRect(
   if (!segmentText) {
     return null;
   }
+
+  const scale = await getMeasureScale(textNode, originBox);
 
   const layout = await withFixedWidthProbe(textNode, (probe) => {
     const prefixHeight = prefixHeightForPlacement(
@@ -369,6 +577,10 @@ async function createPartialSegmentRect(
     };
   });
 
+  if (!layout) {
+    return null;
+  }
+
   const prefixOnLine = characters.slice(layout.visualLineStart, segment.start);
   const lineText = characters.slice(
     layout.visualLineStart,
@@ -381,20 +593,26 @@ async function createPartialSegmentRect(
     measureHugSize(textNode, lineText),
   ]);
 
-  const width = Math.max(segmentSize.width, 1);
-  const height = Math.max(segmentSize.height, lineHeightPx, 1);
-  const x = resolveSegmentX(
+  const rawWidth = Math.max(segmentSize.width, 1);
+  const rawHeight = Math.max(segmentSize.height, lineHeightPx, 1);
+  const rawX = resolveSegmentX(
     textNode,
     originBox,
     prefixSize.width,
-    Math.max(lineSize.width, prefixSize.width + width, 1)
+    Math.max(lineSize.width, prefixSize.width + rawWidth, 1)
   );
+  const rawY = layout.y;
+
+  const width = Math.max(rawWidth * scale.scaleX, 1);
+  const height = Math.max(rawHeight * scale.scaleY, 1);
+  const x = originBox.x + (rawX - originBox.x) * scale.scaleX;
+  const y = originBox.y + (rawY - originBox.y) * scale.scaleY;
 
   const rect = figma.createRectangle();
   rect.resize(width, height);
   rect.x = x;
-  rect.y = layout.y;
-  applyHighlightPaint(rect, style);
+  rect.y = y;
+  applyHighlightPaint(rect);
   rect.visible = true;
   figma.currentPage.appendChild(rect);
   return rect;
@@ -416,6 +634,8 @@ async function createPartialHighlight(
   }
 
   const lineHeightPx = resolveLineHeightPx(textNode);
+  // Warm scale cache once before parallel segment measurement.
+  await getMeasureScale(textNode, box);
   const rectNodes = await Promise.all(
     segments.map((segment) =>
       createPartialSegmentRect(textNode, style, segment, box, lineHeightPx)

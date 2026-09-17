@@ -22,6 +22,8 @@ export type SearchMode = "selection" | "page" | "pinned";
 
 export type HoverHighlightStyle = "component" | "instance";
 
+export type HighlightColor = "red" | "yellow" | "green" | "purple";
+
 export interface HoverHighlightItem {
   nodeId: string;
   style: HoverHighlightStyle;

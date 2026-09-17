@@ -1,17 +1,34 @@
 import "./ui.css";
 import clearIcon from "./assets/clear.svg?raw";
+import pinIcon from "./assets/pin.svg?raw";
 import resetIcon from "./assets/reset.svg?raw";
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
 import type {
   CheckResult,
+  HighlightColor,
+  HoverHighlightItem,
   KeywordQuery,
   PinTarget,
   SearchMode,
+  TextMatch,
 } from "./types";
 
 const DEBOUNCE_MS = 300;
 const MIN_UI_HEIGHT = 320;
 const MAX_UI_HEIGHT = 900;
+const DEFAULT_HIGHLIGHT_COLOR: HighlightColor = "green";
+const HIGHLIGHT_COLOR_SWATCHES: Record<HighlightColor, string> = {
+  red: "#ff3b30",
+  yellow: "#ffcc00",
+  green: "#00c853",
+  purple: "#a154f2",
+};
+const HIGHLIGHT_COLOR_OPTIONS: HighlightColor[] = [
+  "red",
+  "yellow",
+  "green",
+  "purple",
+];
 
 const pinInline = document.getElementById("pin-inline") as HTMLDivElement;
 const pinInputEl = document.getElementById(
@@ -41,10 +58,90 @@ let pinActiveIndex = -1;
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 /** Keywords whose accordion is expanded. */
 const expandedKeywords = new Set<string>();
+/** Keywords whose highlights stay visible. */
+const pinnedKeywords = new Set<string>();
+/** Per-keyword highlight color. */
+const keywordColors = new Map<string, HighlightColor>();
 let lastResults: CheckResult[] = [];
 
 function postToPlugin(message: UiToPluginMessage): void {
   parent.postMessage({ pluginMessage: message }, "*");
+}
+
+function matchToHoverItem(match: TextMatch): HoverHighlightItem {
+  return {
+    nodeId: match.nodeId,
+    style: match.exact ? "component" : "instance",
+    exact: match.exact,
+    ranges: match.ranges,
+  };
+}
+
+function itemsForKeyword(keyword: string): HoverHighlightItem[] {
+  const result = lastResults.find((r) => r.keyword === keyword);
+  if (!result || result.count === 0) {
+    return [];
+  }
+  return result.matches.map(matchToHoverItem);
+}
+
+function collectPinnedItems(): HoverHighlightItem[] {
+  const items: HoverHighlightItem[] = [];
+  for (const keyword of pinnedKeywords) {
+    items.push(...itemsForKeyword(keyword));
+  }
+  return items;
+}
+
+function publishVisibleHighlights(extraItems: HoverHighlightItem[] = []): void {
+  const byKey = new Map<string, HoverHighlightItem>();
+  for (const item of [...collectPinnedItems(), ...extraItems]) {
+    const range = item.ranges[0];
+    const key = range
+      ? `${item.nodeId}:${range.start}:${range.end}`
+      : `${item.nodeId}:exact`;
+    byKey.set(key, item);
+  }
+  const items = [...byKey.values()];
+  if (items.length === 0) {
+    postToPlugin({ type: "CLEAR_HIGHLIGHT" });
+    return;
+  }
+  postToPlugin({ type: "HOVER_HIGHLIGHT", items });
+}
+
+function colorForKeyword(keyword: string): HighlightColor {
+  return keywordColors.get(keyword) ?? DEFAULT_HIGHLIGHT_COLOR;
+}
+
+function applyKeywordColor(keyword: string, color: HighlightColor): void {
+  keywordColors.set(keyword, color);
+  const items = itemsForKeyword(keyword);
+  if (items.length === 0) {
+    return;
+  }
+  postToPlugin({ type: "SET_HIGHLIGHT_COLOR", color, items });
+}
+
+function syncHighlightPrefsAfterSearch(): void {
+  const valid = new Set(lastResults.map((r) => r.keyword));
+  for (const keyword of [...pinnedKeywords]) {
+    if (!valid.has(keyword)) {
+      pinnedKeywords.delete(keyword);
+    }
+  }
+  for (const keyword of [...keywordColors.keys()]) {
+    if (!valid.has(keyword)) {
+      keywordColors.delete(keyword);
+    }
+  }
+  for (const result of lastResults) {
+    if (result.count === 0) {
+      continue;
+    }
+    applyKeywordColor(result.keyword, colorForKeyword(result.keyword));
+  }
+  publishVisibleHighlights();
 }
 
 function showError(message: string | null): void {
@@ -308,18 +405,10 @@ function addKeywordRow(
     if (!result || result.count === 0) {
       return;
     }
-    postToPlugin({
-      type: "HOVER_HIGHLIGHT",
-      items: result.matches.map((m) => ({
-        nodeId: m.nodeId,
-        style: m.exact ? "component" : "instance",
-        exact: m.exact,
-        ranges: m.ranges,
-      })),
-    });
+    publishVisibleHighlights(result.matches.map(matchToHoverItem));
   });
   row.addEventListener("mouseleave", () => {
-    postToPlugin({ type: "CLEAR_HIGHLIGHT" });
+    publishVisibleHighlights();
   });
 
   keywordRowsEl.appendChild(row);
@@ -333,6 +422,153 @@ function pruneExpandedKeywords(results: CheckResult[]): void {
       expandedKeywords.delete(keyword);
     }
   }
+}
+
+function createResultPinButton(result: CheckResult): HTMLButtonElement {
+  const pinBtn = document.createElement("button");
+  pinBtn.type = "button";
+  pinBtn.className = "result-pin";
+  const pinned = pinnedKeywords.has(result.keyword);
+  pinBtn.setAttribute("aria-pressed", pinned ? "true" : "false");
+  pinBtn.classList.toggle("is-on", pinned);
+  pinBtn.title = pinned ? "ハイライト固定を解除" : "ハイライトを固定";
+  pinBtn.setAttribute("aria-label", pinBtn.title);
+  pinBtn.innerHTML = pinIcon;
+  pinBtn.disabled = result.count === 0;
+  pinBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (result.count === 0) {
+      return;
+    }
+    if (pinnedKeywords.has(result.keyword)) {
+      pinnedKeywords.delete(result.keyword);
+    } else {
+      pinnedKeywords.add(result.keyword);
+    }
+    const nowPinned = pinnedKeywords.has(result.keyword);
+    pinBtn.setAttribute("aria-pressed", nowPinned ? "true" : "false");
+    pinBtn.classList.toggle("is-on", nowPinned);
+    pinBtn.title = nowPinned ? "ハイライト固定を解除" : "ハイライトを固定";
+    pinBtn.setAttribute("aria-label", pinBtn.title);
+    publishVisibleHighlights();
+  });
+  return pinBtn;
+}
+
+function closeAllColorMenus(): void {
+  document.querySelectorAll(".result-color-menu").forEach((el) => {
+    (el as HTMLElement).hidden = true;
+  });
+  document.querySelectorAll(".result-color-trigger").forEach((el) => {
+    el.setAttribute("aria-expanded", "false");
+  });
+}
+
+document.addEventListener("pointerdown", (event) => {
+  const target = event.target as Node | null;
+  if (target && (target as Element).closest?.(".result-color")) {
+    return;
+  }
+  closeAllColorMenus();
+});
+
+function setColorTriggerSwatch(
+  trigger: HTMLButtonElement,
+  color: HighlightColor
+): void {
+  const swatch = trigger.querySelector(".result-color-swatch") as HTMLElement | null;
+  if (swatch) {
+    swatch.style.background = HIGHLIGHT_COLOR_SWATCHES[color];
+  }
+  trigger.dataset.color = color;
+}
+
+function createResultColorSelect(result: CheckResult): HTMLDivElement {
+  const wrap = document.createElement("div");
+  wrap.className = "result-color";
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "result-color-trigger";
+  trigger.title = "ハイライト色";
+  trigger.setAttribute("aria-label", "ハイライト色");
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.disabled = result.count === 0;
+
+  const currentSwatch = document.createElement("span");
+  currentSwatch.className = "result-color-swatch";
+  trigger.appendChild(currentSwatch);
+
+  const menu = document.createElement("div");
+  menu.className = "result-color-menu";
+  menu.hidden = true;
+  menu.setAttribute("role", "listbox");
+
+  const current = colorForKeyword(result.keyword);
+  setColorTriggerSwatch(trigger, current);
+
+  for (const color of HIGHLIGHT_COLOR_OPTIONS) {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "result-color-option";
+    option.setAttribute("role", "option");
+    option.dataset.color = color;
+    option.title =
+      color === "red"
+        ? "赤"
+        : color === "yellow"
+          ? "黄"
+          : color === "green"
+            ? "緑"
+            : "紫";
+    option.setAttribute("aria-label", option.title);
+    option.setAttribute(
+      "aria-selected",
+      color === current ? "true" : "false"
+    );
+    const swatch = document.createElement("span");
+    swatch.className = "result-color-swatch";
+    swatch.style.background = HIGHLIGHT_COLOR_SWATCHES[color];
+    option.appendChild(swatch);
+    if (color === current) {
+      option.classList.add("is-selected");
+    }
+    option.addEventListener("click", (event) => {
+      event.stopPropagation();
+      applyKeywordColor(result.keyword, color);
+      setColorTriggerSwatch(trigger, color);
+      menu.querySelectorAll(".result-color-option").forEach((child) => {
+        const btn = child as HTMLButtonElement;
+        const selected = btn.dataset.color === color;
+        btn.classList.toggle("is-selected", selected);
+        btn.setAttribute("aria-selected", selected ? "true" : "false");
+      });
+      menu.hidden = true;
+      trigger.setAttribute("aria-expanded", "false");
+    });
+    menu.appendChild(option);
+  }
+
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (trigger.disabled) {
+      return;
+    }
+    const willOpen = menu.hidden;
+    closeAllColorMenus();
+    if (willOpen) {
+      menu.hidden = false;
+      trigger.setAttribute("aria-expanded", "true");
+    }
+  });
+
+  wrap.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+
+  wrap.append(trigger, menu);
+  return wrap;
 }
 
 function renderResults(results: CheckResult[]): void {
@@ -392,7 +628,14 @@ function renderResults(results: CheckResult[]): void {
         : "一致なし";
     count.disabled = result.count === 0;
 
-    header.append(expandBtn, status, keyword, count);
+    header.append(
+      expandBtn,
+      status,
+      keyword,
+      count,
+      createResultPinButton(result),
+      createResultColorSelect(result)
+    );
 
     const jumpAll = () => {
       if (result.count === 0) {
@@ -418,18 +661,10 @@ function renderResults(results: CheckResult[]): void {
 
     if (result.count > 0) {
       header.addEventListener("mouseenter", () => {
-        postToPlugin({
-          type: "HOVER_HIGHLIGHT",
-          items: result.matches.map((m) => ({
-            nodeId: m.nodeId,
-            style: m.exact ? "component" : "instance",
-            exact: m.exact,
-            ranges: m.ranges,
-          })),
-        });
+        publishVisibleHighlights(result.matches.map(matchToHoverItem));
       });
       header.addEventListener("mouseleave", () => {
-        postToPlugin({ type: "CLEAR_HIGHLIGHT" });
+        publishVisibleHighlights();
       });
     }
 
@@ -456,20 +691,10 @@ function renderResults(results: CheckResult[]): void {
         matchItem.append(name, preview);
 
         matchItem.addEventListener("mouseenter", () => {
-          postToPlugin({
-            type: "HOVER_HIGHLIGHT",
-            items: [
-              {
-                nodeId: match.nodeId,
-                style: match.exact ? "component" : "instance",
-                exact: match.exact,
-                ranges: match.ranges,
-              },
-            ],
-          });
+          publishVisibleHighlights([matchToHoverItem(match)]);
         });
         matchItem.addEventListener("mouseleave", () => {
-          postToPlugin({ type: "CLEAR_HIGHLIGHT" });
+          publishVisibleHighlights();
         });
         matchItem.addEventListener("click", () => {
           postToPlugin({ type: "FOCUS_NODE", nodeId: match.nodeId });
@@ -660,6 +885,7 @@ window.onmessage = (event: MessageEvent) => {
 
   if (msg.type === "ERROR") {
     showError(msg.message);
+    pinnedKeywords.clear();
     postToPlugin({ type: "CLEAR_HIGHLIGHT" });
     renderResults([]);
     return;
@@ -675,6 +901,7 @@ window.onmessage = (event: MessageEvent) => {
   if (msg.type === "SEARCH_RESULT") {
     showError(null);
     renderResults(msg.results);
+    syncHighlightPrefsAfterSearch();
   }
 };
 

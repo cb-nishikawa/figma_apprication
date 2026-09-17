@@ -9,6 +9,7 @@ import {
   buildHighlightPool,
   clearHoverHighlight,
   hideAllHighlights,
+  recolorHighlightItems,
   showHoverHighlight,
 } from "./highlight";
 import { collectPinTargets } from "./pinTargets";
@@ -350,6 +351,11 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
       case "CLEAR_HIGHLIGHT":
         await withHighlightMutation(() => {
           hideAllHighlights();
+        });
+        break;
+      case "SET_HIGHLIGHT_COLOR":
+        await withHighlightMutation(() => {
+          recolorHighlightItems(msg.items, msg.color);
         });
         break;
       case "RESIZE_UI": {

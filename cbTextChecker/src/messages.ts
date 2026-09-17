@@ -1,5 +1,6 @@
 import type {
   CheckResult,
+  HighlightColor,
   HoverHighlightItem,
   HoverHighlightStyle,
   KeywordQuery,
@@ -7,7 +8,7 @@ import type {
   SearchMode,
 } from "./types";
 
-export type { HoverHighlightStyle };
+export type { HighlightColor, HoverHighlightStyle };
 
 export type UiToPluginMessage =
   | { type: "SET_MODE"; mode: SearchMode; pinnedNodeId?: string | null }
@@ -18,6 +19,11 @@ export type UiToPluginMessage =
   | { type: "FOCUS_NODE"; nodeId: string }
   | { type: "HOVER_HIGHLIGHT"; items: HoverHighlightItem[] }
   | { type: "CLEAR_HIGHLIGHT" }
+  | {
+      type: "SET_HIGHLIGHT_COLOR";
+      color: HighlightColor;
+      items: HoverHighlightItem[];
+    }
   | { type: "RESIZE_UI"; height: number };
 
 export type PluginToUiMessage =
