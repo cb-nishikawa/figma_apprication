@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CbTextChecker</title>
+  </head>
+  <body>
+    <div class="app">
+      <section class="section scope-section">
+        <div class="mode-row" role="radiogroup" aria-label="検索範囲">
+          <label class="radio">
+            <input type="radio" name="mode" value="selection" checked />
+            <span>選択</span>
+          </label>
+          <label class="radio">
+            <input type="radio" name="mode" value="page" />
+            <span>ページ</span>
+          </label>
+          <label class="radio">
+            <input type="radio" name="mode" value="pinned" />
+            <span>固定</span>
+          </label>
+          <div id="pin-inline" class="pin-inline" hidden>
+            <div class="pin-combobox">
+              <input
+                id="pin-combobox-input"
+                class="pin-combobox-input"
+                type="text"
+                role="combobox"
+                aria-autocomplete="list"
+                aria-controls="pin-combobox-list"
+                aria-expanded="false"
+                aria-label="固定先"
+                placeholder="名前で検索 / 選択"
+                autocomplete="off"
+              />
+              <ul
+                id="pin-combobox-list"
+                class="pin-combobox-list"
+                role="listbox"
+                hidden
+              ></ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <hr class="divider" />
+
+      <section class="section keywords-section" aria-labelledby="keywords-label">
+        <div class="keywords-head">
+          <h2 id="keywords-label">チェックする文字列</h2>
+          <div class="keywords-head-actions">
+            <button
+              id="add-keyword"
+              class="btn-icon"
+              type="button"
+              title="行を追加"
+              aria-label="行を追加"
+            >
+              ＋
+            </button>
+            <button
+              id="clear-keywords"
+              class="btn-icon"
+              type="button"
+              title="すべてクリア"
+              aria-label="すべてクリア"
+            ></button>
+            <button
+              id="reset-search"
+              class="btn-icon"
+              type="button"
+              title="再検索"
+              aria-label="再検索"
+            ></button>
+          </div>
+        </div>
+        <div id="keyword-rows" class="keyword-rows"></div>
+      </section>
+
+      <hr class="divider" />
+
+      <section class="section results-section" aria-labelledby="results-label">
+        <h2 id="results-label">チェック結果</h2>
+        <p id="error" class="error" hidden></p>
+        <ul id="results" class="results"></ul>
+      </section>
+    </div>
+    <div
+      id="resize-handle"
+      class="resize-handle"
+      title="高さをドラッグで調整"
+      aria-label="高さをドラッグで調整"
+      role="separator"
+      aria-orientation="horizontal"
+    ></div>
+    <script type="module" src="./ui.ts"></script>
+  </body>
+</html>

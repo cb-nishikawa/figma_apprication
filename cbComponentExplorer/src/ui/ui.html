@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Component Explorer</title>
+    <!-- inject:css -->
+  </head>
+  <body>
+    <header class="header">
+      <div class="header-row">
+        <h1 class="title">Component Explorer</h1>
+        <span class="build-id" title="Build identifier">build 12</span>
+      </div>
+    </header>
+
+    <div id="view-components" class="view">
+      <section class="panel" aria-labelledby="search-target-label">
+        <h2 id="search-target-label" class="section-title">現在の検索対象</h2>
+        <div class="mode-row" role="radiogroup" aria-labelledby="search-target-label">
+          <label class="radio">
+            <input type="radio" name="mode" value="selection" checked />
+            <span>選択</span>
+          </label>
+          <label class="radio">
+            <input type="radio" name="mode" value="page" />
+            <span>ページ</span>
+          </label>
+          <label class="radio">
+            <input type="radio" name="mode" value="pinned" />
+            <span>固定</span>
+          </label>
+        </div>
+        <div id="pin-row" class="pin-row" hidden>
+          <label class="pin-label" for="pin-combobox-input">固定先</label>
+          <div class="pin-combobox">
+            <input
+              id="pin-combobox-input"
+              class="pin-combobox-input"
+              type="text"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-controls="pin-combobox-list"
+              aria-expanded="false"
+              placeholder="名前で検索 / 選択"
+              autocomplete="off"
+            />
+            <ul
+              id="pin-combobox-list"
+              class="pin-combobox-list"
+              role="listbox"
+              hidden
+            ></ul>
+          </div>
+        </div>
+        <p id="status" class="status" hidden></p>
+      </section>
+
+      <section class="panel panel-fill" aria-labelledby="components-label">
+        <div class="components-header">
+          <h2 id="components-label" class="section-title">Components</h2>
+          <div
+            class="sort-row"
+            role="radiogroup"
+            aria-label="並び替え"
+          >
+            <span class="sort-label">並び替え</span>
+            <label class="radio">
+              <input type="radio" name="sort" value="layer" checked />
+              <span>レイヤー順</span>
+            </label>
+            <label class="radio">
+              <input type="radio" name="sort" value="name" />
+              <span>名前順</span>
+            </label>
+          </div>
+        </div>
+        <div id="components" class="list list-scroll"></div>
+      </section>
+    </div>
+
+    <div id="view-instances" class="view" hidden>
+      <section class="panel">
+        <button type="button" id="back-btn" class="back-btn">← 戻る</button>
+        <p id="instance-heading" class="instance-heading"></p>
+      </section>
+
+      <section class="panel panel-fill" aria-labelledby="instances-label">
+        <h2 id="instances-label" class="section-title">インスタンス一覧</h2>
+        <div id="instances" class="list list-scroll"></div>
+        <p id="instances-empty" class="empty" hidden></p>
+      </section>
+    </div>
+
+    <!-- inject:js -->
+  </body>
+</html>

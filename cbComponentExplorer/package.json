@@ -1,0 +1,16 @@
+{
+  "name": "cb-component-explorer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Figma plugin to explore Component / Instance usage within selection or page",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.138.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.2"
+  }
+}
