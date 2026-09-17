@@ -1,15 +1,33 @@
 import type { PinTarget } from "./types";
 
-type PinKind = "SECTION" | "FRAME";
+type PinKind = "SECTION" | "FRAME" | "INSTANCE" | "GROUP";
 
 function kindLabel(kind: PinKind): string {
-  return kind === "SECTION" ? "Section" : "Frame";
+  switch (kind) {
+    case "SECTION":
+      return "Section";
+    case "FRAME":
+      return "Frame";
+    case "INSTANCE":
+      return "Instance";
+    case "GROUP":
+      return "Group";
+  }
+}
+
+function isPinKind(type: string): type is PinKind {
+  return (
+    type === "SECTION" ||
+    type === "FRAME" ||
+    type === "INSTANCE" ||
+    type === "GROUP"
+  );
 }
 
 function parentContextName(node: BaseNode): string | null {
   let current: BaseNode | null = node.parent;
   while (current && current.type !== "PAGE" && current.type !== "DOCUMENT") {
-    if (current.type === "SECTION" || current.type === "FRAME") {
+    if (isPinKind(current.type)) {
       return current.name;
     }
     current = current.parent;
@@ -34,7 +52,7 @@ function buildLabel(
 
 export function collectPinTargets(): PinTarget[] {
   const nodes = figma.currentPage.findAllWithCriteria({
-    types: ["SECTION", "FRAME"],
+    types: ["SECTION", "FRAME", "INSTANCE", "GROUP"],
   }) as Array<SceneNode & { type: PinKind }>;
 
   const nameCounts = new Map<string, number>();

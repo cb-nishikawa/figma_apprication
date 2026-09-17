@@ -20,6 +20,7 @@ const NO_CATEGORIES: IgnoreCategories = {
   kinsoku: false,
   symbol: false,
   punct: false,
+  whitespace: false,
 };
 
 export interface MatchedTextPair {
@@ -221,31 +222,54 @@ function toMatch(
   };
 }
 
-function pairsToMatches(pairs: MatchedTextPair[], exact: boolean): TextMatch[] {
-  const matches: TextMatch[] = [];
-  for (const pair of pairs) {
-    matches.push(toMatch(pair.a, pair.rangesA, exact, "A"));
-    matches.push(toMatch(pair.b, pair.rangesB, exact, "B"));
-  }
-  return matches;
+function pairKeyword(node: TextNodeLike): string {
+  const flat = node.characters.replace(/\s+/g, " ").trim();
+  return flat.length > 0 ? flat : "(空)";
 }
 
-/** Build CheckResult[] for UI accordion (完全一致 / 部分一致 / Aのみ / Bのみ). */
-export function compareDiffToResults(diff: TextCompareDiff): CheckResult[] {
-  const exactMatches = pairsToMatches(diff.matchedExact, true);
-  const partialMatches = pairsToMatches(diff.matchedPartial, false);
+function pairsToChildren(
+  pairs: MatchedTextPair[],
+  exact: boolean
+): CheckResult[] {
+  const usedKeywords = new Map<string, number>();
+  return pairs.map((pair) => {
+    const matches = [
+      toMatch(pair.a, pair.rangesA, exact, "A"),
+      toMatch(pair.b, pair.rangesB, exact, "B"),
+    ];
+    const base = pairKeyword(pair.a);
+    const seen = usedKeywords.get(base) ?? 0;
+    usedKeywords.set(base, seen + 1);
+    const keyword = seen === 0 ? base : `${base} (${seen + 1})`;
+    return {
+      keyword,
+      count: matches.length,
+      matches,
+    };
+  });
+}
 
+function categoryResult(
+  keyword: string,
+  children: CheckResult[]
+): CheckResult {
+  const matches = children.flatMap((child) => child.matches);
+  return {
+    keyword,
+    count: matches.length,
+    matches,
+    children,
+  };
+}
+
+/** Build CheckResult[] for UI accordion (nested exact/partial + Aのみ / Bのみ). */
+export function compareDiffToResults(diff: TextCompareDiff): CheckResult[] {
   return [
-    {
-      keyword: COMPARE_EXACT,
-      count: exactMatches.length,
-      matches: exactMatches,
-    },
-    {
-      keyword: COMPARE_PARTIAL,
-      count: partialMatches.length,
-      matches: partialMatches,
-    },
+    categoryResult(COMPARE_EXACT, pairsToChildren(diff.matchedExact, true)),
+    categoryResult(
+      COMPARE_PARTIAL,
+      pairsToChildren(diff.matchedPartial, false)
+    ),
     {
       keyword: COMPARE_ONLY_A,
       count: diff.onlyA.length,

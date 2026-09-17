@@ -12,12 +12,12 @@ import {
 import { DEFAULT_IGNORE_CATEGORIES } from "../src/types";
 
 describe("normalizeForSearch", () => {
-  it("removes newlines and whitespace", () => {
+  it("removes newlines but keeps whitespace", () => {
     expect(normalizeForSearch("お問い合わせは\nこちら")).toBe(
       "お問い合わせはこちら"
     );
     expect(normalizeForSearch("お問い 合わせ　は\tこちら")).toBe(
-      "お問い合わせはこちら"
+      "お問い 合わせ　は\tこちら"
     );
   });
 });
@@ -166,8 +166,40 @@ describe("isExactMatch", () => {
         kinsoku: false,
         symbol: false,
         punct: false,
+        whitespace: false,
       })
     ).toBe(true);
+  });
+
+  it("keeps space differences when whitespace category is off", () => {
+    expect(isExactMatch("hello world", "helloworld", true)).toBe(false);
+    expect(
+      isExactMatch("hello world", "helloworld", true, [], {
+        ...DEFAULT_IGNORE_CATEGORIES,
+        whitespace: false,
+      })
+    ).toBe(false);
+  });
+
+  it("ignores spaces when whitespace category is on", () => {
+    expect(
+      isExactMatch("hello world", "helloworld", true, [], {
+        emoji: false,
+        kinsoku: false,
+        symbol: false,
+        punct: false,
+        whitespace: true,
+      })
+    ).toBe(true);
+    expect(
+      findMatches("お問い 合わせ", "お問い合わせ", true, [], {
+        emoji: false,
+        kinsoku: false,
+        symbol: false,
+        punct: false,
+        whitespace: true,
+      })
+    ).toEqual([{ start: 0, end: 7 }]);
   });
 });
 

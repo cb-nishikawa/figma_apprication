@@ -151,13 +151,6 @@
               title="すべてクリア"
               aria-label="すべてクリア"
             ></button>
-            <button
-              id="reset-search"
-              class="btn-icon"
-              type="button"
-              title="再検索"
-              aria-label="再検索"
-            ></button>
           </div>
         </div>
         <div id="keyword-rows" class="keyword-rows"></div>
@@ -206,6 +199,10 @@
               <input type="checkbox" id="ignore-punct" checked />
               <span>句読点</span>
             </label>
+            <label class="ignore-check">
+              <input type="checkbox" id="ignore-whitespace" />
+              <span>空白</span>
+            </label>
           </div>
         </div>
       </section>
@@ -213,7 +210,16 @@
       <hr class="divider" />
 
       <section class="section results-section" aria-labelledby="results-label">
-        <h2 id="results-label">チェック結果</h2>
+        <div class="results-head">
+          <h2 id="results-label">チェック結果</h2>
+          <button
+            id="reset-search"
+            class="btn-icon"
+            type="button"
+            title="再検索"
+            aria-label="再検索"
+          ></button>
+        </div>
         <p id="error" class="error" hidden></p>
         <ul id="results" class="results"></ul>
       </section>

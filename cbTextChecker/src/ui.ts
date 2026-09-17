@@ -100,6 +100,9 @@ const ignoreSymbolEl = document.getElementById(
 const ignorePunctEl = document.getElementById(
   "ignore-punct"
 ) as HTMLInputElement;
+const ignoreWhitespaceEl = document.getElementById(
+  "ignore-whitespace"
+) as HTMLInputElement;
 const keywordRowsEl = document.getElementById("keyword-rows") as HTMLDivElement;
 const addKeywordBtn = document.getElementById("add-keyword") as HTMLButtonElement;
 const clearKeywordsBtn = document.getElementById(
@@ -149,12 +152,72 @@ function matchToHoverItem(match: TextMatch): HoverHighlightItem {
   };
 }
 
+function resultKey(result: CheckResult, parentKey?: string): string {
+  return parentKey ? `${parentKey}::${result.keyword}` : result.keyword;
+}
+
+function findResultByKey(
+  results: CheckResult[],
+  key: string,
+  parentKey?: string
+): CheckResult | null {
+  for (const result of results) {
+    const keyForResult = resultKey(result, parentKey);
+    if (keyForResult === key) {
+      return result;
+    }
+    if (result.children) {
+      const nested = findResultByKey(result.children, key, keyForResult);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+  return null;
+}
+
+function collectResultMatches(result: CheckResult): TextMatch[] {
+  if (result.children && result.children.length > 0) {
+    return result.children.flatMap(collectResultMatches);
+  }
+  return result.matches;
+}
+
+function collectResultKeys(
+  results: CheckResult[],
+  parentKey?: string
+): string[] {
+  const keys: string[] = [];
+  for (const result of results) {
+    const key = resultKey(result, parentKey);
+    keys.push(key);
+    if (result.children) {
+      keys.push(...collectResultKeys(result.children, key));
+    }
+  }
+  return keys;
+}
+
+function walkResults(
+  results: CheckResult[],
+  visit: (result: CheckResult, key: string) => void,
+  parentKey?: string
+): void {
+  for (const result of results) {
+    const key = resultKey(result, parentKey);
+    visit(result, key);
+    if (result.children) {
+      walkResults(result.children, visit, key);
+    }
+  }
+}
+
 function itemsForKeyword(keyword: string): HoverHighlightItem[] {
-  const result = lastResults.find((r) => r.keyword === keyword);
+  const result = findResultByKey(lastResults, keyword);
   if (!result || result.count === 0) {
     return [];
   }
-  return result.matches.map(matchToHoverItem);
+  return collectResultMatches(result).map(matchToHoverItem);
 }
 
 function collectPinnedItems(): HoverHighlightItem[] {
@@ -192,11 +255,19 @@ function defaultColorForResult(result: CheckResult): HighlightColor {
   if (result.keyword === COMPARE_PARTIAL) {
     return "yellow";
   }
+  if (result.matches.length > 0 && result.matches.every((m) => m.side)) {
+    if (result.matches.every((m) => m.exact)) {
+      return "green";
+    }
+    if (result.matches.every((m) => !m.exact)) {
+      return "yellow";
+    }
+  }
   return DEFAULT_HIGHLIGHT_COLOR;
 }
 
-function colorForResult(result: CheckResult): HighlightColor {
-  return keywordColors.get(result.keyword) ?? defaultColorForResult(result);
+function colorForResult(result: CheckResult, key: string): HighlightColor {
+  return keywordColors.get(key) ?? defaultColorForResult(result);
 }
 
 function applyKeywordColor(keyword: string, color: HighlightColor): void {
@@ -209,7 +280,7 @@ function applyKeywordColor(keyword: string, color: HighlightColor): void {
 }
 
 function syncHighlightPrefsAfterSearch(): void {
-  const valid = new Set(lastResults.map((r) => r.keyword));
+  const valid = new Set(collectResultKeys(lastResults));
   for (const keyword of [...pinnedKeywords]) {
     if (!valid.has(keyword)) {
       pinnedKeywords.delete(keyword);
@@ -220,12 +291,12 @@ function syncHighlightPrefsAfterSearch(): void {
       keywordColors.delete(keyword);
     }
   }
-  for (const result of lastResults) {
+  walkResults(lastResults, (result, key) => {
     if (result.count === 0) {
-      continue;
+      return;
     }
-    applyKeywordColor(result.keyword, colorForResult(result));
-  }
+    applyKeywordColor(key, colorForResult(result, key));
+  });
   publishVisibleHighlights();
 }
 
@@ -279,6 +350,7 @@ function collectIgnoreCategories(): IgnoreCategories {
     kinsoku: ignoreKinsokuEl.checked,
     symbol: ignoreSymbolEl.checked,
     punct: ignorePunctEl.checked,
+    whitespace: ignoreWhitespaceEl.checked,
   };
 }
 
@@ -755,7 +827,7 @@ function addKeywordRow(
 }
 
 function pruneExpandedKeywords(results: CheckResult[]): void {
-  const valid = new Set(results.map((r) => r.keyword));
+  const valid = new Set(collectResultKeys(results));
   for (const keyword of [...expandedKeywords]) {
     if (!valid.has(keyword)) {
       expandedKeywords.delete(keyword);
@@ -763,11 +835,14 @@ function pruneExpandedKeywords(results: CheckResult[]): void {
   }
 }
 
-function createResultPinButton(result: CheckResult): HTMLButtonElement {
+function createResultPinButton(
+  result: CheckResult,
+  key: string
+): HTMLButtonElement {
   const pinBtn = document.createElement("button");
   pinBtn.type = "button";
   pinBtn.className = "result-pin";
-  const pinned = pinnedKeywords.has(result.keyword);
+  const pinned = pinnedKeywords.has(key);
   pinBtn.setAttribute("aria-pressed", pinned ? "true" : "false");
   pinBtn.classList.toggle("is-on", pinned);
   pinBtn.title = pinned ? "ハイライト固定を解除" : "ハイライトを固定";
@@ -779,12 +854,12 @@ function createResultPinButton(result: CheckResult): HTMLButtonElement {
     if (result.count === 0) {
       return;
     }
-    if (pinnedKeywords.has(result.keyword)) {
-      pinnedKeywords.delete(result.keyword);
+    if (pinnedKeywords.has(key)) {
+      pinnedKeywords.delete(key);
     } else {
-      pinnedKeywords.add(result.keyword);
+      pinnedKeywords.add(key);
     }
-    const nowPinned = pinnedKeywords.has(result.keyword);
+    const nowPinned = pinnedKeywords.has(key);
     pinBtn.setAttribute("aria-pressed", nowPinned ? "true" : "false");
     pinBtn.classList.toggle("is-on", nowPinned);
     pinBtn.title = nowPinned ? "ハイライト固定を解除" : "ハイライトを固定";
@@ -822,7 +897,10 @@ function setColorTriggerSwatch(
   trigger.dataset.color = color;
 }
 
-function createResultColorSelect(result: CheckResult): HTMLDivElement {
+function createResultColorSelect(
+  result: CheckResult,
+  key: string
+): HTMLDivElement {
   const wrap = document.createElement("div");
   wrap.className = "result-color";
 
@@ -844,7 +922,7 @@ function createResultColorSelect(result: CheckResult): HTMLDivElement {
   menu.hidden = true;
   menu.setAttribute("role", "listbox");
 
-  const current = colorForResult(result);
+  const current = colorForResult(result, key);
   setColorTriggerSwatch(trigger, current);
 
   for (const color of HIGHLIGHT_COLOR_OPTIONS) {
@@ -875,7 +953,7 @@ function createResultColorSelect(result: CheckResult): HTMLDivElement {
     }
     option.addEventListener("click", (event) => {
       event.stopPropagation();
-      applyKeywordColor(result.keyword, color);
+      applyKeywordColor(key, color);
       setColorTriggerSwatch(trigger, color);
       menu.querySelectorAll(".result-color-option").forEach((child) => {
         const btn = child as HTMLButtonElement;
@@ -910,6 +988,159 @@ function createResultColorSelect(result: CheckResult): HTMLDivElement {
   return wrap;
 }
 
+function createMatchList(result: CheckResult): HTMLUListElement {
+  const matchList = document.createElement("ul");
+  matchList.className = "match-list";
+
+  for (const match of result.matches) {
+    const matchItem = document.createElement("li");
+    matchItem.className = "match-item";
+    matchItem.title = "クリックでこのテキストへジャンプ";
+
+    const head = document.createElement("div");
+    head.className = "match-item-head";
+
+    if (match.side) {
+      const side = document.createElement("span");
+      side.className = "match-side";
+      side.textContent = match.side;
+      head.append(side);
+    }
+
+    const name = document.createElement("span");
+    name.className = "match-name";
+    name.textContent = match.preview || result.keyword;
+    name.title = match.nodeName;
+    head.append(name);
+
+    const preview = document.createElement("span");
+    preview.className = "match-preview";
+    preview.textContent = match.nodeName;
+
+    matchItem.append(head, preview);
+
+    matchItem.addEventListener("mouseenter", () => {
+      publishVisibleHighlights([matchToHoverItem(match)]);
+    });
+    matchItem.addEventListener("mouseleave", () => {
+      publishVisibleHighlights();
+    });
+    matchItem.addEventListener("click", () => {
+      postToPlugin({ type: "FOCUS_NODE", nodeId: match.nodeId });
+    });
+
+    matchList.appendChild(matchItem);
+  }
+
+  return matchList;
+}
+
+function createResultGroup(
+  result: CheckResult,
+  parentKey?: string
+): HTMLLIElement {
+  const key = resultKey(result, parentKey);
+  const li = document.createElement("li");
+  li.className = "result-group";
+  if (result.count === 0) {
+    li.classList.add("is-empty");
+  }
+  if (parentKey) {
+    li.classList.add("is-nested");
+  }
+
+  const header = document.createElement("div");
+  header.className = "result-header";
+
+  const expandBtn = document.createElement("button");
+  expandBtn.type = "button";
+  expandBtn.className = "result-expand";
+  expandBtn.setAttribute("aria-label", "詳細を開閉");
+  const isExpanded = result.count > 0 && expandedKeywords.has(key);
+  expandBtn.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+  expandBtn.disabled = result.count === 0;
+  expandBtn.textContent = isExpanded ? "▾" : "▸";
+
+  const status = document.createElement("span");
+  status.className = `status ${result.count > 0 ? "ok" : "ng"}`;
+  status.textContent = result.count > 0 ? "✓" : "✕";
+
+  const keyword = document.createElement("button");
+  keyword.type = "button";
+  keyword.className = "keyword";
+  keyword.textContent = result.keyword;
+  keyword.title =
+    result.count > 0 ? "クリックで該当テキストへジャンプ" : "一致なし";
+  keyword.disabled = result.count === 0;
+
+  const count = document.createElement("button");
+  count.type = "button";
+  count.className = "count";
+  count.textContent = `${result.count}件`;
+  count.title =
+    result.count > 0 ? "クリックで該当テキストへジャンプ" : "一致なし";
+  count.disabled = result.count === 0;
+
+  header.append(
+    expandBtn,
+    status,
+    keyword,
+    count,
+    createResultPinButton(result, key),
+    createResultColorSelect(result, key)
+  );
+
+  const jumpAll = () => {
+    if (result.count === 0) {
+      return;
+    }
+    postToPlugin({ type: "FOCUS_RESULT", keyword: key });
+  };
+
+  keyword.addEventListener("click", jumpAll);
+  count.addEventListener("click", jumpAll);
+
+  expandBtn.addEventListener("click", () => {
+    if (result.count === 0) {
+      return;
+    }
+    if (expandedKeywords.has(key)) {
+      expandedKeywords.delete(key);
+    } else {
+      expandedKeywords.add(key);
+    }
+    renderResults(lastResults);
+  });
+
+  if (result.count > 0) {
+    header.addEventListener("mouseenter", () => {
+      publishVisibleHighlights(
+        collectResultMatches(result).map(matchToHoverItem)
+      );
+    });
+    header.addEventListener("mouseleave", () => {
+      publishVisibleHighlights();
+    });
+  }
+
+  li.appendChild(header);
+
+  if (isExpanded) {
+    if (result.children && result.children.length > 0) {
+      const childList = document.createElement("ul");
+      childList.className = "result-children";
+      for (const child of result.children) {
+        childList.appendChild(createResultGroup(child, key));
+      }
+      li.appendChild(childList);
+    } else {
+      li.appendChild(createMatchList(result));
+    }
+  }
+
+  return li;
+}
+
 function renderResults(results: CheckResult[]): void {
   lastResults = results;
   pruneExpandedKeywords(results);
@@ -924,139 +1155,7 @@ function renderResults(results: CheckResult[]): void {
   }
 
   for (const result of results) {
-    const li = document.createElement("li");
-    li.className = "result-group";
-    if (result.count === 0) {
-      li.classList.add("is-empty");
-    }
-
-    const header = document.createElement("div");
-    header.className = "result-header";
-
-    const expandBtn = document.createElement("button");
-    expandBtn.type = "button";
-    expandBtn.className = "result-expand";
-    expandBtn.setAttribute("aria-label", "詳細を開閉");
-    const isExpanded =
-      result.count > 0 && expandedKeywords.has(result.keyword);
-    expandBtn.setAttribute("aria-expanded", isExpanded ? "true" : "false");
-    expandBtn.disabled = result.count === 0;
-    expandBtn.textContent = isExpanded ? "▾" : "▸";
-
-    const status = document.createElement("span");
-    status.className = `status ${result.count > 0 ? "ok" : "ng"}`;
-    status.textContent = result.count > 0 ? "✓" : "✕";
-
-    const keyword = document.createElement("button");
-    keyword.type = "button";
-    keyword.className = "keyword";
-    keyword.textContent = result.keyword;
-    keyword.title =
-      result.count > 0
-        ? "クリックで該当テキストへジャンプ"
-        : "一致なし";
-    keyword.disabled = result.count === 0;
-
-    const count = document.createElement("button");
-    count.type = "button";
-    count.className = "count";
-    count.textContent = `${result.count}件`;
-    count.title =
-      result.count > 0
-        ? "クリックで該当テキストへジャンプ"
-        : "一致なし";
-    count.disabled = result.count === 0;
-
-    header.append(
-      expandBtn,
-      status,
-      keyword,
-      count,
-      createResultPinButton(result),
-      createResultColorSelect(result)
-    );
-
-    const jumpAll = () => {
-      if (result.count === 0) {
-        return;
-      }
-      postToPlugin({ type: "FOCUS_RESULT", keyword: result.keyword });
-    };
-
-    keyword.addEventListener("click", jumpAll);
-    count.addEventListener("click", jumpAll);
-
-    expandBtn.addEventListener("click", () => {
-      if (result.count === 0) {
-        return;
-      }
-      if (expandedKeywords.has(result.keyword)) {
-        expandedKeywords.delete(result.keyword);
-      } else {
-        expandedKeywords.add(result.keyword);
-      }
-      renderResults(lastResults);
-    });
-
-    if (result.count > 0) {
-      header.addEventListener("mouseenter", () => {
-        publishVisibleHighlights(result.matches.map(matchToHoverItem));
-      });
-      header.addEventListener("mouseleave", () => {
-        publishVisibleHighlights();
-      });
-    }
-
-    li.appendChild(header);
-
-    if (isExpanded) {
-      const matchList = document.createElement("ul");
-      matchList.className = "match-list";
-
-      for (const match of result.matches) {
-        const matchItem = document.createElement("li");
-        matchItem.className = "match-item";
-        matchItem.title = "クリックでこのテキストへジャンプ";
-
-        const head = document.createElement("div");
-        head.className = "match-item-head";
-
-        if (match.side) {
-          const side = document.createElement("span");
-          side.className = "match-side";
-          side.textContent = match.side;
-          head.append(side);
-        }
-
-        const name = document.createElement("span");
-        name.className = "match-name";
-        name.textContent = match.preview || result.keyword;
-        name.title = match.nodeName;
-        head.append(name);
-
-        const preview = document.createElement("span");
-        preview.className = "match-preview";
-        preview.textContent = match.nodeName;
-
-        matchItem.append(head, preview);
-
-        matchItem.addEventListener("mouseenter", () => {
-          publishVisibleHighlights([matchToHoverItem(match)]);
-        });
-        matchItem.addEventListener("mouseleave", () => {
-          publishVisibleHighlights();
-        });
-        matchItem.addEventListener("click", () => {
-          postToPlugin({ type: "FOCUS_NODE", nodeId: match.nodeId });
-        });
-
-        matchList.appendChild(matchItem);
-      }
-
-      li.appendChild(matchList);
-    }
-
-    resultsEl.appendChild(li);
+    resultsEl.appendChild(createResultGroup(result));
   }
 }
 
@@ -1122,12 +1221,14 @@ ignoreEmojiEl.addEventListener("change", onIgnoreOptionsChanged);
 ignoreKinsokuEl.addEventListener("change", onIgnoreOptionsChanged);
 ignoreSymbolEl.addEventListener("change", onIgnoreOptionsChanged);
 ignorePunctEl.addEventListener("change", onIgnoreOptionsChanged);
+ignoreWhitespaceEl.addEventListener("change", onIgnoreOptionsChanged);
 
 // Ensure defaults match DEFAULT_IGNORE_CATEGORIES
 ignoreEmojiEl.checked = DEFAULT_IGNORE_CATEGORIES.emoji;
 ignoreKinsokuEl.checked = DEFAULT_IGNORE_CATEGORIES.kinsoku;
 ignoreSymbolEl.checked = DEFAULT_IGNORE_CATEGORIES.symbol;
 ignorePunctEl.checked = DEFAULT_IGNORE_CATEGORIES.punct;
+ignoreWhitespaceEl.checked = DEFAULT_IGNORE_CATEGORIES.whitespace;
 
 pinInputEl.addEventListener("focus", () => {
   openPinList();

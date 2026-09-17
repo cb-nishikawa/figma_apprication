@@ -6,6 +6,7 @@ import type {
   IgnoreCategories,
   KeywordQuery,
   SearchMode,
+  TextMatch,
 } from "./types";
 import { DEFAULT_IGNORE_CATEGORIES } from "./types";
 import { compareDiffToResults, compareTextNodes } from "./compare";
@@ -72,8 +73,15 @@ function postToUi(message: PluginToUiMessage): void {
   figma.ui.postMessage(message);
 }
 
-function isPinTargetNode(node: BaseNode): node is FrameNode | SectionNode {
-  return node.type === "FRAME" || node.type === "SECTION";
+function isPinTargetNode(
+  node: BaseNode
+): node is FrameNode | SectionNode | InstanceNode | GroupNode {
+  return (
+    node.type === "FRAME" ||
+    node.type === "SECTION" ||
+    node.type === "INSTANCE" ||
+    node.type === "GROUP"
+  );
 }
 
 function isEffectivelyVisible(node: BaseNode): boolean {
@@ -124,6 +132,25 @@ function makeRangePreview(characters: string, start: number, end: number): strin
   return makePreview(slice);
 }
 
+function enrichMatches(
+  matches: TextMatch[],
+  nodeById: Map<string, TextNode>
+): TextMatch[] {
+  return matches.map((match) => {
+    const node = nodeById.get(match.nodeId);
+    const characters = node?.characters ?? "";
+    const range = match.ranges[0];
+    const preview = range
+      ? makeRangePreview(characters, range.start, range.end)
+      : makePreview(characters);
+    return {
+      ...match,
+      nodeName: node?.name || "(untitled)",
+      preview,
+    };
+  });
+}
+
 function enrichResults(
   results: CheckResult[],
   nodes: TextNode[]
@@ -131,19 +158,10 @@ function enrichResults(
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
   return results.map((result) => ({
     ...result,
-    matches: result.matches.map((match) => {
-      const node = nodeById.get(match.nodeId);
-      const characters = node?.characters ?? "";
-      const range = match.ranges[0];
-      const preview = range
-        ? makeRangePreview(characters, range.start, range.end)
-        : makePreview(characters);
-      return {
-        ...match,
-        nodeName: node?.name || "(untitled)",
-        preview,
-      };
-    }),
+    matches: enrichMatches(result.matches, nodeById),
+    children: result.children
+      ? enrichResults(result.children, nodes)
+      : undefined,
   }));
 }
 
@@ -179,7 +197,7 @@ function postCompareState(): void {
   });
 }
 
-/** Prefer selected SECTION/FRAME, else nearest SECTION/FRAME ancestor. */
+/** Prefer selected pin target, else nearest pin-target ancestor. */
 function resolvePinTargetFromSelection(): string | null {
   const selection = figma.currentPage.selection;
   for (const node of selection) {
@@ -238,6 +256,10 @@ async function getSearchNodes(): Promise<TextNode[] | { error: string }> {
 function resultsToHighlightItems(results: CheckResult[]): HoverHighlightItem[] {
   const items: HoverHighlightItem[] = [];
   for (const result of results) {
+    if (result.children && result.children.length > 0) {
+      items.push(...resultsToHighlightItems(result.children));
+      continue;
+    }
     for (const match of result.matches) {
       items.push({
         nodeId: match.nodeId,
@@ -248,6 +270,37 @@ function resultsToHighlightItems(results: CheckResult[]): HoverHighlightItem[] {
     }
   }
   return items;
+}
+
+function resultKey(result: CheckResult, parentKey?: string): string {
+  return parentKey ? `${parentKey}::${result.keyword}` : result.keyword;
+}
+
+function findResultByKey(
+  results: CheckResult[],
+  key: string,
+  parentKey?: string
+): CheckResult | null {
+  for (const result of results) {
+    const keyForResult = resultKey(result, parentKey);
+    if (keyForResult === key) {
+      return result;
+    }
+    if (result.children) {
+      const nested = findResultByKey(result.children, key, keyForResult);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+  return null;
+}
+
+function collectResultMatches(result: CheckResult): TextMatch[] {
+  if (result.children && result.children.length > 0) {
+    return result.children.flatMap(collectResultMatches);
+  }
+  return result.matches;
 }
 
 async function handleSearch(
@@ -307,7 +360,9 @@ async function handleSearch(
 async function resolveCompareRoot(
   nodeId: string | null,
   label: string
-): Promise<FrameNode | SectionNode | { error: string }> {
+): Promise<
+  FrameNode | SectionNode | InstanceNode | GroupNode | { error: string }
+> {
   if (!nodeId) {
     return { error: `${label} が未選択です` };
   }
@@ -385,13 +440,17 @@ async function rerunSearch(): Promise<void> {
 }
 
 async function handleFocus(keyword: string): Promise<void> {
-  const result = lastResults.find((r) => r.keyword === keyword);
-  if (!result || result.matches.length === 0) {
+  const result = findResultByKey(lastResults, keyword);
+  if (!result) {
+    return;
+  }
+  const matches = collectResultMatches(result);
+  if (matches.length === 0) {
     return;
   }
 
   const nodes: SceneNode[] = [];
-  for (const match of result.matches) {
+  for (const match of matches) {
     const node = await figma.getNodeByIdAsync(match.nodeId);
     if (node && "visible" in node) {
       nodes.push(node as SceneNode);

@@ -16,10 +16,14 @@ const NO_CATEGORIES: IgnoreCategories = {
   kinsoku: false,
   symbol: false,
   punct: false,
+  whitespace: false,
 };
 
-/** Characters removed/ignored during search normalization. */
-const IGNORE_CHARS = /[\n\r\t \u3000]/;
+/** Newline characters removed when ignoreNewlines is true. */
+const NEWLINE_CHARS = /[\n\r]/;
+
+/** Spaces / tabs removed when categories.whitespace is true. */
+const WHITESPACE_CHARS = /[ \t\u3000]/;
 
 /** Representative Japanese kinsoku / line-break sensitive characters. */
 export const KINSOKU_CHARS = new Set(
@@ -42,8 +46,12 @@ const ASCII_SYMBOL = /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/;
 const FULLWIDTH_SYMBOL =
   /[！＂＃＄％＆＇（）＊＋，－．／：；＜＝＞？＠［＼］＾＿｀｛｜｝～]/;
 
-function isIgnoredChar(ch: string): boolean {
-  return IGNORE_CHARS.test(ch);
+function isNewlineChar(ch: string): boolean {
+  return NEWLINE_CHARS.test(ch);
+}
+
+function isWhitespaceChar(ch: string): boolean {
+  return WHITESPACE_CHARS.test(ch);
 }
 
 function isEmojiCodePoint(cp: number): boolean {
@@ -88,6 +96,9 @@ export function shouldSkipByCategory(
   if (categories.punct && PUNCT_CHARS.has(ch)) {
     return true;
   }
+  if (categories.whitespace && isWhitespaceChar(ch)) {
+    return true;
+  }
   if (categories.symbol) {
     if (SYMBOL_CHARS.has(ch) || ASCII_SYMBOL.test(ch) || FULLWIDTH_SYMBOL.test(ch)) {
       return true;
@@ -95,7 +106,8 @@ export function shouldSkipByCategory(
     // Other non-letter/number marks in common symbol blocks
     if (
       !isLetterOrNumberOrKana(cp) &&
-      !isIgnoredChar(ch) &&
+      !isWhitespaceChar(ch) &&
+      !isNewlineChar(ch) &&
       ((cp >= 0x2000 && cp <= 0x206f) ||
         (cp >= 0x2190 && cp <= 0x21ff) ||
         (cp >= 0x2200 && cp <= 0x22ff) ||
@@ -201,7 +213,7 @@ export function buildSearchIndex(
       continue;
     }
 
-    if (ignoreNewlines && unitLen === 1 && isIgnoredChar(ch)) {
+    if (ignoreNewlines && unitLen === 1 && isNewlineChar(ch)) {
       i++;
       continue;
     }
@@ -217,7 +229,7 @@ export function buildSearchIndex(
 }
 
 /**
- * Build a search string by removing newlines and whitespace.
+ * Build a search string by removing newlines (spaces kept).
  * Does not mutate the original text.
  */
 export function normalizeForSearch(text: string): string {
@@ -243,7 +255,7 @@ export function parseKeywords(raw: string): string[] {
 
 /**
  * Find all non-overlapping substring matches.
- * When ignoreNewlines is true (default), newlines/whitespace are ignored.
+ * When ignoreNewlines is true (default), newlines are ignored.
  * ignoreStrings / categories are stripped before matching. Ranges use original indices.
  */
 export function findMatches(
@@ -257,7 +269,8 @@ export function findMatches(
     categories.emoji ||
     categories.kinsoku ||
     categories.symbol ||
-    categories.punct;
+    categories.punct ||
+    categories.whitespace;
 
   if (!ignoreNewlines && ignoreStrings.length === 0 && !hasCategory) {
     const exactKeyword = keyword.trim();
@@ -326,7 +339,7 @@ export function findMatches(
 
 /**
  * Whether the whole TEXT content equals the keyword.
- * When ignoreNewlines is true, compare after stripping newlines/whitespace.
+ * When ignoreNewlines is true, compare after stripping newlines.
  * ignoreStrings / categories are stripped before comparison.
  */
 export function isExactMatch(

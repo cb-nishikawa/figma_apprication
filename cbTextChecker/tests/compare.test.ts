@@ -26,10 +26,10 @@ describe("compareTextNodes", () => {
     expect(diff.onlyB).toEqual([]);
   });
 
-  it("treats whitespace/newline differences as exact", () => {
+  it("treats newline-only differences as exact", () => {
     const diff = compareTextNodes(
       [{ id: "a1", characters: "hello\nworld" }],
-      [{ id: "b1", characters: "hello world" }]
+      [{ id: "b1", characters: "helloworld" }]
     );
     expect(diff.matchedExact).toHaveLength(1);
     expect(diff.matchedExact[0].a.id).toBe("a1");
@@ -37,6 +37,34 @@ describe("compareTextNodes", () => {
     expect(diff.matchedPartial).toEqual([]);
     expect(diff.onlyA).toEqual([]);
     expect(diff.onlyB).toEqual([]);
+  });
+
+  it("does not treat space differences as exact by default", () => {
+    const diff = compareTextNodes(
+      [{ id: "a1", characters: "hello\nworld" }],
+      [{ id: "b1", characters: "hello world" }]
+    );
+    expect(diff.matchedExact).toEqual([]);
+    expect(diff.matchedPartial).toEqual([]);
+    expect(diff.onlyA.map((n) => n.id)).toEqual(["a1"]);
+    expect(diff.onlyB.map((n) => n.id)).toEqual(["b1"]);
+  });
+
+  it("treats space differences as exact when whitespace category is on", () => {
+    const diff = compareTextNodes(
+      [{ id: "a1", characters: "hello\nworld" }],
+      [{ id: "b1", characters: "hello world" }],
+      [],
+      {
+        emoji: false,
+        kinsoku: false,
+        symbol: false,
+        punct: false,
+        whitespace: true,
+      }
+    );
+    expect(diff.matchedExact).toHaveLength(1);
+    expect(diff.matchedPartial).toEqual([]);
   });
 
   it("pairs partial substring matches", () => {
@@ -135,7 +163,7 @@ describe("compareTextNodes", () => {
       [{ id: "a1", characters: "本校の特長" }],
       [{ id: "b1", characters: "・本校の特長" }],
       [],
-      { emoji: false, kinsoku: false, symbol: true, punct: false }
+      { emoji: false, kinsoku: false, symbol: true, punct: false, whitespace: false }
     );
     expect(diff.matchedExact).toHaveLength(1);
     expect(diff.matchedPartial).toEqual([]);
@@ -152,12 +180,19 @@ describe("compareTextNodes", () => {
 });
 
 describe("compareDiffToResults", () => {
-  it("builds 完全一致 / 部分一致 / Aのみ / Bのみ with A/B pair order", () => {
+  it("nests exact/partial children with A/B matches; Aのみ/Bのみ stay flat", () => {
     const results = compareDiffToResults({
       matchedExact: [
         {
           a: { id: "a0", characters: "ok" },
           b: { id: "b0", characters: "ok" },
+          rangesA: [{ start: 0, end: 2 }],
+          rangesB: [{ start: 0, end: 2 }],
+          exact: true,
+        },
+        {
+          a: { id: "a0b", characters: "ok" },
+          b: { id: "b0b", characters: "ok" },
           rangesA: [{ start: 0, end: 2 }],
           rangesB: [{ start: 0, end: 2 }],
           exact: true,
@@ -176,17 +211,36 @@ describe("compareDiffToResults", () => {
       onlyB: [{ id: "b1", characters: "extra" }],
     });
     expect(results).toHaveLength(4);
-    expect(results[0].keyword).toBe(COMPARE_EXACT);
-    expect(results[0].count).toBe(2);
-    expect(results[0].matches.map((m) => m.side)).toEqual(["A", "B"]);
-    expect(results[0].matches.every((m) => m.exact)).toBe(true);
-    expect(results[1].keyword).toBe(COMPARE_PARTIAL);
-    expect(results[1].count).toBe(2);
-    expect(results[1].matches.map((m) => m.side)).toEqual(["A", "B"]);
-    expect(results[1].matches.every((m) => !m.exact)).toBe(true);
+
+    const exact = results[0];
+    expect(exact.keyword).toBe(COMPARE_EXACT);
+    expect(exact.count).toBe(4);
+    expect(exact.children).toHaveLength(2);
+    expect(exact.children![0].keyword).toBe("ok");
+    expect(exact.children![0].count).toBe(2);
+    expect(exact.children![0].matches).toHaveLength(2);
+    expect(exact.children![0].matches.map((m) => m.side)).toEqual(["A", "B"]);
+    expect(exact.children![0].matches.every((m) => m.exact)).toBe(true);
+    expect(exact.children![1].keyword).toBe("ok (2)");
+    expect(exact.children![1].matches.map((m) => m.side)).toEqual(["A", "B"]);
+
+    const partial = results[1];
+    expect(partial.keyword).toBe(COMPARE_PARTIAL);
+    expect(partial.count).toBe(2);
+    expect(partial.children).toHaveLength(1);
+    expect(partial.children![0].keyword).toBe("foo");
+    expect(partial.children![0].matches).toHaveLength(2);
+    expect(partial.children![0].matches.map((m) => m.side)).toEqual(["A", "B"]);
+    expect(partial.children![0].matches.every((m) => !m.exact)).toBe(true);
+
     expect(results[2].keyword).toBe(COMPARE_ONLY_A);
     expect(results[2].count).toBe(1);
+    expect(results[2].children).toBeUndefined();
+    expect(results[2].matches[0].side).toBe("A");
+
     expect(results[3].keyword).toBe(COMPARE_ONLY_B);
     expect(results[3].count).toBe(1);
+    expect(results[3].children).toBeUndefined();
+    expect(results[3].matches[0].side).toBe("B");
   });
 });

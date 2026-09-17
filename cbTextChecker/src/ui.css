@@ -388,6 +388,18 @@ body.is-resizing * {
   flex-shrink: 0;
 }
 
+.results-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.results-head h2 {
+  margin: 0;
+}
+
 .keyword-rows {
   display: flex;
   flex-direction: column;
@@ -547,6 +559,16 @@ body.is-resizing * {
 
 .result-group.is-empty .result-header {
   cursor: default;
+}
+
+.result-children {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 14px;
+}
+
+.result-group.is-nested > .result-header {
+  padding-left: 4px;
 }
 
 .result-header {

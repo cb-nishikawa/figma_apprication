@@ -20,6 +20,8 @@ export interface CheckResult {
   keyword: string;
   count: number;
   matches: TextMatch[];
+  /** Nested groups (compare: 完全一致/部分一致 → per-text children). */
+  children?: CheckResult[];
 }
 
 export type SearchMode = "selection" | "page" | "pinned" | "compare";
@@ -38,7 +40,7 @@ export interface HoverHighlightItem {
 export interface PinTarget {
   id: string;
   name: string;
-  kind: "SECTION" | "FRAME";
+  kind: "SECTION" | "FRAME" | "INSTANCE" | "GROUP";
   label: string;
 }
 
@@ -58,6 +60,8 @@ export interface IgnoreCategories {
   kinsoku: boolean;
   symbol: boolean;
   punct: boolean;
+  /** Half/full-width spaces and tabs. */
+  whitespace: boolean;
 }
 
 export const DEFAULT_IGNORE_CATEGORIES: IgnoreCategories = {
@@ -65,4 +69,5 @@ export const DEFAULT_IGNORE_CATEGORIES: IgnoreCategories = {
   kinsoku: true,
   symbol: true,
   punct: true,
+  whitespace: false,
 };
