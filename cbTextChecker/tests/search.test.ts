@@ -161,6 +161,27 @@ describe("checkKeywords", () => {
     expect(results[0].matches[0].exact).toBe(false);
   });
 
+  it("emits one TextMatch per occurrence in the same node", () => {
+    const results = checkKeywords(
+      [{ id: "a", characters: "テキストテキストテキストテキ" }],
+      [{ keyword: "テキスト", ignoreNewlines: true }]
+    );
+    expect(results[0].count).toBe(3);
+    expect(results[0].matches).toHaveLength(3);
+    expect(results[0].matches.every((m) => m.ranges.length === 1)).toBe(true);
+    expect(results[0].matches.every((m) => m.exact === false)).toBe(true);
+  });
+
+  it("keeps a newline-spanning hit as a single match", () => {
+    const results = checkKeywords(
+      [{ id: "a", characters: "テキストが入り\nます" }],
+      [{ keyword: "入ります", ignoreNewlines: true }]
+    );
+    expect(results[0].count).toBe(1);
+    expect(results[0].matches).toHaveLength(1);
+    expect(results[0].matches[0].ranges).toHaveLength(1);
+  });
+
   it("applies ignoreNewlines per query", () => {
     const nodes = [{ id: "a", characters: "お問い合わせは\nこちら" }];
     const results = checkKeywords(nodes, [

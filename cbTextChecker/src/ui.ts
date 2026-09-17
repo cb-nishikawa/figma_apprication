@@ -446,20 +446,14 @@ function renderResults(results: CheckResult[]): void {
 
         const name = document.createElement("span");
         name.className = "match-name";
-        name.textContent = match.nodeName;
+        name.textContent = match.preview || result.keyword;
+        name.title = match.nodeName;
 
         const preview = document.createElement("span");
         preview.className = "match-preview";
-        preview.textContent = match.preview || "(空)";
+        preview.textContent = match.nodeName;
 
         matchItem.append(name, preview);
-
-        if (match.ranges.length > 1) {
-          const rangeCount = document.createElement("span");
-          rangeCount.className = "match-count";
-          rangeCount.textContent = `${match.ranges.length}`;
-          matchItem.appendChild(rangeCount);
-        }
 
         matchItem.addEventListener("mouseenter", () => {
           postToPlugin({

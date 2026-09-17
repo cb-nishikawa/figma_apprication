@@ -140,6 +140,7 @@ export function isExactMatch(
 /**
  * Run keyword checks against a list of text nodes (already deduplicated).
  * Each query carries its own ignoreNewlines flag.
+ * One TextMatch is emitted per match range (occurrence).
  */
 export function checkKeywords(
   nodes: TextNodeLike[],
@@ -147,23 +148,25 @@ export function checkKeywords(
 ): CheckResult[] {
   return queries.map(({ keyword, ignoreNewlines }) => {
     const matches: TextMatch[] = [];
-    let count = 0;
 
     for (const node of nodes) {
       const ranges = findMatches(node.characters, keyword, ignoreNewlines);
-      if (ranges.length > 0) {
+      if (ranges.length === 0) {
+        continue;
+      }
+      const exact = isExactMatch(node.characters, keyword, ignoreNewlines);
+      for (const range of ranges) {
         matches.push({
           nodeId: node.id,
           nodeName: "",
           preview: "",
-          ranges,
-          exact: isExactMatch(node.characters, keyword, ignoreNewlines),
+          ranges: [range],
+          exact,
         });
-        count += ranges.length;
       }
     }
 
-    return { keyword, count, matches };
+    return { keyword, count: matches.length, matches };
   });
 }
 

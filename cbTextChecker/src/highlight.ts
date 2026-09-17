@@ -169,14 +169,38 @@ function finalizeHighlightNodes(nodes: SceneNode[]): void {
   group.locked = true;
 }
 
+function mergeHoverItems(items: HoverHighlightItem[]): HoverHighlightItem[] {
+  const byNode = new Map<string, HoverHighlightItem>();
+
+  for (const item of items) {
+    const existing = byNode.get(item.nodeId);
+    if (!existing) {
+      byNode.set(item.nodeId, {
+        nodeId: item.nodeId,
+        style: item.style,
+        exact: item.exact,
+        ranges: [...(item.ranges ?? [])],
+      });
+      continue;
+    }
+
+    existing.exact = existing.exact && item.exact;
+    existing.style = existing.exact ? "component" : "instance";
+    existing.ranges.push(...(item.ranges ?? []));
+  }
+
+  return [...byNode.values()];
+}
+
 export async function showHoverHighlight(
   items: HoverHighlightItem[]
 ): Promise<void> {
   clearHoverHighlight();
 
   const created: SceneNode[] = [];
+  const merged = mergeHoverItems(items);
 
-  for (const item of items) {
+  for (const item of merged) {
     const node = await figma.getNodeByIdAsync(item.nodeId);
     if (!node || !("absoluteBoundingBox" in node)) {
       continue;

@@ -83,6 +83,11 @@ function makePreview(characters: string): string {
   return `${flat.slice(0, PREVIEW_MAX_LENGTH)}…`;
 }
 
+function makeRangePreview(characters: string, start: number, end: number): string {
+  const slice = characters.slice(start, end);
+  return makePreview(slice);
+}
+
 function enrichResults(
   results: CheckResult[],
   nodes: TextNode[]
@@ -92,10 +97,15 @@ function enrichResults(
     ...result,
     matches: result.matches.map((match) => {
       const node = nodeById.get(match.nodeId);
+      const characters = node?.characters ?? "";
+      const range = match.ranges[0];
+      const preview = range
+        ? makeRangePreview(characters, range.start, range.end)
+        : makePreview(characters);
       return {
         ...match,
         nodeName: node?.name || "(untitled)",
-        preview: makePreview(node?.characters ?? ""),
+        preview,
       };
     }),
   }));
