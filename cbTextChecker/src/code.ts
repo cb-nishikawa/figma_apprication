@@ -1,6 +1,16 @@
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
-import type { CheckResult, KeywordQuery, SearchMode } from "./types";
-import { clearHoverHighlight, showHoverHighlight } from "./highlight";
+import type {
+  CheckResult,
+  HoverHighlightItem,
+  KeywordQuery,
+  SearchMode,
+} from "./types";
+import {
+  buildHighlightPool,
+  clearHoverHighlight,
+  hideAllHighlights,
+  showHoverHighlight,
+} from "./highlight";
 import { collectPinTargets } from "./pinTargets";
 import { checkKeywords, dedupeTextNodes } from "./search";
 
@@ -175,8 +185,25 @@ async function getSearchNodes(): Promise<TextNode[] | { error: string }> {
   return collectTextFromRoot(node);
 }
 
+function resultsToHighlightItems(results: CheckResult[]): HoverHighlightItem[] {
+  const items: HoverHighlightItem[] = [];
+  for (const result of results) {
+    for (const match of result.matches) {
+      items.push({
+        nodeId: match.nodeId,
+        style: match.exact ? "component" : "instance",
+        exact: match.exact,
+        ranges: match.ranges,
+      });
+    }
+  }
+  return items;
+}
+
 async function handleSearch(queries: KeywordQuery[]): Promise<void> {
-  clearHoverHighlight();
+  await withHighlightMutation(async () => {
+    clearHoverHighlight();
+  });
   lastQueries = queries;
 
   if (queries.length === 0) {
@@ -206,6 +233,11 @@ async function handleSearch(queries: KeywordQuery[]): Promise<void> {
 
   const results = enrichResults(rawResults, nodes);
   lastResults = results;
+
+  await withHighlightMutation(async () => {
+    await buildHighlightPool(resultsToHighlightItems(results));
+  });
+
   postToUi({ type: "SEARCH_RESULT", results });
 }
 
@@ -311,11 +343,13 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
         await handleFocusNode(msg.nodeId);
         break;
       case "HOVER_HIGHLIGHT":
-        await withHighlightMutation(() => showHoverHighlight(msg.items));
+        await withHighlightMutation(() => {
+          showHoverHighlight(msg.items);
+        });
         break;
       case "CLEAR_HIGHLIGHT":
         await withHighlightMutation(() => {
-          clearHoverHighlight();
+          hideAllHighlights();
         });
         break;
       case "RESIZE_UI": {
