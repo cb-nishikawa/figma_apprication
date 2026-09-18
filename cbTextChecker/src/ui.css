@@ -95,7 +95,7 @@ body.is-resizing * {
   margin: 2px 0;
 }
 
-/* Search mode — segmented control */
+/* Search mode — target picker */
 .pin-inline {
   width: 100%;
   margin-top: 6px;
@@ -105,20 +105,145 @@ body.is-resizing * {
   display: none !important;
 }
 
-.pin-row {
+.target-picker-row {
   display: flex;
-  align-items: center;
-  gap: 4px;
+  align-items: stretch;
+  gap: 6px;
   min-width: 0;
+  width: 100%;
 }
 
-.pin-row .pin-combobox {
+.target-picker {
+  position: relative;
   flex: 1;
   min-width: 0;
 }
 
-.pin-row .btn-icon {
+.target-picker-btn {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid #cfcfcf;
+  border-radius: 4px;
+  background: #fff;
+  color: #333;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.target-picker-btn:hover:not(:disabled) {
+  border-color: #18a0fb;
+  background: #f5fbff;
+}
+
+.target-picker-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.target-picker-btn-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.target-picker-btn.is-empty .target-picker-btn-label {
+  color: #999;
+}
+
+.target-picker-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 180px;
+  padding: 8px;
+  border: 1px solid #d8d8d8;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.target-picker-popover[hidden] {
+  display: none !important;
+}
+
+.target-picker-filter {
+  display: block;
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid #cfcfcf;
+  border-radius: 4px;
+  background: #fff;
+  color: #333;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.target-picker-filter:focus {
+  outline: none;
+  border-color: #18a0fb;
+}
+
+.target-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 168px;
+  overflow-y: auto;
+  border: 1px solid #eee;
+  border-radius: 4px;
+}
+
+.target-picker-option {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  color: #333;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.target-picker-option:hover,
+.target-picker-option.is-active {
+  background: #eaf6ff;
+}
+
+.target-picker-option.is-selected {
+  background: #d6eeff;
+  font-weight: 600;
+}
+
+.target-picker-empty {
+  padding: 8px;
+  color: #999;
+  font-size: 11px;
+}
+
+.pair-swap-icon {
   flex-shrink: 0;
+  align-self: center;
+  width: 18px;
+  text-align: center;
+  color: #888;
+  font-size: 14px;
+  line-height: 1;
+  user-select: none;
+  pointer-events: none;
 }
 
 .compare-inline {
@@ -144,20 +269,6 @@ body.is-resizing * {
 
 .image-inline[hidden] {
   display: none !important;
-}
-
-.image-inline .image-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 6px 8px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  background: #fff;
-  color: #555;
-  line-height: 1.3;
 }
 
 .ocr-status {
@@ -239,8 +350,8 @@ body.is-resizing * {
 .compare-pair-sides {
   display: flex;
   flex-direction: row;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: stretch;
+  gap: 6px;
   min-width: 0;
   flex: 1;
 }
@@ -252,35 +363,10 @@ body.is-resizing * {
   flex-shrink: 0;
 }
 
-.compare-side-top {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-
-.compare-side-label {
-  flex-shrink: 0;
-  width: 14px;
-  font-size: 11px;
-  font-weight: 700;
-  color: #555;
-}
-
-.compare-side .pin-combobox {
-  flex: 1;
-  min-width: 0;
-}
-
-.compare-side-top .btn-icon {
-  flex-shrink: 0;
-}
-
 .compare-side {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 4px;
   min-width: 0;
   flex: 1;
 }
@@ -374,70 +460,6 @@ body.is-resizing * {
 
 .radio span {
   pointer-events: none;
-}
-
-.pin-combobox {
-  position: relative;
-}
-
-.pin-combobox-input {
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid #cfcfcf;
-  border-radius: 4px;
-  background: #fff;
-  color: #333;
-  font: inherit;
-}
-
-.pin-combobox-list {
-  position: absolute;
-  z-index: 10;
-  top: calc(100% + 2px);
-  left: 0;
-  right: 0;
-  margin: 0;
-  padding: 4px 0;
-  max-height: 180px;
-  overflow: auto;
-  list-style: none;
-  border: 1px solid #cfcfcf;
-  border-radius: 4px;
-  background: #fff;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
-}
-
-.pin-combobox-list[hidden] {
-  display: none !important;
-}
-
-.pin-combobox-option {
-  display: block;
-  width: 100%;
-  padding: 6px 8px;
-  border: none;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pin-combobox-option:hover,
-.pin-combobox-option.is-active {
-  background: #f0f0f0;
-}
-
-.pin-combobox-option.is-selected {
-  background: #e5f4ff;
-}
-
-.pin-combobox-empty {
-  padding: 6px 8px;
-  color: #999;
 }
 
 /* Ignore popover (results head) */

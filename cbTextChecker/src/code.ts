@@ -225,17 +225,7 @@ function exportScaleForNode(node: SceneNode): number {
   return Math.min(2, Math.max(0.25, scale));
 }
 
-async function handleExportImageFromSelection(): Promise<void> {
-  const selection = figma.currentPage.selection;
-  if (selection.length === 0) {
-    postToUi({
-      type: "ERROR",
-      message: "画像にするノードを選択してください",
-    });
-    return;
-  }
-
-  const node = selection[0];
+async function exportImageNode(node: SceneNode): Promise<void> {
   if (!("exportAsync" in node)) {
     postToUi({
       type: "ERROR",
@@ -257,6 +247,27 @@ async function handleExportImageFromSelection(): Promise<void> {
     bytes: Array.from(bytes),
     exportScale,
   });
+}
+
+async function handleExportImageFromSelection(): Promise<void> {
+  const selection = figma.currentPage.selection;
+  if (selection.length === 0) {
+    postToUi({ type: "SELECTION_EMPTY", slot: { kind: "image" } });
+    return;
+  }
+  await exportImageNode(selection[0]);
+}
+
+async function handleExportImageNode(nodeId: string): Promise<void> {
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node || !("exportAsync" in node)) {
+    postToUi({
+      type: "ERROR",
+      message: "このノードは画像として書き出せません",
+    });
+    return;
+  }
+  await exportImageNode(node as SceneNode);
 }
 
 async function handleImageCompare(
@@ -693,6 +704,9 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
       case "EXPORT_IMAGE_FROM_SELECTION":
         await handleExportImageFromSelection();
         break;
+      case "EXPORT_IMAGE_NODE":
+        await handleExportImageNode(msg.nodeId);
+        break;
       case "CLEAR_IMAGE":
         postToUi({ type: "IMAGE_CLEARED" });
         break;
@@ -701,6 +715,10 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
         postImageState();
         break;
       case "SET_IMAGE_TARGET_FROM_SELECTION": {
+        if (figma.currentPage.selection.length === 0) {
+          postToUi({ type: "SELECTION_EMPTY", slot: { kind: "imageTarget" } });
+          break;
+        }
         const fromSelection = resolvePinTargetFromSelection();
         const targets = collectPinTargets();
         const nodeId =
@@ -736,6 +754,10 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
         }
         break;
       case "SET_PINNED_FROM_SELECTION": {
+        if (figma.currentPage.selection.length === 0) {
+          postToUi({ type: "SELECTION_EMPTY", slot: { kind: "pin" } });
+          break;
+        }
         const fromSelection = resolvePinTargetFromSelection();
         const targets = collectPinTargets();
         const nodeId =
@@ -783,6 +805,17 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
         break;
       }
       case "SET_COMPARE_FROM_SELECTION": {
+        if (figma.currentPage.selection.length === 0) {
+          postToUi({
+            type: "SELECTION_EMPTY",
+            slot: {
+              kind: "compare",
+              index: msg.index,
+              side: msg.side,
+            },
+          });
+          break;
+        }
         const fromSelection = resolvePinTargetFromSelection();
         const targets = collectPinTargets();
         const nodeId =

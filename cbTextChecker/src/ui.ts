@@ -3,7 +3,6 @@ import clearIcon from "./assets/clear.svg?raw";
 import copyIcon from "./assets/copy.svg?raw";
 import pinIcon from "./assets/pin.svg?raw";
 import resetIcon from "./assets/reset.svg?raw";
-import selectIcon from "./assets/select.svg?raw";
 import sortIcon from "./assets/sort.svg?raw";
 import {
   COMPARE_EXACT,
@@ -12,7 +11,11 @@ import {
   COMPARE_PARTIAL,
 } from "./compare";
 import { parseIgnoreInput } from "./search";
-import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
+import type {
+  PluginToUiMessage,
+  SelectionSlot,
+  UiToPluginMessage,
+} from "./messages";
 import type {
   CheckResult,
   ComparePair,
@@ -28,6 +31,14 @@ import type {
   TextNodeLike,
 } from "./types";
 import { DEFAULT_IGNORE_CATEGORIES } from "./types";
+import {
+  closeAllTargetPopovers,
+  createPairSwapIcon,
+  createTargetPicker,
+  findPickerBySlot,
+  unregisterPicker,
+  type TargetPickerController,
+} from "./targetPicker";
 
 const DEBOUNCE_MS = 300;
 const MIN_UI_HEIGHT = 320;
@@ -47,12 +58,9 @@ const HIGHLIGHT_COLOR_OPTIONS: HighlightColor[] = [
 ];
 
 const pinInline = document.getElementById("pin-inline") as HTMLDivElement;
-const pinInputEl = document.getElementById(
-  "pin-combobox-input"
-) as HTMLInputElement;
-const pinListEl = document.getElementById(
-  "pin-combobox-list"
-) as HTMLUListElement;
+const pinPickerRoot = document.getElementById(
+  "pin-picker-root"
+) as HTMLDivElement;
 const compareInline = document.getElementById(
   "compare-inline"
 ) as HTMLDivElement;
@@ -63,29 +71,16 @@ const addComparePairBtn = document.getElementById(
   "add-compare-pair"
 ) as HTMLButtonElement;
 const imageInline = document.getElementById("image-inline") as HTMLDivElement;
-const imageNameEl = document.getElementById("image-name") as HTMLSpanElement;
-const imageFromSelectionBtn = document.getElementById(
-  "image-from-selection"
-) as HTMLButtonElement;
+const imagePairSidesEl = document.getElementById(
+  "image-pair-sides"
+) as HTMLDivElement;
 const imageRowActionsEl = document.getElementById(
   "image-row-actions"
 ) as HTMLDivElement;
-const imageTargetInputEl = document.getElementById(
-  "image-target-input"
-) as HTMLInputElement;
-const imageTargetListEl = document.getElementById(
-  "image-target-list"
-) as HTMLUListElement;
-const imageTargetFromSelectionBtn = document.getElementById(
-  "image-target-from-selection"
-) as HTMLButtonElement;
 const ocrStatusEl = document.getElementById("ocr-status") as HTMLDivElement;
 const ocrStatusTextEl = document.getElementById(
   "ocr-status-text"
 ) as HTMLSpanElement;
-const pinFromSelectionBtn = document.getElementById(
-  "pin-from-selection"
-) as HTMLButtonElement;
 const keywordsSection = document.getElementById(
   "keywords-section"
 ) as HTMLElement;
@@ -132,24 +127,12 @@ const resizeHandle = document.getElementById("resize-handle") as HTMLDivElement;
 interface ComparePairUi {
   idA: string | null;
   idB: string | null;
-  filterA: string;
-  filterB: string;
-  listOpenA: boolean;
-  listOpenB: boolean;
-  activeIndexA: number;
-  activeIndexB: number;
 }
 
 function emptyPairUi(): ComparePairUi {
   return {
     idA: null,
     idB: null,
-    filterA: "",
-    filterB: "",
-    listOpenA: false,
-    listOpenB: false,
-    activeIndexA: -1,
-    activeIndexB: -1,
   };
 }
 
@@ -160,9 +143,6 @@ let compareTargets: PinTarget[] = [];
 let comparePairs: ComparePairUi[] = [emptyPairUi()];
 let imageTargets: PinTarget[] = [];
 let imageTargetId: string | null = null;
-let imageFilterQuery = "";
-let imageListOpen = false;
-let imageActiveIndex = -1;
 let imageNodeId: string | null = null;
 let imageNodeName = "";
 let imageExportScale = 1;
@@ -171,9 +151,6 @@ let ocrBusy = false;
 let ocrModelUrls: { detUrl: string; recUrl: string } | null = null;
 /** When true, compare results are showing (OCR image highlights paused). */
 let imageCompareActive = false;
-let pinFilterQuery = "";
-let pinListOpen = false;
-let pinActiveIndex = -1;
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 /** Keywords whose accordion is expanded. */
 const expandedKeywords = new Set<string>();
@@ -443,16 +420,40 @@ function setOcrStatus(
   ocrStatusEl.classList.toggle("is-busy", Boolean(options.busy));
 }
 
+let imagePicker: TargetPickerController | null = null;
+let imageTargetPicker: TargetPickerController | null = null;
+let pinPicker: TargetPickerController | null = null;
+const comparePickers = new Map<string, TargetPickerController>();
+
+function comparePickerKey(index: number, side: CompareSide): string {
+  return `${index}:${side}`;
+}
+
 function setImageControlsDisabled(disabled: boolean): void {
-  imageFromSelectionBtn.disabled = disabled;
-  imageTargetFromSelectionBtn.disabled = disabled;
-  imageTargetInputEl.disabled = disabled;
+  imagePicker?.setDisabled(disabled);
+  imageTargetPicker?.setDisabled(disabled);
   const menuTrigger = imageRowActionsEl.querySelector(
     ".row-menu-trigger"
   ) as HTMLButtonElement | null;
   if (menuTrigger) {
     menuTrigger.disabled = disabled;
   }
+}
+
+function refreshAllTargetPickers(): void {
+  pinPicker?.refresh();
+  imagePicker?.refresh();
+  imageTargetPicker?.refresh();
+  for (const picker of comparePickers.values()) {
+    picker.refresh();
+  }
+}
+
+function openPickerForSlot(slot: SelectionSlot): void {
+  setIgnorePopoverOpen(false);
+  closeAllRowMenus();
+  const picker = findPickerBySlot(slot);
+  picker?.openPopover();
 }
 
 function ocrToHighlightItems(items: OcrItem[] = ocrItems): HoverHighlightItem[] {
@@ -575,10 +576,10 @@ function clearImageLocal(notifyPlugin = true): void {
   imageNodeId = null;
   imageNodeName = "";
   imageExportScale = 1;
-  imageNameEl.textContent = "画像未選択";
   ocrItems = [];
   imageCompareActive = false;
   setOcrStatus(null);
+  imagePicker?.refresh();
   if (notifyPlugin) {
     postToPlugin({ type: "CLEAR_IMAGE" });
   }
@@ -614,7 +615,7 @@ async function processExportedImage(
   imageNodeId = nodeId;
   imageNodeName = name;
   imageExportScale = exportScale > 0 ? exportScale : 1;
-  imageNameEl.textContent = name || "(untitled)";
+  imagePicker?.refresh();
 
   const blob = new Blob([new Uint8Array(bytes)], { type: "image/png" });
 
@@ -692,68 +693,10 @@ function getImageTarget(): PinTarget | null {
   return imageTargets.find((t) => t.id === imageTargetId) ?? null;
 }
 
-function filteredImageTargets(): PinTarget[] {
-  const query = imageFilterQuery.trim().toLowerCase();
-  if (!query) {
-    return imageTargets;
-  }
-  return imageTargets.filter((target) => {
-    return (
-      target.label.toLowerCase().includes(query) ||
-      target.name.toLowerCase().includes(query)
-    );
-  });
-}
-
-function setImageTargetInputToSelection(): void {
-  const selected = getImageTarget();
-  imageFilterQuery = "";
-  imageTargetInputEl.value = selected ? selected.label : "";
-}
-
-function closeImageTargetList(): void {
-  imageListOpen = false;
-  imageActiveIndex = -1;
-  imageTargetListEl.hidden = true;
-  imageTargetInputEl.setAttribute("aria-expanded", "false");
-}
-
-function renderImageTargetList(): void {
-  const filtered = filteredImageTargets();
-  imageTargetListEl.innerHTML = "";
-  filtered.forEach((target, index) => {
-    const li = document.createElement("li");
-    li.className = "pin-combobox-option";
-    li.setAttribute("role", "option");
-    li.dataset.id = target.id;
-    li.textContent = target.label;
-    if (target.id === imageTargetId) {
-      li.classList.add("is-selected");
-    }
-    if (index === imageActiveIndex) {
-      li.classList.add("is-active");
-    }
-    li.addEventListener("mousedown", (event) => {
-      event.preventDefault();
-      commitImageTarget(target.id);
-    });
-    imageTargetListEl.appendChild(li);
-  });
-}
-
-function openImageTargetList(): void {
-  closePinList();
-  closeAllCompareLists();
-  imageListOpen = true;
-  imageTargetListEl.hidden = false;
-  imageTargetInputEl.setAttribute("aria-expanded", "true");
-  renderImageTargetList();
-}
-
 function commitImageTarget(nextId: string | null): void {
   imageTargetId = nextId;
-  setImageTargetInputToSelection();
-  closeImageTargetList();
+  imageTargetPicker?.refresh();
+  closeAllTargetPopovers();
   postToPlugin({ type: "SET_IMAGE_COMPARE_TARGET", targetId: imageTargetId });
   if (mode === "image") {
     if (imageTargetId && ocrItems.length > 0) {
@@ -812,19 +755,6 @@ function updateScopeVisibility(): void {
   }
 }
 
-function filteredPinTargets(): PinTarget[] {
-  const query = pinFilterQuery.trim().toLowerCase();
-  if (!query) {
-    return pinTargets;
-  }
-  return pinTargets.filter((target) => {
-    return (
-      target.label.toLowerCase().includes(query) ||
-      target.name.toLowerCase().includes(query)
-    );
-  });
-}
-
 function getPinnedTarget(): PinTarget | null {
   if (!pinnedNodeId) {
     return null;
@@ -838,102 +768,11 @@ function syncPinnedFromTargets(): void {
   }
 }
 
-function setPinInputToSelection(): void {
-  const selected = getPinnedTarget();
-  pinFilterQuery = "";
-  pinInputEl.value = selected ? selected.label : "";
-}
-
 function commitPinnedNode(nextId: string | null): void {
   pinnedNodeId = nextId;
-  setPinInputToSelection();
-  closePinList();
+  pinPicker?.refresh();
+  closeAllTargetPopovers();
   postToPlugin({ type: "SET_PINNED_NODE", pinnedNodeId });
-}
-
-function openPinList(): void {
-  closeAllCompareLists();
-  closeImageTargetList();
-  pinListOpen = true;
-  pinListEl.hidden = false;
-  pinInputEl.setAttribute("aria-expanded", "true");
-  renderPinList();
-}
-
-function closePinList(): void {
-  pinListOpen = false;
-  pinActiveIndex = -1;
-  pinListEl.hidden = true;
-  pinInputEl.setAttribute("aria-expanded", "false");
-}
-
-function renderPinList(): void {
-  syncPinnedFromTargets();
-  pinListEl.replaceChildren();
-
-  if (pinTargets.length === 0) {
-    const empty = document.createElement("li");
-    empty.className = "pin-combobox-empty";
-    empty.textContent = "候補がありません";
-    pinListEl.append(empty);
-    return;
-  }
-
-  const filtered = filteredPinTargets();
-  if (filtered.length === 0) {
-    const empty = document.createElement("li");
-    empty.className = "pin-combobox-empty";
-    empty.textContent = "該当なし";
-    pinListEl.append(empty);
-    pinActiveIndex = -1;
-    return;
-  }
-
-  if (pinActiveIndex >= filtered.length) {
-    pinActiveIndex = filtered.length - 1;
-  }
-
-  filtered.forEach((target, index) => {
-    const item = document.createElement("li");
-    item.setAttribute("role", "option");
-    item.id = `pin-option-${target.id}`;
-
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "pin-combobox-option";
-    if (target.id === pinnedNodeId) {
-      button.classList.add("is-selected");
-    }
-    if (index === pinActiveIndex) {
-      button.classList.add("is-active");
-    }
-    button.textContent = target.label;
-    button.title = target.label;
-    button.addEventListener("mousedown", (event) => {
-      event.preventDefault();
-    });
-    button.addEventListener("click", () => {
-      commitPinnedNode(target.id);
-    });
-
-    item.append(button);
-    pinListEl.append(item);
-  });
-
-  if (pinActiveIndex >= 0) {
-    const active = pinListEl.children[pinActiveIndex] as HTMLElement | undefined;
-    active?.scrollIntoView({ block: "nearest" });
-  }
-}
-
-function refreshPinCombobox(preserveInput = false): void {
-  syncPinnedFromTargets();
-  if (!preserveInput) {
-    setPinInputToSelection();
-  }
-  if (pinListOpen) {
-    renderPinList();
-  }
 }
 
 function pairsToPayload(): ComparePair[] {
@@ -955,38 +794,6 @@ function getCompareTarget(pair: ComparePairUi, side: CompareSide): PinTarget | n
   return compareTargets.find((t) => t.id === id) ?? null;
 }
 
-function filteredCompareTargets(pair: ComparePairUi, side: CompareSide): PinTarget[] {
-  const query = (side === "A" ? pair.filterA : pair.filterB).trim().toLowerCase();
-  if (!query) {
-    return compareTargets;
-  }
-  return compareTargets.filter((target) => {
-    return (
-      target.label.toLowerCase().includes(query) ||
-      target.name.toLowerCase().includes(query)
-    );
-  });
-}
-
-function closeAllCompareLists(): void {
-  for (const pair of comparePairs) {
-    pair.listOpenA = false;
-    pair.listOpenB = false;
-    pair.activeIndexA = -1;
-    pair.activeIndexB = -1;
-  }
-  comparePairsEl
-    .querySelectorAll<HTMLUListElement>(".pin-combobox-list")
-    .forEach((list) => {
-      list.hidden = true;
-    });
-  comparePairsEl
-    .querySelectorAll<HTMLInputElement>(".pin-combobox-input")
-    .forEach((input) => {
-      input.setAttribute("aria-expanded", "false");
-    });
-}
-
 function commitCompareNode(
   index: number,
   side: CompareSide,
@@ -998,12 +805,11 @@ function commitCompareNode(
   }
   if (side === "A") {
     pair.idA = nextId;
-    pair.filterA = "";
   } else {
     pair.idB = nextId;
-    pair.filterB = "";
   }
-  renderComparePairs();
+  comparePickers.get(comparePickerKey(index, side))?.refresh();
+  closeAllTargetPopovers();
   postToPlugin({
     type: "SET_COMPARE_PAIR",
     index,
@@ -1012,240 +818,57 @@ function commitCompareNode(
   });
 }
 
-function createCompareSide(
+function createCompareSidePicker(
   index: number,
   side: CompareSide
-): HTMLDivElement {
-  const pair = comparePairs[index];
-  const sideEl = document.createElement("div");
-  sideEl.className = "compare-side";
-
-  const top = document.createElement("div");
-  top.className = "compare-side-top";
-
-  const label = document.createElement("span");
-  label.className = "compare-side-label";
-  label.textContent = side;
-
-  const combobox = document.createElement("div");
-  combobox.className = "pin-combobox";
-
-  const listId = `compare-${side.toLowerCase()}-list-${index}`;
-  const input = document.createElement("input");
-  input.className = "pin-combobox-input";
-  input.type = "text";
-  input.setAttribute("role", "combobox");
-  input.setAttribute("aria-autocomplete", "list");
-  input.setAttribute("aria-controls", listId);
-  input.setAttribute("aria-expanded", "false");
-  input.setAttribute("aria-label", `比較 ${side}`);
-  input.placeholder = "Section / Frame";
-  input.autocomplete = "off";
-  const selected = getCompareTarget(pair, side);
-  input.value = selected ? selected.label : "";
-
-  const list = document.createElement("ul");
-  list.id = listId;
-  list.className = "pin-combobox-list";
-  list.setAttribute("role", "listbox");
-  list.hidden = true;
-
-  const fromSelectionBtn = document.createElement("button");
-  fromSelectionBtn.type = "button";
-  fromSelectionBtn.className = "btn-icon";
-  fromSelectionBtn.title = `選択を ${side} に`;
-  fromSelectionBtn.setAttribute("aria-label", fromSelectionBtn.title);
-  fromSelectionBtn.innerHTML = selectIcon;
-  fromSelectionBtn.addEventListener("click", () => {
-    postToPlugin({
-      type: "SET_COMPARE_FROM_SELECTION",
-      index,
-      side,
-    });
-  });
-
-  function renderList(): void {
-    list.replaceChildren();
-    const listOpen = side === "A" ? pair.listOpenA : pair.listOpenB;
-    let activeIndex = side === "A" ? pair.activeIndexA : pair.activeIndexB;
-    if (!listOpen) {
-      return;
-    }
-    if (compareTargets.length === 0) {
-      const empty = document.createElement("li");
-      empty.className = "pin-combobox-empty";
-      empty.textContent = "候補がありません";
-      list.append(empty);
-      return;
-    }
-    const filtered = filteredCompareTargets(pair, side);
-    if (filtered.length === 0) {
-      const empty = document.createElement("li");
-      empty.className = "pin-combobox-empty";
-      empty.textContent = "該当なし";
-      list.append(empty);
-      if (side === "A") {
-        pair.activeIndexA = -1;
-      } else {
-        pair.activeIndexB = -1;
-      }
-      return;
-    }
-    if (activeIndex >= filtered.length) {
-      activeIndex = filtered.length - 1;
-      if (side === "A") {
-        pair.activeIndexA = activeIndex;
-      } else {
-        pair.activeIndexB = activeIndex;
-      }
-    }
-    const selectedId = side === "A" ? pair.idA : pair.idB;
-    filtered.forEach((target, optIndex) => {
-      const item = document.createElement("li");
-      item.setAttribute("role", "option");
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "pin-combobox-option";
-      if (target.id === selectedId) {
-        button.classList.add("is-selected");
-      }
-      if (optIndex === activeIndex) {
-        button.classList.add("is-active");
-      }
-      button.textContent = target.label;
-      button.title = target.label;
-      button.addEventListener("mousedown", (event) => {
-        event.preventDefault();
-      });
-      button.addEventListener("click", () => {
-        commitCompareNode(index, side, target.id);
-      });
-      item.append(button);
-      list.append(item);
-    });
+): TargetPickerController {
+  const key = comparePickerKey(index, side);
+  const existing = comparePickers.get(key);
+  if (existing) {
+    unregisterPicker(existing);
+    comparePickers.delete(key);
   }
-
-  function openList(): void {
-    closePinList();
-    for (let i = 0; i < comparePairs.length; i++) {
-      const other = comparePairs[i];
-      if (i === index) {
-        if (side === "A") {
-          other.listOpenB = false;
-          other.activeIndexB = -1;
-        } else {
-          other.listOpenA = false;
-          other.activeIndexA = -1;
-        }
-      } else {
-        other.listOpenA = false;
-        other.listOpenB = false;
-        other.activeIndexA = -1;
-        other.activeIndexB = -1;
+  const picker = createTargetPicker({
+    slot: { kind: "compare", index, side },
+    emptyLabel: side === "A" ? "ターゲット A" : "ターゲット B",
+    ariaLabel: side === "A" ? "比較ターゲット A" : "比較ターゲット B",
+    getLabel: () => {
+      const pair = comparePairs[index];
+      if (!pair) {
+        return "";
       }
-    }
-    comparePairsEl
-      .querySelectorAll<HTMLUListElement>(".pin-combobox-list")
-      .forEach((el) => {
-        el.hidden = true;
+      return getCompareTarget(pair, side)?.label ?? "";
+    },
+    getSelectedId: () => {
+      const pair = comparePairs[index];
+      if (!pair) {
+        return null;
+      }
+      return side === "A" ? pair.idA : pair.idB;
+    },
+    getTargets: () => compareTargets,
+    onApplySelection: () => {
+      setIgnorePopoverOpen(false);
+      closeAllRowMenus();
+      postToPlugin({
+        type: "SET_COMPARE_FROM_SELECTION",
+        index,
+        side,
       });
-    comparePairsEl
-      .querySelectorAll<HTMLInputElement>(".pin-combobox-input")
-      .forEach((el) => {
-        el.setAttribute("aria-expanded", "false");
-      });
-    if (side === "A") {
-      pair.listOpenA = true;
-    } else {
-      pair.listOpenB = true;
-    }
-    list.hidden = false;
-    input.setAttribute("aria-expanded", "true");
-    renderList();
-  }
-
-  function closeList(): void {
-    if (side === "A") {
-      pair.listOpenA = false;
-      pair.activeIndexA = -1;
-    } else {
-      pair.listOpenB = false;
-      pair.activeIndexB = -1;
-    }
-    list.hidden = true;
-    input.setAttribute("aria-expanded", "false");
-  }
-
-  input.addEventListener("focus", () => {
-    openList();
+    },
+    onPick: (id) => {
+      commitCompareNode(index, side, id);
+    },
   });
-  input.addEventListener("input", () => {
-    if (side === "A") {
-      pair.filterA = input.value;
-      pair.activeIndexA = 0;
-    } else {
-      pair.filterB = input.value;
-      pair.activeIndexB = 0;
-    }
-    openList();
-  });
-  input.addEventListener("keydown", (event) => {
-    const filtered = filteredCompareTargets(pair, side);
-    const activeIndex = side === "A" ? pair.activeIndexA : pair.activeIndexB;
-    const listOpen = side === "A" ? pair.listOpenA : pair.listOpenB;
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      if (!listOpen) {
-        openList();
-      }
-      const next = Math.min(activeIndex + 1, filtered.length - 1);
-      if (side === "A") {
-        pair.activeIndexA = next < 0 && filtered.length > 0 ? 0 : next;
-      } else {
-        pair.activeIndexB = next < 0 && filtered.length > 0 ? 0 : next;
-      }
-      renderList();
-      return;
-    }
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      const next = Math.max(activeIndex - 1, 0);
-      if (side === "A") {
-        pair.activeIndexA = next;
-      } else {
-        pair.activeIndexB = next;
-      }
-      renderList();
-      return;
-    }
-    if (event.key === "Enter") {
-      event.preventDefault();
-      if (activeIndex >= 0 && filtered[activeIndex]) {
-        commitCompareNode(index, side, filtered[activeIndex].id);
-      }
-      return;
-    }
-    if (event.key === "Escape") {
-      closeList();
-      const selectedTarget = getCompareTarget(pair, side);
-      input.value = selectedTarget ? selectedTarget.label : "";
-    }
-  });
-  input.addEventListener("blur", () => {
-    window.setTimeout(() => {
-      closeList();
-      const selectedTarget = getCompareTarget(pair, side);
-      input.value = selectedTarget ? selectedTarget.label : "";
-    }, 120);
-  });
-
-  combobox.append(input, list);
-  top.append(label, combobox, fromSelectionBtn);
-  sideEl.append(top);
-  return sideEl;
+  comparePickers.set(key, picker);
+  return picker;
 }
 
 function renderComparePairs(): void {
+  for (const picker of comparePickers.values()) {
+    unregisterPicker(picker);
+  }
+  comparePickers.clear();
   comparePairsEl.replaceChildren();
   comparePairs.forEach((pair, index) => {
     const row = document.createElement("div");
@@ -1253,7 +876,9 @@ function renderComparePairs(): void {
 
     const sides = document.createElement("div");
     sides.className = "compare-pair-sides";
-    sides.append(createCompareSide(index, "A"), createCompareSide(index, "B"));
+    const pickerA = createCompareSidePicker(index, "A");
+    const pickerB = createCompareSidePicker(index, "B");
+    sides.append(pickerA.root, createPairSwapIcon(), pickerB.root);
 
     const actions = document.createElement("div");
     actions.className = "compare-pair-actions";
@@ -1262,8 +887,6 @@ function renderComparePairs(): void {
         onClear: () => {
           pair.idA = null;
           pair.idB = null;
-          pair.filterA = "";
-          pair.filterB = "";
           renderComparePairs();
           syncComparePairsToPlugin();
         },
@@ -1378,6 +1001,7 @@ function createRowMenu(options: {
     event.stopPropagation();
     const willOpen = panel.hidden;
     closeAllRowMenus();
+    closeAllTargetPopovers();
     setIgnorePopoverOpen(false);
     if (willOpen) {
       removeItem.disabled = !options.canRemove();
@@ -1819,11 +1443,6 @@ Array.from(
   });
 });
 
-pinFromSelectionBtn.innerHTML = selectIcon;
-pinFromSelectionBtn.addEventListener("click", () => {
-  postToPlugin({ type: "SET_PINNED_FROM_SELECTION" });
-});
-
 addComparePairBtn.addEventListener("click", () => {
   addComparePair();
 });
@@ -1837,6 +1456,7 @@ ignoreToggleBtn.innerHTML = sortIcon;
 ignoreToggleBtn.addEventListener("click", (event) => {
   event.stopPropagation();
   closeAllRowMenus();
+  closeAllTargetPopovers();
   const open = ignoreToggleBtn.getAttribute("aria-expanded") === "true";
   setIgnorePopoverOpen(!open);
 });
@@ -1865,77 +1485,18 @@ ignorePunctEl.checked = DEFAULT_IGNORE_CATEGORIES.punct;
 ignoreNewlinesEl.checked = DEFAULT_IGNORE_CATEGORIES.newlines;
 ignoreWhitespaceEl.checked = DEFAULT_IGNORE_CATEGORIES.whitespace;
 
-pinInputEl.addEventListener("focus", () => {
-  openPinList();
-});
-
-pinInputEl.addEventListener("input", () => {
-  pinFilterQuery = pinInputEl.value;
-  pinActiveIndex = 0;
-  openPinList();
-});
-
-pinInputEl.addEventListener("keydown", (event) => {
-  const filtered = filteredPinTargets();
-  if (event.key === "ArrowDown") {
-    event.preventDefault();
-    if (!pinListOpen) {
-      openPinList();
-    }
-    pinActiveIndex = Math.min(pinActiveIndex + 1, filtered.length - 1);
-    if (pinActiveIndex < 0 && filtered.length > 0) {
-      pinActiveIndex = 0;
-    }
-    renderPinList();
-    return;
-  }
-  if (event.key === "ArrowUp") {
-    event.preventDefault();
-    pinActiveIndex = Math.max(pinActiveIndex - 1, 0);
-    renderPinList();
-    return;
-  }
-  if (event.key === "Enter") {
-    event.preventDefault();
-    if (pinActiveIndex >= 0 && filtered[pinActiveIndex]) {
-      commitPinnedNode(filtered[pinActiveIndex].id);
-    }
-    return;
-  }
-  if (event.key === "Escape") {
-    closePinList();
-    setPinInputToSelection();
-  }
-});
-
-pinInputEl.addEventListener("blur", () => {
-  window.setTimeout(() => {
-    if (!pinListEl.contains(document.activeElement)) {
-      closePinList();
-      setPinInputToSelection();
-    }
-  }, 0);
-});
-
 document.addEventListener("click", (event) => {
   const target = event.target as Node;
-  if (!pinInline.contains(target)) {
-    closePinList();
-  }
-  if (!compareInline.contains(target)) {
-    closeAllCompareLists();
-  }
-  if (!imageInline.contains(target)) {
-    closeImageTargetList();
-  }
-  const ignoreMenu = ignoreToggleBtn.closest(".ignore-menu");
-  if (ignoreMenu && !ignoreMenu.contains(target)) {
+  closeAllTargetPopovers();
+  const ignoreRoot = ignoreToggleBtn.closest(".ignore-menu");
+  if (ignoreRoot && !ignoreRoot.contains(target)) {
     setIgnorePopoverOpen(false);
   }
   if (!(target as Element).closest?.(".row-menu")) {
     closeAllRowMenus();
   }
 });
+
 
 addKeywordBtn.addEventListener("click", () => {
   addKeywordRow();
@@ -2052,7 +1613,8 @@ window.onmessage = (event: MessageEvent) => {
   if (msg.type === "PIN_TARGETS") {
     pinTargets = msg.targets;
     pinnedNodeId = msg.pinnedNodeId;
-    refreshPinCombobox();
+    syncPinnedFromTargets();
+    pinPicker?.refresh();
     return;
   }
 
@@ -2061,7 +1623,6 @@ window.onmessage = (event: MessageEvent) => {
     suppressCompareSync = true;
     comparePairs = (msg.pairs.length > 0 ? msg.pairs : [{ idA: null, idB: null }]).map(
       (p) => ({
-        ...emptyPairUi(),
         idA: p.idA,
         idB: p.idB,
       })
@@ -2077,13 +1638,15 @@ window.onmessage = (event: MessageEvent) => {
     if (imageTargetId && !getImageTarget()) {
       imageTargetId = null;
     }
-    setImageTargetInputToSelection();
-    if (imageListOpen) {
-      renderImageTargetList();
-    }
+    imageTargetPicker?.refresh();
     if (mode === "image" && imageTargetId && ocrItems.length > 0 && !ocrBusy) {
       runImageCompare();
     }
+    return;
+  }
+
+  if (msg.type === "SELECTION_EMPTY") {
+    openPickerForSlot(msg.slot);
     return;
   }
 
@@ -2099,6 +1662,7 @@ window.onmessage = (event: MessageEvent) => {
 
   if (msg.type === "IMAGE_CLEARED") {
     clearImageLocal(false);
+    imagePicker?.refresh();
     return;
   }
 
@@ -2109,8 +1673,80 @@ window.onmessage = (event: MessageEvent) => {
   }
 };
 
-imageFromSelectionBtn.innerHTML = selectIcon;
-imageTargetFromSelectionBtn.innerHTML = selectIcon;
+function mountPinPicker(): void {
+  pinPickerRoot.replaceChildren();
+  if (pinPicker) {
+    unregisterPicker(pinPicker);
+  }
+  pinPicker = createTargetPicker({
+    slot: { kind: "pin" },
+    emptyLabel: "ターゲット未選択",
+    ariaLabel: "検索ターゲット",
+    getLabel: () => getPinnedTarget()?.label ?? "",
+    getSelectedId: () => pinnedNodeId,
+    getTargets: () => pinTargets,
+    onApplySelection: () => {
+      setIgnorePopoverOpen(false);
+      closeAllRowMenus();
+      postToPlugin({ type: "SET_PINNED_FROM_SELECTION" });
+    },
+    onPick: (id) => {
+      commitPinnedNode(id);
+    },
+  });
+  pinPickerRoot.append(pinPicker.root);
+}
+
+function mountImagePickers(): void {
+  imagePairSidesEl.replaceChildren();
+  if (imagePicker) {
+    unregisterPicker(imagePicker);
+  }
+  if (imageTargetPicker) {
+    unregisterPicker(imageTargetPicker);
+  }
+
+  imagePicker = createTargetPicker({
+    slot: { kind: "image" },
+    emptyLabel: "画像未選択",
+    ariaLabel: "OCR 画像",
+    getLabel: () => imageNodeName,
+    getSelectedId: () => imageNodeId,
+    getTargets: () => imageTargets,
+    onApplySelection: () => {
+      setIgnorePopoverOpen(false);
+      closeAllRowMenus();
+      postToPlugin({ type: "EXPORT_IMAGE_FROM_SELECTION" });
+    },
+    onPick: (id) => {
+      closeAllTargetPopovers();
+      postToPlugin({ type: "EXPORT_IMAGE_NODE", nodeId: id });
+    },
+  });
+
+  imageTargetPicker = createTargetPicker({
+    slot: { kind: "imageTarget" },
+    emptyLabel: "ターゲット（任意）",
+    ariaLabel: "画像比較ターゲット",
+    getLabel: () => getImageTarget()?.label ?? "",
+    getSelectedId: () => imageTargetId,
+    getTargets: () => imageTargets,
+    onApplySelection: () => {
+      setIgnorePopoverOpen(false);
+      closeAllRowMenus();
+      postToPlugin({ type: "SET_IMAGE_TARGET_FROM_SELECTION" });
+    },
+    onPick: (id) => {
+      commitImageTarget(id);
+    },
+  });
+
+  imagePairSidesEl.append(
+    imagePicker.root,
+    createPairSwapIcon(),
+    imageTargetPicker.root
+  );
+}
 
 imageRowActionsEl.append(
   createRowMenu({
@@ -2124,66 +1760,8 @@ imageRowActionsEl.append(
   })
 );
 
-imageFromSelectionBtn.addEventListener("click", () => {
-  postToPlugin({ type: "EXPORT_IMAGE_FROM_SELECTION" });
-});
-
-imageTargetFromSelectionBtn.addEventListener("click", () => {
-  postToPlugin({ type: "SET_IMAGE_TARGET_FROM_SELECTION" });
-});
-
-imageTargetInputEl.addEventListener("focus", () => {
-  openImageTargetList();
-});
-
-imageTargetInputEl.addEventListener("input", () => {
-  imageFilterQuery = imageTargetInputEl.value;
-  imageActiveIndex = 0;
-  openImageTargetList();
-});
-
-imageTargetInputEl.addEventListener("keydown", (event) => {
-  const filtered = filteredImageTargets();
-  if (event.key === "ArrowDown") {
-    event.preventDefault();
-    if (!imageListOpen) {
-      openImageTargetList();
-    }
-    imageActiveIndex = Math.min(imageActiveIndex + 1, filtered.length - 1);
-    if (imageActiveIndex < 0 && filtered.length > 0) {
-      imageActiveIndex = 0;
-    }
-    renderImageTargetList();
-    return;
-  }
-  if (event.key === "ArrowUp") {
-    event.preventDefault();
-    imageActiveIndex = Math.max(imageActiveIndex - 1, 0);
-    renderImageTargetList();
-    return;
-  }
-  if (event.key === "Enter") {
-    event.preventDefault();
-    if (imageActiveIndex >= 0 && imageActiveIndex < filtered.length) {
-      commitImageTarget(filtered[imageActiveIndex].id);
-    }
-    return;
-  }
-  if (event.key === "Escape") {
-    closeImageTargetList();
-    setImageTargetInputToSelection();
-  }
-});
-
-imageTargetInputEl.addEventListener("blur", () => {
-  window.setTimeout(() => {
-    if (!imageTargetListEl.contains(document.activeElement)) {
-      closeImageTargetList();
-      setImageTargetInputToSelection();
-    }
-  }, 0);
-});
-
+mountPinPicker();
+mountImagePickers();
 updateScopeVisibility();
 addKeywordRow();
 renderComparePairs();

@@ -23,35 +23,7 @@
           </label>
         </div>
         <div id="pin-inline" class="pin-inline">
-          <div class="pin-row">
-            <div class="pin-combobox">
-              <input
-                id="pin-combobox-input"
-                class="pin-combobox-input"
-                type="text"
-                role="combobox"
-                aria-autocomplete="list"
-                aria-controls="pin-combobox-list"
-                aria-expanded="false"
-                aria-label="固定先"
-                placeholder="名前で検索 / 選択"
-                autocomplete="off"
-              />
-              <ul
-                id="pin-combobox-list"
-                class="pin-combobox-list"
-                role="listbox"
-                hidden
-              ></ul>
-            </div>
-            <button
-              id="pin-from-selection"
-              class="btn-icon"
-              type="button"
-              title="選択を固定に"
-              aria-label="選択を固定に"
-            ></button>
-          </div>
+          <div id="pin-picker-root" class="target-picker-row"></div>
         </div>
         <div id="compare-inline" class="compare-inline" hidden>
           <div id="compare-pairs" class="compare-pairs"></div>
@@ -67,53 +39,7 @@
         </div>
         <div id="image-inline" class="image-inline" hidden>
           <div class="compare-pair-row">
-            <div class="compare-pair-sides">
-              <div class="compare-side">
-                <div class="compare-side-top">
-                  <span class="compare-side-label">画</span>
-                  <span id="image-name" class="image-name">画像未選択</span>
-                  <button
-                    id="image-from-selection"
-                    class="btn-icon"
-                    type="button"
-                    title="選択から画像"
-                    aria-label="選択から画像"
-                  ></button>
-                </div>
-              </div>
-              <div class="compare-side">
-                <div class="compare-side-top">
-                  <span class="compare-side-label">比</span>
-                  <div class="pin-combobox">
-                    <input
-                      id="image-target-input"
-                      class="pin-combobox-input"
-                      type="text"
-                      role="combobox"
-                      aria-autocomplete="list"
-                      aria-controls="image-target-list"
-                      aria-expanded="false"
-                      aria-label="比較ターゲット"
-                      placeholder="ターゲット（任意）"
-                      autocomplete="off"
-                    />
-                    <ul
-                      id="image-target-list"
-                      class="pin-combobox-list"
-                      role="listbox"
-                      hidden
-                    ></ul>
-                  </div>
-                  <button
-                    id="image-target-from-selection"
-                    class="btn-icon"
-                    type="button"
-                    title="選択をターゲットに"
-                    aria-label="選択をターゲットに"
-                  ></button>
-                </div>
-              </div>
-            </div>
+            <div id="image-pair-sides" class="compare-pair-sides"></div>
             <div id="image-row-actions" class="compare-pair-actions"></div>
           </div>
           <div id="ocr-status" class="ocr-status" hidden>

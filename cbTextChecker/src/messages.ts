@@ -14,6 +14,13 @@ import type {
 
 export type { CompareSide, HighlightColor, HoverHighlightStyle, IgnoreCategories };
 
+/** Identifies which target-picker button requested a selection apply. */
+export type SelectionSlot =
+  | { kind: "pin" }
+  | { kind: "compare"; index: number; side: CompareSide }
+  | { kind: "image" }
+  | { kind: "imageTarget" };
+
 export type UiToPluginMessage =
   | {
       type: "SET_MODE";
@@ -40,6 +47,7 @@ export type UiToPluginMessage =
   | { type: "LIST_COMPARE_TARGETS" }
   | { type: "LIST_IMAGE_TARGETS" }
   | { type: "EXPORT_IMAGE_FROM_SELECTION" }
+  | { type: "EXPORT_IMAGE_NODE"; nodeId: string }
   | { type: "CLEAR_IMAGE" }
   | { type: "SET_IMAGE_COMPARE_TARGET"; targetId: string | null }
   | { type: "SET_IMAGE_TARGET_FROM_SELECTION" }
@@ -95,5 +103,6 @@ export type PluginToUiMessage =
       exportScale: number;
     }
   | { type: "IMAGE_CLEARED" }
+  | { type: "SELECTION_EMPTY"; slot: SelectionSlot }
   | { type: "SEARCH_RESULT"; results: CheckResult[] }
   | { type: "ERROR"; message: string };
