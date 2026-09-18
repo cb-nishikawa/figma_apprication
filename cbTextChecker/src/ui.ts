@@ -3,6 +3,7 @@ import clearIcon from "./assets/clear.svg?raw";
 import pinIcon from "./assets/pin.svg?raw";
 import resetIcon from "./assets/reset.svg?raw";
 import selectIcon from "./assets/select.svg?raw";
+import sortIcon from "./assets/sort.svg?raw";
 import {
   COMPARE_EXACT,
   COMPARE_ONLY_A,
@@ -13,6 +14,7 @@ import { parseIgnoreInput } from "./search";
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
 import type {
   CheckResult,
+  ComparePair,
   CompareSide,
   HighlightColor,
   HoverHighlightItem,
@@ -51,23 +53,11 @@ const pinListEl = document.getElementById(
 const compareInline = document.getElementById(
   "compare-inline"
 ) as HTMLDivElement;
-const compareAInput = document.getElementById(
-  "compare-a-input"
-) as HTMLInputElement;
-const compareAList = document.getElementById(
-  "compare-a-list"
-) as HTMLUListElement;
-const compareBInput = document.getElementById(
-  "compare-b-input"
-) as HTMLInputElement;
-const compareBList = document.getElementById(
-  "compare-b-list"
-) as HTMLUListElement;
-const compareAFromSelectionBtn = document.getElementById(
-  "compare-a-from-selection"
-) as HTMLButtonElement;
-const compareBFromSelectionBtn = document.getElementById(
-  "compare-b-from-selection"
+const comparePairsEl = document.getElementById(
+  "compare-pairs"
+) as HTMLDivElement;
+const addComparePairBtn = document.getElementById(
+  "add-compare-pair"
 ) as HTMLButtonElement;
 const pinFromSelectionBtn = document.getElementById(
   "pin-from-selection"
@@ -84,10 +74,9 @@ const ignoreStringsEl = document.getElementById(
 const ignoreToggleBtn = document.getElementById(
   "ignore-toggle"
 ) as HTMLButtonElement;
-const ignoreBodyEl = document.getElementById("ignore-body") as HTMLDivElement;
-const ignoreToggleChevron = ignoreToggleBtn.querySelector(
-  ".ignore-toggle-chevron"
-) as HTMLSpanElement;
+const ignorePopoverEl = document.getElementById(
+  "ignore-popover"
+) as HTMLDivElement;
 const ignoreEmojiEl = document.getElementById(
   "ignore-emoji"
 ) as HTMLInputElement;
@@ -100,14 +89,15 @@ const ignoreSymbolEl = document.getElementById(
 const ignorePunctEl = document.getElementById(
   "ignore-punct"
 ) as HTMLInputElement;
+const ignoreNewlinesEl = document.getElementById(
+  "ignore-newlines"
+) as HTMLInputElement;
 const ignoreWhitespaceEl = document.getElementById(
   "ignore-whitespace"
 ) as HTMLInputElement;
 const keywordRowsEl = document.getElementById("keyword-rows") as HTMLDivElement;
 const addKeywordBtn = document.getElementById("add-keyword") as HTMLButtonElement;
-const clearKeywordsBtn = document.getElementById(
-  "clear-keywords"
-) as HTMLButtonElement;
+const clearAllBtn = document.getElementById("clear-all") as HTMLButtonElement;
 const resetSearchBtn = document.getElementById(
   "reset-search"
 ) as HTMLButtonElement;
@@ -115,21 +105,38 @@ const resultsEl = document.getElementById("results") as HTMLUListElement;
 const errorEl = document.getElementById("error") as HTMLParagraphElement;
 const resizeHandle = document.getElementById("resize-handle") as HTMLDivElement;
 
-let mode: SearchMode = "selection";
+interface ComparePairUi {
+  idA: string | null;
+  idB: string | null;
+  filterA: string;
+  filterB: string;
+  listOpenA: boolean;
+  listOpenB: boolean;
+  activeIndexA: number;
+  activeIndexB: number;
+}
+
+function emptyPairUi(): ComparePairUi {
+  return {
+    idA: null,
+    idB: null,
+    filterA: "",
+    filterB: "",
+    listOpenA: false,
+    listOpenB: false,
+    activeIndexA: -1,
+    activeIndexB: -1,
+  };
+}
+
+let mode: SearchMode = "pinned";
 let pinTargets: PinTarget[] = [];
 let pinnedNodeId: string | null = null;
-let compareNodeIdA: string | null = null;
-let compareNodeIdB: string | null = null;
 let compareTargets: PinTarget[] = [];
+let comparePairs: ComparePairUi[] = [emptyPairUi()];
 let pinFilterQuery = "";
 let pinListOpen = false;
 let pinActiveIndex = -1;
-let compareFilterA = "";
-let compareFilterB = "";
-let compareListOpenA = false;
-let compareListOpenB = false;
-let compareActiveIndexA = -1;
-let compareActiveIndexB = -1;
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 /** Keywords whose accordion is expanded. */
 const expandedKeywords = new Set<string>();
@@ -138,6 +145,7 @@ const pinnedKeywords = new Set<string>();
 /** Per-keyword highlight color. */
 const keywordColors = new Map<string, HighlightColor>();
 let lastResults: CheckResult[] = [];
+let suppressCompareSync = false;
 
 function postToPlugin(message: UiToPluginMessage): void {
   parent.postMessage({ pluginMessage: message }, "*");
@@ -321,10 +329,10 @@ function debounceSearch(): void {
 }
 
 function collectQueries(): KeywordQuery[] {
+  const ignoreNewlines = collectIgnoreCategories().newlines;
   const queries: KeywordQuery[] = [];
   keywordRowsEl.querySelectorAll(".keyword-row").forEach((row) => {
     const area = row.querySelector("textarea");
-    const brBtn = row.querySelector(".br-toggle") as HTMLButtonElement | null;
     if (!area) {
       return;
     }
@@ -334,7 +342,7 @@ function collectQueries(): KeywordQuery[] {
     }
     queries.push({
       keyword: value,
-      ignoreNewlines: brBtn?.getAttribute("aria-pressed") !== "false",
+      ignoreNewlines,
     });
   });
   return queries;
@@ -350,6 +358,7 @@ function collectIgnoreCategories(): IgnoreCategories {
     kinsoku: ignoreKinsokuEl.checked,
     symbol: ignoreSymbolEl.checked,
     punct: ignorePunctEl.checked,
+    newlines: ignoreNewlinesEl.checked,
     whitespace: ignoreWhitespaceEl.checked,
   };
 }
@@ -384,13 +393,6 @@ function updateScopeVisibility(): void {
   const hideKeywords = mode === "compare";
   keywordsSection.hidden = hideKeywords;
   keywordsDivider.hidden = hideKeywords;
-}
-
-function syncBrToggle(btn: HTMLButtonElement, ignoreNewlines: boolean): void {
-  btn.setAttribute("aria-pressed", ignoreNewlines ? "true" : "false");
-  btn.title = ignoreNewlines ? "改行を無視する" : "改行を含めて検索";
-  btn.classList.toggle("is-on", ignoreNewlines);
-  btn.classList.toggle("is-off", !ignoreNewlines);
 }
 
 function filteredPinTargets(): PinTarget[] {
@@ -433,8 +435,7 @@ function commitPinnedNode(nextId: string | null): void {
 }
 
 function openPinList(): void {
-  closeCompareList("A");
-  closeCompareList("B");
+  closeAllCompareLists();
   pinListOpen = true;
   pinListEl.hidden = false;
   pinInputEl.setAttribute("aria-expanded", "true");
@@ -517,18 +518,27 @@ function refreshPinCombobox(preserveInput = false): void {
   }
 }
 
-function getCompareTarget(side: CompareSide): PinTarget | null {
-  const id = side === "A" ? compareNodeIdA : compareNodeIdB;
+function pairsToPayload(): ComparePair[] {
+  return comparePairs.map((p) => ({ idA: p.idA, idB: p.idB }));
+}
+
+function syncComparePairsToPlugin(): void {
+  if (suppressCompareSync) {
+    return;
+  }
+  postToPlugin({ type: "SET_COMPARE_PAIRS", pairs: pairsToPayload() });
+}
+
+function getCompareTarget(pair: ComparePairUi, side: CompareSide): PinTarget | null {
+  const id = side === "A" ? pair.idA : pair.idB;
   if (!id) {
     return null;
   }
   return compareTargets.find((t) => t.id === id) ?? null;
 }
 
-function filteredCompareTargets(side: CompareSide): PinTarget[] {
-  const query = (side === "A" ? compareFilterA : compareFilterB)
-    .trim()
-    .toLowerCase();
+function filteredCompareTargets(pair: ComparePairUi, side: CompareSide): PinTarget[] {
+  const query = (side === "A" ? pair.filterA : pair.filterB).trim().toLowerCase();
   if (!query) {
     return compareTargets;
   }
@@ -540,205 +550,361 @@ function filteredCompareTargets(side: CompareSide): PinTarget[] {
   });
 }
 
-function setCompareInputToSelection(side: CompareSide): void {
-  const selected = getCompareTarget(side);
-  const input = side === "A" ? compareAInput : compareBInput;
-  if (side === "A") {
-    compareFilterA = "";
-  } else {
-    compareFilterB = "";
+function closeAllCompareLists(): void {
+  for (const pair of comparePairs) {
+    pair.listOpenA = false;
+    pair.listOpenB = false;
+    pair.activeIndexA = -1;
+    pair.activeIndexB = -1;
   }
-  input.value = selected ? selected.label : "";
+  comparePairsEl
+    .querySelectorAll<HTMLUListElement>(".pin-combobox-list")
+    .forEach((list) => {
+      list.hidden = true;
+    });
+  comparePairsEl
+    .querySelectorAll<HTMLInputElement>(".pin-combobox-input")
+    .forEach((input) => {
+      input.setAttribute("aria-expanded", "false");
+    });
 }
 
-function closeCompareList(side: CompareSide): void {
-  const list = side === "A" ? compareAList : compareBList;
-  const input = side === "A" ? compareAInput : compareBInput;
+function commitCompareNode(
+  index: number,
+  side: CompareSide,
+  nextId: string | null
+): void {
+  const pair = comparePairs[index];
+  if (!pair) {
+    return;
+  }
   if (side === "A") {
-    compareListOpenA = false;
-    compareActiveIndexA = -1;
+    pair.idA = nextId;
+    pair.filterA = "";
   } else {
-    compareListOpenB = false;
-    compareActiveIndexB = -1;
+    pair.idB = nextId;
+    pair.filterB = "";
   }
-  list.hidden = true;
-  input.setAttribute("aria-expanded", "false");
-}
-
-function renderCompareList(side: CompareSide): void {
-  const list = side === "A" ? compareAList : compareBList;
-  const selectedId = side === "A" ? compareNodeIdA : compareNodeIdB;
-  let activeIndex = side === "A" ? compareActiveIndexA : compareActiveIndexB;
-  list.replaceChildren();
-
-  if (compareTargets.length === 0) {
-    const empty = document.createElement("li");
-    empty.className = "pin-combobox-empty";
-    empty.textContent = "候補がありません";
-    list.append(empty);
-    return;
-  }
-
-  const filtered = filteredCompareTargets(side);
-  if (filtered.length === 0) {
-    const empty = document.createElement("li");
-    empty.className = "pin-combobox-empty";
-    empty.textContent = "該当なし";
-    list.append(empty);
-    if (side === "A") {
-      compareActiveIndexA = -1;
-    } else {
-      compareActiveIndexB = -1;
-    }
-    return;
-  }
-
-  if (activeIndex >= filtered.length) {
-    activeIndex = filtered.length - 1;
-    if (side === "A") {
-      compareActiveIndexA = activeIndex;
-    } else {
-      compareActiveIndexB = activeIndex;
-    }
-  }
-
-  filtered.forEach((target, index) => {
-    const item = document.createElement("li");
-    item.setAttribute("role", "option");
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "pin-combobox-option";
-    if (target.id === selectedId) {
-      button.classList.add("is-selected");
-    }
-    if (index === activeIndex) {
-      button.classList.add("is-active");
-    }
-    button.textContent = target.label;
-    button.title = target.label;
-    button.addEventListener("mousedown", (event) => {
-      event.preventDefault();
-    });
-    button.addEventListener("click", () => {
-      commitCompareNode(side, target.id);
-    });
-    item.append(button);
-    list.append(item);
+  renderComparePairs();
+  postToPlugin({
+    type: "SET_COMPARE_PAIR",
+    index,
+    side,
+    nodeId: nextId,
   });
 }
 
-function openCompareList(side: CompareSide): void {
-  closeCompareList(side === "A" ? "B" : "A");
-  closePinList();
-  const list = side === "A" ? compareAList : compareBList;
-  const input = side === "A" ? compareAInput : compareBInput;
-  if (side === "A") {
-    compareListOpenA = true;
-  } else {
-    compareListOpenB = true;
-  }
-  list.hidden = false;
-  input.setAttribute("aria-expanded", "true");
-  renderCompareList(side);
-}
+function createCompareSide(
+  index: number,
+  side: CompareSide
+): HTMLDivElement {
+  const pair = comparePairs[index];
+  const sideEl = document.createElement("div");
+  sideEl.className = "compare-side";
 
-function commitCompareNode(side: CompareSide, nextId: string | null): void {
-  if (side === "A") {
-    compareNodeIdA = nextId;
-  } else {
-    compareNodeIdB = nextId;
-  }
-  setCompareInputToSelection(side);
-  closeCompareList(side);
-  postToPlugin({ type: "SET_COMPARE_NODE", side, nodeId: nextId });
-}
+  const top = document.createElement("div");
+  top.className = "compare-side-top";
 
-function refreshCompareComboboxes(): void {
-  if (
-    compareNodeIdA &&
-    !compareTargets.some((t) => t.id === compareNodeIdA)
-  ) {
-    compareNodeIdA = null;
-  }
-  if (
-    compareNodeIdB &&
-    !compareTargets.some((t) => t.id === compareNodeIdB)
-  ) {
-    compareNodeIdB = null;
-  }
-  setCompareInputToSelection("A");
-  setCompareInputToSelection("B");
-  if (compareListOpenA) {
-    renderCompareList("A");
-  }
-  if (compareListOpenB) {
-    renderCompareList("B");
-  }
-}
+  const label = document.createElement("span");
+  label.className = "compare-side-label";
+  label.textContent = side;
 
-function wireCompareCombobox(side: CompareSide): void {
-  const input = side === "A" ? compareAInput : compareBInput;
+  const combobox = document.createElement("div");
+  combobox.className = "pin-combobox";
+
+  const listId = `compare-${side.toLowerCase()}-list-${index}`;
+  const input = document.createElement("input");
+  input.className = "pin-combobox-input";
+  input.type = "text";
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-controls", listId);
+  input.setAttribute("aria-expanded", "false");
+  input.setAttribute("aria-label", `比較 ${side}`);
+  input.placeholder = "Section / Frame";
+  input.autocomplete = "off";
+  const selected = getCompareTarget(pair, side);
+  input.value = selected ? selected.label : "";
+
+  const list = document.createElement("ul");
+  list.id = listId;
+  list.className = "pin-combobox-list";
+  list.setAttribute("role", "listbox");
+  list.hidden = true;
+
+  const fromSelectionBtn = document.createElement("button");
+  fromSelectionBtn.type = "button";
+  fromSelectionBtn.className = "btn-icon";
+  fromSelectionBtn.title = `選択を ${side} に`;
+  fromSelectionBtn.setAttribute("aria-label", fromSelectionBtn.title);
+  fromSelectionBtn.innerHTML = selectIcon;
+  fromSelectionBtn.addEventListener("click", () => {
+    postToPlugin({
+      type: "SET_COMPARE_FROM_SELECTION",
+      index,
+      side,
+    });
+  });
+
+  function renderList(): void {
+    list.replaceChildren();
+    const listOpen = side === "A" ? pair.listOpenA : pair.listOpenB;
+    let activeIndex = side === "A" ? pair.activeIndexA : pair.activeIndexB;
+    if (!listOpen) {
+      return;
+    }
+    if (compareTargets.length === 0) {
+      const empty = document.createElement("li");
+      empty.className = "pin-combobox-empty";
+      empty.textContent = "候補がありません";
+      list.append(empty);
+      return;
+    }
+    const filtered = filteredCompareTargets(pair, side);
+    if (filtered.length === 0) {
+      const empty = document.createElement("li");
+      empty.className = "pin-combobox-empty";
+      empty.textContent = "該当なし";
+      list.append(empty);
+      if (side === "A") {
+        pair.activeIndexA = -1;
+      } else {
+        pair.activeIndexB = -1;
+      }
+      return;
+    }
+    if (activeIndex >= filtered.length) {
+      activeIndex = filtered.length - 1;
+      if (side === "A") {
+        pair.activeIndexA = activeIndex;
+      } else {
+        pair.activeIndexB = activeIndex;
+      }
+    }
+    const selectedId = side === "A" ? pair.idA : pair.idB;
+    filtered.forEach((target, optIndex) => {
+      const item = document.createElement("li");
+      item.setAttribute("role", "option");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "pin-combobox-option";
+      if (target.id === selectedId) {
+        button.classList.add("is-selected");
+      }
+      if (optIndex === activeIndex) {
+        button.classList.add("is-active");
+      }
+      button.textContent = target.label;
+      button.title = target.label;
+      button.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+      });
+      button.addEventListener("click", () => {
+        commitCompareNode(index, side, target.id);
+      });
+      item.append(button);
+      list.append(item);
+    });
+  }
+
+  function openList(): void {
+    closePinList();
+    for (let i = 0; i < comparePairs.length; i++) {
+      const other = comparePairs[i];
+      if (i === index) {
+        if (side === "A") {
+          other.listOpenB = false;
+          other.activeIndexB = -1;
+        } else {
+          other.listOpenA = false;
+          other.activeIndexA = -1;
+        }
+      } else {
+        other.listOpenA = false;
+        other.listOpenB = false;
+        other.activeIndexA = -1;
+        other.activeIndexB = -1;
+      }
+    }
+    comparePairsEl
+      .querySelectorAll<HTMLUListElement>(".pin-combobox-list")
+      .forEach((el) => {
+        el.hidden = true;
+      });
+    comparePairsEl
+      .querySelectorAll<HTMLInputElement>(".pin-combobox-input")
+      .forEach((el) => {
+        el.setAttribute("aria-expanded", "false");
+      });
+    if (side === "A") {
+      pair.listOpenA = true;
+    } else {
+      pair.listOpenB = true;
+    }
+    list.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+    renderList();
+  }
+
+  function closeList(): void {
+    if (side === "A") {
+      pair.listOpenA = false;
+      pair.activeIndexA = -1;
+    } else {
+      pair.listOpenB = false;
+      pair.activeIndexB = -1;
+    }
+    list.hidden = true;
+    input.setAttribute("aria-expanded", "false");
+  }
+
   input.addEventListener("focus", () => {
-    openCompareList(side);
+    openList();
   });
   input.addEventListener("input", () => {
     if (side === "A") {
-      compareFilterA = input.value;
-      compareActiveIndexA = 0;
+      pair.filterA = input.value;
+      pair.activeIndexA = 0;
     } else {
-      compareFilterB = input.value;
-      compareActiveIndexB = 0;
+      pair.filterB = input.value;
+      pair.activeIndexB = 0;
     }
-    openCompareList(side);
+    openList();
   });
   input.addEventListener("keydown", (event) => {
-    const filtered = filteredCompareTargets(side);
-    const activeIndex =
-      side === "A" ? compareActiveIndexA : compareActiveIndexB;
-    const listOpen = side === "A" ? compareListOpenA : compareListOpenB;
+    const filtered = filteredCompareTargets(pair, side);
+    const activeIndex = side === "A" ? pair.activeIndexA : pair.activeIndexB;
+    const listOpen = side === "A" ? pair.listOpenA : pair.listOpenB;
     if (event.key === "ArrowDown") {
       event.preventDefault();
       if (!listOpen) {
-        openCompareList(side);
+        openList();
       }
       const next = Math.min(activeIndex + 1, filtered.length - 1);
       if (side === "A") {
-        compareActiveIndexA = next < 0 && filtered.length > 0 ? 0 : next;
+        pair.activeIndexA = next < 0 && filtered.length > 0 ? 0 : next;
       } else {
-        compareActiveIndexB = next < 0 && filtered.length > 0 ? 0 : next;
+        pair.activeIndexB = next < 0 && filtered.length > 0 ? 0 : next;
       }
-      renderCompareList(side);
+      renderList();
       return;
     }
     if (event.key === "ArrowUp") {
       event.preventDefault();
       const next = Math.max(activeIndex - 1, 0);
       if (side === "A") {
-        compareActiveIndexA = next;
+        pair.activeIndexA = next;
       } else {
-        compareActiveIndexB = next;
+        pair.activeIndexB = next;
       }
-      renderCompareList(side);
+      renderList();
       return;
     }
     if (event.key === "Enter") {
       event.preventDefault();
       if (activeIndex >= 0 && filtered[activeIndex]) {
-        commitCompareNode(side, filtered[activeIndex].id);
+        commitCompareNode(index, side, filtered[activeIndex].id);
       }
       return;
     }
     if (event.key === "Escape") {
-      closeCompareList(side);
-      setCompareInputToSelection(side);
+      closeList();
+      const selectedTarget = getCompareTarget(pair, side);
+      input.value = selectedTarget ? selectedTarget.label : "";
     }
   });
   input.addEventListener("blur", () => {
     window.setTimeout(() => {
-      closeCompareList(side);
-      setCompareInputToSelection(side);
+      closeList();
+      const selectedTarget = getCompareTarget(pair, side);
+      input.value = selectedTarget ? selectedTarget.label : "";
     }, 120);
   });
+
+  combobox.append(input, list);
+  top.append(label, combobox, fromSelectionBtn);
+  sideEl.append(top);
+  return sideEl;
+}
+
+function renderComparePairs(): void {
+  comparePairsEl.replaceChildren();
+  comparePairs.forEach((pair, index) => {
+    const row = document.createElement("div");
+    row.className = "compare-pair-row";
+
+    const sides = document.createElement("div");
+    sides.className = "compare-pair-sides";
+    sides.append(createCompareSide(index, "A"), createCompareSide(index, "B"));
+
+    const actions = document.createElement("div");
+    actions.className = "compare-pair-actions";
+
+    const clearBtn = document.createElement("button");
+    clearBtn.type = "button";
+    clearBtn.className = "btn-icon";
+    clearBtn.title = "この行をクリア";
+    clearBtn.setAttribute("aria-label", "この行をクリア");
+    clearBtn.innerHTML = clearIcon;
+    clearBtn.addEventListener("click", () => {
+      pair.idA = null;
+      pair.idB = null;
+      pair.filterA = "";
+      pair.filterB = "";
+      renderComparePairs();
+      syncComparePairsToPlugin();
+    });
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "btn-icon";
+    removeBtn.title = "このペアを削除";
+    removeBtn.setAttribute("aria-label", "このペアを削除");
+    removeBtn.textContent = "-";
+    removeBtn.disabled = comparePairs.length <= 1;
+    removeBtn.addEventListener("click", () => {
+      if (comparePairs.length <= 1) {
+        return;
+      }
+      comparePairs.splice(index, 1);
+      renderComparePairs();
+      syncComparePairsToPlugin();
+    });
+
+    actions.append(clearBtn, removeBtn);
+    row.append(sides, actions);
+    comparePairsEl.append(row);
+  });
+}
+
+function refreshComparePairsFromState(): void {
+  for (const pair of comparePairs) {
+    if (pair.idA && !compareTargets.some((t) => t.id === pair.idA)) {
+      pair.idA = null;
+    }
+    if (pair.idB && !compareTargets.some((t) => t.id === pair.idB)) {
+      pair.idB = null;
+    }
+  }
+  if (comparePairs.length === 0) {
+    comparePairs = [emptyPairUi()];
+  }
+  renderComparePairs();
+}
+
+function addComparePair(): void {
+  comparePairs.push(emptyPairUi());
+  renderComparePairs();
+  syncComparePairsToPlugin();
+}
+
+function clearComparePairs(): void {
+  comparePairs = [emptyPairUi()];
+  renderComparePairs();
+  syncComparePairsToPlugin();
+  renderResults([]);
+  postToPlugin({ type: "CLEAR_HIGHLIGHT" });
+  showError(null);
 }
 
 function updateRemoveButtons(): void {
@@ -749,10 +915,7 @@ function updateRemoveButtons(): void {
   });
 }
 
-function addKeywordRow(
-  initialValue = "",
-  ignoreNewlines = true
-): void {
+function addKeywordRow(initialValue = ""): void {
   const row = document.createElement("div");
   row.className = "keyword-row";
 
@@ -764,17 +927,6 @@ function addKeywordRow(
 
   const actions = document.createElement("div");
   actions.className = "keyword-row-actions";
-
-  const brBtn = document.createElement("button");
-  brBtn.type = "button";
-  brBtn.className = "br-toggle";
-  brBtn.textContent = "br";
-  syncBrToggle(brBtn, ignoreNewlines);
-  brBtn.addEventListener("click", () => {
-    const next = brBtn.getAttribute("aria-pressed") !== "true";
-    syncBrToggle(brBtn, next);
-    debounceSearch();
-  });
 
   const clearRowBtn = document.createElement("button");
   clearRowBtn.type = "button";
@@ -804,7 +956,7 @@ function addKeywordRow(
     debounceSearch();
   });
 
-  actions.append(brBtn, clearRowBtn, removeBtn);
+  actions.append(clearRowBtn, removeBtn);
   row.append(textarea, actions);
 
   row.addEventListener("mouseenter", () => {
@@ -1166,50 +1318,41 @@ Array.from(
     if (!input.checked) {
       return;
     }
-    const previousMode = mode;
     mode = input.value as SearchMode;
     updateScopeVisibility();
-
-    const nextPinnedNodeId =
-      mode === "pinned"
-        ? previousMode === "selection"
-          ? undefined
-          : pinnedNodeId
-        : null;
 
     postToPlugin({
       type: "SET_MODE",
       mode,
-      pinnedNodeId: nextPinnedNodeId,
-      compareNodeIdA: mode === "compare" ? compareNodeIdA : undefined,
-      compareNodeIdB: mode === "compare" ? compareNodeIdB : undefined,
+      pinnedNodeId: mode === "pinned" ? pinnedNodeId : undefined,
+      comparePairs: mode === "compare" ? pairsToPayload() : undefined,
     });
   });
 });
 
-wireCompareCombobox("A");
-wireCompareCombobox("B");
-
-compareAFromSelectionBtn.innerHTML = selectIcon;
-compareBFromSelectionBtn.innerHTML = selectIcon;
 pinFromSelectionBtn.innerHTML = selectIcon;
-
-compareAFromSelectionBtn.addEventListener("click", () => {
-  postToPlugin({ type: "SET_COMPARE_FROM_SELECTION", side: "A" });
-});
-compareBFromSelectionBtn.addEventListener("click", () => {
-  postToPlugin({ type: "SET_COMPARE_FROM_SELECTION", side: "B" });
-});
 pinFromSelectionBtn.addEventListener("click", () => {
   postToPlugin({ type: "SET_PINNED_FROM_SELECTION" });
 });
 
-ignoreToggleBtn.addEventListener("click", () => {
+addComparePairBtn.addEventListener("click", () => {
+  addComparePair();
+});
+
+function setIgnorePopoverOpen(open: boolean): void {
+  ignorePopoverEl.hidden = !open;
+  ignoreToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+ignoreToggleBtn.innerHTML = sortIcon;
+ignoreToggleBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
   const open = ignoreToggleBtn.getAttribute("aria-expanded") === "true";
-  const nextOpen = !open;
-  ignoreToggleBtn.setAttribute("aria-expanded", nextOpen ? "true" : "false");
-  ignoreBodyEl.hidden = !nextOpen;
-  ignoreToggleChevron.textContent = nextOpen ? "▾" : "▸";
+  setIgnorePopoverOpen(!open);
+});
+
+ignorePopoverEl.addEventListener("click", (event) => {
+  event.stopPropagation();
 });
 
 function onIgnoreOptionsChanged(): void {
@@ -1221,6 +1364,7 @@ ignoreEmojiEl.addEventListener("change", onIgnoreOptionsChanged);
 ignoreKinsokuEl.addEventListener("change", onIgnoreOptionsChanged);
 ignoreSymbolEl.addEventListener("change", onIgnoreOptionsChanged);
 ignorePunctEl.addEventListener("change", onIgnoreOptionsChanged);
+ignoreNewlinesEl.addEventListener("change", onIgnoreOptionsChanged);
 ignoreWhitespaceEl.addEventListener("change", onIgnoreOptionsChanged);
 
 // Ensure defaults match DEFAULT_IGNORE_CATEGORIES
@@ -1228,6 +1372,7 @@ ignoreEmojiEl.checked = DEFAULT_IGNORE_CATEGORIES.emoji;
 ignoreKinsokuEl.checked = DEFAULT_IGNORE_CATEGORIES.kinsoku;
 ignoreSymbolEl.checked = DEFAULT_IGNORE_CATEGORIES.symbol;
 ignorePunctEl.checked = DEFAULT_IGNORE_CATEGORIES.punct;
+ignoreNewlinesEl.checked = DEFAULT_IGNORE_CATEGORIES.newlines;
 ignoreWhitespaceEl.checked = DEFAULT_IGNORE_CATEGORIES.whitespace;
 
 pinInputEl.addEventListener("focus", () => {
@@ -1287,6 +1432,13 @@ document.addEventListener("click", (event) => {
   if (!pinInline.contains(target)) {
     closePinList();
   }
+  if (!compareInline.contains(target)) {
+    closeAllCompareLists();
+  }
+  const ignoreMenu = ignoreToggleBtn.closest(".ignore-menu");
+  if (ignoreMenu && !ignoreMenu.contains(target)) {
+    setIgnorePopoverOpen(false);
+  }
 });
 
 addKeywordBtn.addEventListener("click", () => {
@@ -1304,11 +1456,19 @@ function clearKeywords(): void {
   area?.focus();
 }
 
-clearKeywordsBtn.innerHTML = clearIcon;
+function clearAll(): void {
+  if (mode === "compare") {
+    clearComparePairs();
+    return;
+  }
+  clearKeywords();
+}
+
+clearAllBtn.innerHTML = clearIcon;
 resetSearchBtn.innerHTML = resetIcon;
 
-clearKeywordsBtn.addEventListener("click", () => {
-  clearKeywords();
+clearAllBtn.addEventListener("click", () => {
+  clearAll();
 });
 
 resetSearchBtn.addEventListener("click", () => {
@@ -1394,9 +1554,16 @@ window.onmessage = (event: MessageEvent) => {
 
   if (msg.type === "COMPARE_STATE") {
     compareTargets = msg.targets;
-    compareNodeIdA = msg.nodeIdA;
-    compareNodeIdB = msg.nodeIdB;
-    refreshCompareComboboxes();
+    suppressCompareSync = true;
+    comparePairs = (msg.pairs.length > 0 ? msg.pairs : [{ idA: null, idB: null }]).map(
+      (p) => ({
+        ...emptyPairUi(),
+        idA: p.idA,
+        idB: p.idB,
+      })
+    );
+    refreshComparePairsFromState();
+    suppressCompareSync = false;
     return;
   }
 
@@ -1409,5 +1576,7 @@ window.onmessage = (event: MessageEvent) => {
 
 updateScopeVisibility();
 addKeywordRow();
+renderComparePairs();
 renderResults([]);
 postToPlugin({ type: "LIST_PIN_TARGETS" });
+postToPlugin({ type: "LIST_COMPARE_TARGETS" });

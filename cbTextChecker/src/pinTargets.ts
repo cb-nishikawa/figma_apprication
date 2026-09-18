@@ -2,19 +2,6 @@ import type { PinTarget } from "./types";
 
 type PinKind = "SECTION" | "FRAME" | "INSTANCE" | "GROUP";
 
-function kindLabel(kind: PinKind): string {
-  switch (kind) {
-    case "SECTION":
-      return "Section";
-    case "FRAME":
-      return "Frame";
-    case "INSTANCE":
-      return "Instance";
-    case "GROUP":
-      return "Group";
-  }
-}
-
 function isPinKind(type: string): type is PinKind {
   return (
     type === "SECTION" ||
@@ -39,8 +26,8 @@ function buildLabel(
   node: SceneNode & { type: PinKind },
   duplicateNames: Set<string>
 ): string {
-  const base = `${kindLabel(node.type)}: ${node.name}`;
-  if (!duplicateNames.has(`${node.type}:${node.name}`)) {
+  const base = node.name;
+  if (!duplicateNames.has(node.name)) {
     return base;
   }
   const parentName = parentContextName(node);
@@ -57,14 +44,13 @@ export function collectPinTargets(): PinTarget[] {
 
   const nameCounts = new Map<string, number>();
   for (const node of nodes) {
-    const key = `${node.type}:${node.name}`;
-    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+    nameCounts.set(node.name, (nameCounts.get(node.name) ?? 0) + 1);
   }
 
   const duplicateNames = new Set<string>();
-  for (const [key, count] of nameCounts) {
+  for (const [name, count] of nameCounts) {
     if (count > 1) {
-      duplicateNames.add(key);
+      duplicateNames.add(name);
     }
   }
 

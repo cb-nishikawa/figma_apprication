@@ -26,10 +26,19 @@ describe("compareTextNodes", () => {
     expect(diff.onlyB).toEqual([]);
   });
 
-  it("treats newline-only differences as exact", () => {
+  it("treats newline-only differences as exact when newlines category is on", () => {
     const diff = compareTextNodes(
       [{ id: "a1", characters: "hello\nworld" }],
-      [{ id: "b1", characters: "helloworld" }]
+      [{ id: "b1", characters: "helloworld" }],
+      [],
+      {
+        emoji: false,
+        kinsoku: false,
+        symbol: false,
+        punct: false,
+        newlines: true,
+        whitespace: false,
+      }
     );
     expect(diff.matchedExact).toHaveLength(1);
     expect(diff.matchedExact[0].a.id).toBe("a1");
@@ -60,6 +69,7 @@ describe("compareTextNodes", () => {
         kinsoku: false,
         symbol: false,
         punct: false,
+        newlines: true,
         whitespace: true,
       }
     );
@@ -163,7 +173,7 @@ describe("compareTextNodes", () => {
       [{ id: "a1", characters: "本校の特長" }],
       [{ id: "b1", characters: "・本校の特長" }],
       [],
-      { emoji: false, kinsoku: false, symbol: true, punct: false, whitespace: false }
+      { emoji: false, kinsoku: false, symbol: true, punct: false, newlines: false, whitespace: false }
     );
     expect(diff.matchedExact).toHaveLength(1);
     expect(diff.matchedPartial).toEqual([]);

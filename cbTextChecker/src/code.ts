@@ -1,7 +1,7 @@
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
 import type {
   CheckResult,
-  CompareSide,
+  ComparePair,
   HoverHighlightItem,
   IgnoreCategories,
   KeywordQuery,
@@ -9,7 +9,11 @@ import type {
   TextMatch,
 } from "./types";
 import { DEFAULT_IGNORE_CATEGORIES } from "./types";
-import { compareDiffToResults, compareTextNodes } from "./compare";
+import {
+  compareDiffToResults,
+  compareTextNodes,
+  type TextCompareDiff,
+} from "./compare";
 import {
   buildHighlightPool,
   clearHoverHighlight,
@@ -44,18 +48,19 @@ void (async () => {
 })();
 
 const PREVIEW_MAX_LENGTH = 40;
-const SELECTION_DEBOUNCE_MS = 150;
 
-let mode: SearchMode = "selection";
+function emptyComparePair(): ComparePair {
+  return { idA: null, idB: null };
+}
+
+let mode: SearchMode = "pinned";
 let pinnedNodeId: string | null = null;
-let compareNodeIdA: string | null = null;
-let compareNodeIdB: string | null = null;
+let comparePairs: ComparePair[] = [emptyComparePair()];
 let lastQueries: KeywordQuery[] = [];
 let lastIgnoreStrings: string[] = [];
 let lastIgnoreCategories: IgnoreCategories = { ...DEFAULT_IGNORE_CATEGORIES };
 let lastResults: CheckResult[] = [];
-let selectionTimer: ReturnType<typeof setTimeout> | null = null;
-/** Skip selection-driven re-search while creating/removing highlight overlays. */
+/** Skip selection-driven work while creating/removing highlight overlays. */
 let ignoreSelectionForHighlight = false;
 
 async function withHighlightMutation(
@@ -101,22 +106,6 @@ function isVisibleTextNode(node: BaseNode): node is TextNode {
 
 function collectTextFromRoot(root: BaseNode & ChildrenMixin): TextNode[] {
   return root.findAll((n) => isVisibleTextNode(n)) as TextNode[];
-}
-
-function collectTextFromSelection(selection: readonly SceneNode[]): TextNode[] {
-  const texts: TextNode[] = [];
-  for (const node of selection) {
-    if (node.type === "TEXT") {
-      if (isEffectivelyVisible(node)) {
-        texts.push(node);
-      }
-      continue;
-    }
-    if ("findAll" in node) {
-      texts.push(...collectTextFromRoot(node as BaseNode & ChildrenMixin));
-    }
-  }
-  return dedupeTextNodes(texts);
 }
 
 function makePreview(characters: string): string {
@@ -177,23 +166,30 @@ function postPinTargets(): void {
   });
 }
 
-function sanitizeCompareIds(targets: ReturnType<typeof collectPinTargets>): void {
-  if (compareNodeIdA && !targets.some((t) => t.id === compareNodeIdA)) {
-    compareNodeIdA = null;
+function sanitizeComparePairs(
+  targets: ReturnType<typeof collectPinTargets>
+): void {
+  const valid = new Set(targets.map((t) => t.id));
+  for (const pair of comparePairs) {
+    if (pair.idA && !valid.has(pair.idA)) {
+      pair.idA = null;
+    }
+    if (pair.idB && !valid.has(pair.idB)) {
+      pair.idB = null;
+    }
   }
-  if (compareNodeIdB && !targets.some((t) => t.id === compareNodeIdB)) {
-    compareNodeIdB = null;
+  if (comparePairs.length === 0) {
+    comparePairs = [emptyComparePair()];
   }
 }
 
 function postCompareState(): void {
   const targets = collectPinTargets();
-  sanitizeCompareIds(targets);
+  sanitizeComparePairs(targets);
   postToUi({
     type: "COMPARE_STATE",
     targets,
-    nodeIdA: compareNodeIdA,
-    nodeIdB: compareNodeIdB,
+    pairs: comparePairs.map((p) => ({ ...p })),
   });
 }
 
@@ -222,23 +218,10 @@ function resolvePinTargetFromSelection(): string | null {
 }
 
 async function getSearchNodes(): Promise<TextNode[] | { error: string }> {
-  if (mode === "selection") {
-    const selection = figma.currentPage.selection;
-    if (selection.length === 0) {
-      return { error: "選択がありません" };
-    }
-    return collectTextFromSelection(selection);
-  }
-
-  if (mode === "page") {
-    return figma.currentPage.findAll((n) => isVisibleTextNode(n)) as TextNode[];
-  }
-
   if (mode === "compare") {
     return { error: "比較モードではキーワード検索は使えません" };
   }
 
-  // pinned
   if (!pinnedNodeId) {
     return { error: "固定先が未選択です" };
   }
@@ -384,44 +367,67 @@ async function handleCompare(
   });
 
   const targets = collectPinTargets();
-  sanitizeCompareIds(targets);
+  sanitizeComparePairs(targets);
 
-  const rootA = await resolveCompareRoot(compareNodeIdA, "比較 A");
-  if ("error" in rootA) {
+  const activePairs = comparePairs.filter((p) => p.idA && p.idB);
+  if (activePairs.length === 0) {
     lastResults = [];
     postCompareState();
-    postToUi({ type: "ERROR", message: rootA.error });
+    postToUi({ type: "ERROR", message: "比較ペアが未選択です" });
     return;
   }
 
-  const rootB = await resolveCompareRoot(compareNodeIdB, "比較 B");
-  if ("error" in rootB) {
-    lastResults = [];
-    postCompareState();
-    postToUi({ type: "ERROR", message: rootB.error });
-    return;
+  const merged: TextCompareDiff = {
+    matchedExact: [],
+    matchedPartial: [],
+    onlyA: [],
+    onlyB: [],
+  };
+  const allNodes: TextNode[] = [];
+
+  for (let i = 0; i < activePairs.length; i++) {
+    const pair = activePairs[i];
+    const rootA = await resolveCompareRoot(pair.idA, `比較 A (${i + 1})`);
+    if ("error" in rootA) {
+      lastResults = [];
+      postCompareState();
+      postToUi({ type: "ERROR", message: rootA.error });
+      return;
+    }
+    const rootB = await resolveCompareRoot(pair.idB, `比較 B (${i + 1})`);
+    if ("error" in rootB) {
+      lastResults = [];
+      postCompareState();
+      postToUi({ type: "ERROR", message: rootB.error });
+      return;
+    }
+    if (rootA.id === rootB.id) {
+      lastResults = [];
+      postToUi({
+        type: "ERROR",
+        message: `ペア ${i + 1}: A と B には異なる対象を指定してください`,
+      });
+      return;
+    }
+
+    const nodesA = dedupeTextNodes(collectTextFromRoot(rootA));
+    const nodesB = dedupeTextNodes(collectTextFromRoot(rootB));
+    allNodes.push(...nodesA, ...nodesB);
+
+    const diff = compareTextNodes(
+      nodesA.map((n) => ({ id: n.id, characters: n.characters })),
+      nodesB.map((n) => ({ id: n.id, characters: n.characters })),
+      ignoreStrings,
+      ignoreCategories
+    );
+    merged.matchedExact.push(...diff.matchedExact);
+    merged.matchedPartial.push(...diff.matchedPartial);
+    merged.onlyA.push(...diff.onlyA);
+    merged.onlyB.push(...diff.onlyB);
   }
 
-  if (rootA.id === rootB.id) {
-    lastResults = [];
-    postToUi({
-      type: "ERROR",
-      message: "比較 A と B には異なる Section / Frame を指定してください",
-    });
-    return;
-  }
-
-  const nodesA = dedupeTextNodes(collectTextFromRoot(rootA));
-  const nodesB = dedupeTextNodes(collectTextFromRoot(rootB));
-  const allNodes = dedupeTextNodes([...nodesA, ...nodesB]);
-
-  const diff = compareTextNodes(
-    nodesA.map((n) => ({ id: n.id, characters: n.characters })),
-    nodesB.map((n) => ({ id: n.id, characters: n.characters })),
-    ignoreStrings,
-    ignoreCategories
-  );
-  const results = enrichResults(compareDiffToResults(diff), allNodes);
+  const uniqueNodes = dedupeTextNodes(allNodes);
+  const results = enrichResults(compareDiffToResults(merged), uniqueNodes);
   lastResults = results;
 
   await withHighlightMutation(async () => {
@@ -476,24 +482,6 @@ async function handleFocusNode(nodeId: string): Promise<void> {
   figma.viewport.scrollAndZoomIntoView([sceneNode]);
 }
 
-function scheduleSelectionSearch(): void {
-  if (selectionTimer !== null) {
-    clearTimeout(selectionTimer);
-  }
-  selectionTimer = setTimeout(() => {
-    selectionTimer = null;
-    void rerunSearch();
-  }, SELECTION_DEBOUNCE_MS);
-}
-
-function setCompareNode(side: CompareSide, nodeId: string | null): void {
-  if (side === "A") {
-    compareNodeIdA = nodeId;
-  } else {
-    compareNodeIdB = nodeId;
-  }
-}
-
 figma.ui.onmessage = async (msg: UiToPluginMessage) => {
   try {
     switch (msg.type) {
@@ -504,26 +492,16 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
         postCompareState();
         break;
       case "SET_MODE": {
-        const previousMode = mode;
         mode = msg.mode;
 
         if (mode === "pinned") {
           const targets = collectPinTargets();
-
-          if (previousMode === "selection") {
-            const fromSelection = resolvePinTargetFromSelection();
-            pinnedNodeId =
-              fromSelection && targets.some((t) => t.id === fromSelection)
-                ? fromSelection
-                : null;
-          } else if (msg.pinnedNodeId !== undefined) {
+          if (msg.pinnedNodeId !== undefined) {
             pinnedNodeId = msg.pinnedNodeId;
           }
-
           if (pinnedNodeId && !targets.some((t) => t.id === pinnedNodeId)) {
             pinnedNodeId = null;
           }
-
           postToUi({
             type: "PIN_TARGETS",
             targets,
@@ -532,24 +510,12 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
         }
 
         if (mode === "compare") {
-          const targets = collectPinTargets();
-          if (msg.compareNodeIdA !== undefined) {
-            compareNodeIdA = msg.compareNodeIdA;
+          if (msg.comparePairs !== undefined) {
+            comparePairs =
+              msg.comparePairs.length > 0
+                ? msg.comparePairs.map((p) => ({ ...p }))
+                : [emptyComparePair()];
           }
-          if (msg.compareNodeIdB !== undefined) {
-            compareNodeIdB = msg.compareNodeIdB;
-          }
-          if (previousMode === "selection") {
-            const fromSelection = resolvePinTargetFromSelection();
-            if (
-              fromSelection &&
-              targets.some((t) => t.id === fromSelection) &&
-              !compareNodeIdA
-            ) {
-              compareNodeIdA = fromSelection;
-            }
-          }
-          sanitizeCompareIds(targets);
           postCompareState();
         }
 
@@ -574,7 +540,7 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
         if (!nodeId) {
           postToUi({
             type: "ERROR",
-            message: "選択から Section / Frame を解決できません",
+            message: "選択から固定先を解決できません",
           });
           break;
         }
@@ -585,13 +551,32 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
         }
         break;
       }
-      case "SET_COMPARE_NODE":
-        setCompareNode(msg.side, msg.nodeId);
+      case "SET_COMPARE_PAIRS":
+        comparePairs =
+          msg.pairs.length > 0
+            ? msg.pairs.map((p) => ({ ...p }))
+            : [emptyComparePair()];
         postCompareState();
         if (mode === "compare") {
           await handleCompare();
         }
         break;
+      case "SET_COMPARE_PAIR": {
+        while (comparePairs.length <= msg.index) {
+          comparePairs.push(emptyComparePair());
+        }
+        const pair = comparePairs[msg.index];
+        if (msg.side === "A") {
+          pair.idA = msg.nodeId;
+        } else {
+          pair.idB = msg.nodeId;
+        }
+        postCompareState();
+        if (mode === "compare") {
+          await handleCompare();
+        }
+        break;
+      }
       case "SET_COMPARE_FROM_SELECTION": {
         const fromSelection = resolvePinTargetFromSelection();
         const targets = collectPinTargets();
@@ -602,11 +587,19 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
         if (!nodeId) {
           postToUi({
             type: "ERROR",
-            message: "選択から Section / Frame を解決できません",
+            message: "選択から比較対象を解決できません",
           });
           break;
         }
-        setCompareNode(msg.side, nodeId);
+        while (comparePairs.length <= msg.index) {
+          comparePairs.push(emptyComparePair());
+        }
+        const pair = comparePairs[msg.index];
+        if (msg.side === "A") {
+          pair.idA = nodeId;
+        } else {
+          pair.idB = nodeId;
+        }
         postCompareState();
         if (mode === "compare") {
           await handleCompare();
@@ -661,11 +654,9 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
 };
 
 figma.on("selectionchange", () => {
+  // Highlights may change selection; ignore those mutations.
   if (ignoreSelectionForHighlight) {
     return;
-  }
-  if (mode === "selection") {
-    scheduleSelectionSearch();
   }
 });
 

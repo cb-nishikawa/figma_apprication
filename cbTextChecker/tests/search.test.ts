@@ -166,6 +166,7 @@ describe("isExactMatch", () => {
         kinsoku: false,
         symbol: false,
         punct: false,
+        newlines: false,
         whitespace: false,
       })
     ).toBe(true);
@@ -188,6 +189,7 @@ describe("isExactMatch", () => {
         kinsoku: false,
         symbol: false,
         punct: false,
+        newlines: true,
         whitespace: true,
       })
     ).toBe(true);
@@ -197,6 +199,7 @@ describe("isExactMatch", () => {
         kinsoku: false,
         symbol: false,
         punct: false,
+        newlines: true,
         whitespace: true,
       })
     ).toEqual([{ start: 0, end: 7 }]);

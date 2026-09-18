@@ -16,6 +16,7 @@ const NO_CATEGORIES: IgnoreCategories = {
   kinsoku: false,
   symbol: false,
   punct: false,
+  newlines: false,
   whitespace: false,
 };
 
@@ -94,6 +95,9 @@ export function shouldSkipByCategory(
     return true;
   }
   if (categories.punct && PUNCT_CHARS.has(ch)) {
+    return true;
+  }
+  if (categories.newlines && isNewlineChar(ch)) {
     return true;
   }
   if (categories.whitespace && isWhitespaceChar(ch)) {
@@ -179,6 +183,7 @@ export function parseIgnoreInput(raw: string): string[] {
 /**
  * Build searchable string and map each searchable index back to original UTF-16.
  * Optionally strips ignore substrings, category characters, and/or whitespace.
+ * Newlines: stripped when ignoreNewlines is true or categories.newlines is true.
  */
 export function buildSearchIndex(
   original: string,
@@ -190,6 +195,7 @@ export function buildSearchIndex(
   const indexMap: number[] = [];
   let searchable = "";
   let i = 0;
+  const stripNewlines = ignoreNewlines || categories.newlines;
 
   while (i < original.length) {
     let skipped = false;
@@ -213,7 +219,7 @@ export function buildSearchIndex(
       continue;
     }
 
-    if (ignoreNewlines && unitLen === 1 && isNewlineChar(ch)) {
+    if (stripNewlines && unitLen === 1 && isNewlineChar(ch)) {
       i++;
       continue;
     }
@@ -270,6 +276,7 @@ export function findMatches(
     categories.kinsoku ||
     categories.symbol ||
     categories.punct ||
+    categories.newlines ||
     categories.whitespace;
 
   if (!ignoreNewlines && ignoreStrings.length === 0 && !hasCategory) {

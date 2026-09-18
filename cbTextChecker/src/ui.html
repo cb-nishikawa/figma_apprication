@@ -10,15 +10,7 @@
       <section class="section scope-section">
         <div class="mode-row" role="radiogroup" aria-label="検索範囲">
           <label class="radio">
-            <input type="radio" name="mode" value="selection" checked />
-            <span>選択</span>
-          </label>
-          <label class="radio">
-            <input type="radio" name="mode" value="page" />
-            <span>ページ</span>
-          </label>
-          <label class="radio">
-            <input type="radio" name="mode" value="pinned" />
+            <input type="radio" name="mode" value="pinned" checked />
             <span>固定</span>
           </label>
           <label class="radio">
@@ -26,7 +18,7 @@
             <span>比較</span>
           </label>
         </div>
-        <div id="pin-inline" class="pin-inline" hidden>
+        <div id="pin-inline" class="pin-inline">
           <div class="pin-row">
             <div class="pin-combobox">
               <input
@@ -58,153 +50,32 @@
           </div>
         </div>
         <div id="compare-inline" class="compare-inline" hidden>
-          <div class="compare-side">
-            <div class="compare-side-top">
-              <span class="compare-side-label">A</span>
-              <div class="pin-combobox">
-                <input
-                  id="compare-a-input"
-                  class="pin-combobox-input"
-                  type="text"
-                  role="combobox"
-                  aria-autocomplete="list"
-                  aria-controls="compare-a-list"
-                  aria-expanded="false"
-                  aria-label="比較 A"
-                  placeholder="Section / Frame"
-                  autocomplete="off"
-                />
-                <ul
-                  id="compare-a-list"
-                  class="pin-combobox-list"
-                  role="listbox"
-                  hidden
-                ></ul>
-              </div>
-              <button
-                id="compare-a-from-selection"
-                class="btn-icon"
-                type="button"
-                title="選択を A に"
-                aria-label="選択を A に"
-              ></button>
-            </div>
-          </div>
-          <div class="compare-side">
-            <div class="compare-side-top">
-              <span class="compare-side-label">B</span>
-              <div class="pin-combobox">
-                <input
-                  id="compare-b-input"
-                  class="pin-combobox-input"
-                  type="text"
-                  role="combobox"
-                  aria-autocomplete="list"
-                  aria-controls="compare-b-list"
-                  aria-expanded="false"
-                  aria-label="比較 B"
-                  placeholder="Section / Frame"
-                  autocomplete="off"
-                />
-                <ul
-                  id="compare-b-list"
-                  class="pin-combobox-list"
-                  role="listbox"
-                  hidden
-                ></ul>
-              </div>
-              <button
-                id="compare-b-from-selection"
-                class="btn-icon"
-                type="button"
-                title="選択を B に"
-                aria-label="選択を B に"
-              ></button>
-            </div>
-          </div>
+          <div id="compare-pairs" class="compare-pairs"></div>
+          <button
+            id="add-compare-pair"
+            class="btn-add-full"
+            type="button"
+            title="比較ペアを追加"
+            aria-label="比較ペアを追加"
+          >
+            ＋
+          </button>
         </div>
       </section>
 
       <hr id="keywords-divider" class="divider" />
 
-      <section
-        id="keywords-section"
-        class="section keywords-section"
-        aria-labelledby="keywords-label"
-      >
-        <div class="keywords-head">
-          <h2 id="keywords-label">チェックする文字列</h2>
-          <div class="keywords-head-actions">
-            <button
-              id="add-keyword"
-              class="btn-icon"
-              type="button"
-              title="行を追加"
-              aria-label="行を追加"
-            >
-              ＋
-            </button>
-            <button
-              id="clear-keywords"
-              class="btn-icon"
-              type="button"
-              title="すべてクリア"
-              aria-label="すべてクリア"
-            ></button>
-          </div>
-        </div>
+      <section id="keywords-section" class="section keywords-section">
         <div id="keyword-rows" class="keyword-rows"></div>
-      </section>
-
-      <hr class="divider" />
-
-      <section
-        id="ignore-section"
-        class="section ignore-section"
-        aria-labelledby="ignore-label"
-      >
         <button
-          id="ignore-toggle"
-          class="ignore-toggle"
+          id="add-keyword"
+          class="btn-add-full"
           type="button"
-          aria-expanded="false"
-          aria-controls="ignore-body"
+          title="行を追加"
+          aria-label="行を追加"
         >
-          <span class="ignore-toggle-chevron" aria-hidden="true">▸</span>
-          <h2 id="ignore-label">無視する文字列</h2>
+          ＋
         </button>
-        <div id="ignore-body" class="ignore-body" hidden>
-          <input
-            id="ignore-strings"
-            class="ignore-input"
-            type="text"
-            placeholder="追加で無視（空白区切り）例: ・"
-            spellcheck="false"
-            autocomplete="off"
-          />
-          <div class="ignore-categories" role="group" aria-label="無視する種類">
-            <label class="ignore-check">
-              <input type="checkbox" id="ignore-emoji" checked />
-              <span>絵文字</span>
-            </label>
-            <label class="ignore-check">
-              <input type="checkbox" id="ignore-kinsoku" checked />
-              <span>禁則文字</span>
-            </label>
-            <label class="ignore-check">
-              <input type="checkbox" id="ignore-symbol" checked />
-              <span>記号</span>
-            </label>
-            <label class="ignore-check">
-              <input type="checkbox" id="ignore-punct" checked />
-              <span>句読点</span>
-            </label>
-            <label class="ignore-check">
-              <input type="checkbox" id="ignore-whitespace" />
-              <span>空白</span>
-            </label>
-          </div>
-        </div>
       </section>
 
       <hr class="divider" />
@@ -212,13 +83,73 @@
       <section class="section results-section" aria-labelledby="results-label">
         <div class="results-head">
           <h2 id="results-label">チェック結果</h2>
-          <button
-            id="reset-search"
-            class="btn-icon"
-            type="button"
-            title="再検索"
-            aria-label="再検索"
-          ></button>
+          <div class="results-head-actions">
+            <div class="ignore-menu">
+              <button
+                id="ignore-toggle"
+                class="btn-icon"
+                type="button"
+                title="無視する文字列"
+                aria-label="無視する文字列"
+                aria-expanded="false"
+                aria-controls="ignore-popover"
+              ></button>
+              <div id="ignore-popover" class="ignore-popover" hidden>
+                <input
+                  id="ignore-strings"
+                  class="ignore-input"
+                  type="text"
+                  placeholder="追加で無視（空白区切り）例: ・"
+                  spellcheck="false"
+                  autocomplete="off"
+                />
+                <div
+                  class="ignore-categories"
+                  role="group"
+                  aria-label="無視する種類"
+                >
+                  <label class="ignore-check">
+                    <input type="checkbox" id="ignore-emoji" checked />
+                    <span>絵文字</span>
+                  </label>
+                  <label class="ignore-check">
+                    <input type="checkbox" id="ignore-kinsoku" checked />
+                    <span>禁則</span>
+                  </label>
+                  <label class="ignore-check">
+                    <input type="checkbox" id="ignore-symbol" checked />
+                    <span>記号</span>
+                  </label>
+                  <label class="ignore-check">
+                    <input type="checkbox" id="ignore-punct" checked />
+                    <span>句読点</span>
+                  </label>
+                  <label class="ignore-check">
+                    <input type="checkbox" id="ignore-newlines" checked />
+                    <span>改行</span>
+                  </label>
+                  <label class="ignore-check">
+                    <input type="checkbox" id="ignore-whitespace" />
+                    <span>空白</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <button
+              id="reset-search"
+              class="btn-icon"
+              type="button"
+              title="再検索"
+              aria-label="再検索"
+            ></button>
+            <button
+              id="clear-all"
+              class="btn-icon"
+              type="button"
+              title="すべてクリア"
+              aria-label="すべてクリア"
+            ></button>
+          </div>
         </div>
         <p id="error" class="error" hidden></p>
         <ul id="results" class="results"></ul>

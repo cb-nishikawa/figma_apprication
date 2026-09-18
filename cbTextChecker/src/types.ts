@@ -24,7 +24,13 @@ export interface CheckResult {
   children?: CheckResult[];
 }
 
-export type SearchMode = "selection" | "page" | "pinned" | "compare";
+export type SearchMode = "pinned" | "compare";
+
+/** One A↔B comparison pair. */
+export interface ComparePair {
+  idA: string | null;
+  idB: string | null;
+}
 
 export type HoverHighlightStyle = "component" | "instance";
 
@@ -60,6 +66,8 @@ export interface IgnoreCategories {
   kinsoku: boolean;
   symbol: boolean;
   punct: boolean;
+  /** Strip \\n / \\r during match. */
+  newlines: boolean;
   /** Half/full-width spaces and tabs. */
   whitespace: boolean;
 }
@@ -69,5 +77,6 @@ export const DEFAULT_IGNORE_CATEGORIES: IgnoreCategories = {
   kinsoku: true,
   symbol: true,
   punct: true,
+  newlines: true,
   whitespace: false,
 };

@@ -20,6 +20,7 @@ const NO_CATEGORIES: IgnoreCategories = {
   kinsoku: false,
   symbol: false,
   punct: false,
+  newlines: false,
   whitespace: false,
 };
 
@@ -51,7 +52,7 @@ function tryPartialPair(
   const inB = findMatches(
     b.characters,
     a.characters,
-    true,
+    categories.newlines,
     ignoreStrings,
     categories
   );
@@ -67,7 +68,7 @@ function tryPartialPair(
   const inA = findMatches(
     a.characters,
     b.characters,
-    true,
+    categories.newlines,
     ignoreStrings,
     categories
   );
@@ -124,7 +125,7 @@ export function compareTextNodes(
         isExactMatch(
           nodeA.characters,
           unusedB[j].characters,
-          true,
+          categories.newlines,
           ignoreStrings,
           categories
         )
