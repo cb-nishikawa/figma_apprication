@@ -3,3 +3,6 @@ dist/
 share/
 *.log
 .DS_Store
+
+# OCR model cache (downloaded by npm run fetch:ocr-models)
+src/ocr/models/

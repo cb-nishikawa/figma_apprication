@@ -7,6 +7,7 @@
     "build": "rm -rf dist && npm run build:ui && npm run build:code",
     "build:ui": "vite build --config vite.config.ts",
     "build:code": "vite build --config vite.code.config.ts",
+    "fetch:ocr-models": "node scripts/fetch-ocr-models.mjs",
     "pack:share": "npm run build && node scripts/pack-share.mjs",
     "dev": "npm run build && concurrently \"vite build --config vite.config.ts --watch\" \"vite build --config vite.code.config.ts --watch\"",
     "test": "vitest run",
@@ -19,5 +20,8 @@
     "vite": "^6.2.2",
     "vite-plugin-singlefile": "^2.1.0",
     "vitest": "^3.0.9"
+  },
+  "dependencies": {
+    "@paddleocr/paddleocr-js": "^0.4.2"
   }
 }

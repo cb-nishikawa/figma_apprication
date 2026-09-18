@@ -1,5 +1,6 @@
 import "./ui.css";
 import clearIcon from "./assets/clear.svg?raw";
+import copyIcon from "./assets/copy.svg?raw";
 import pinIcon from "./assets/pin.svg?raw";
 import resetIcon from "./assets/reset.svg?raw";
 import selectIcon from "./assets/select.svg?raw";
@@ -20,9 +21,11 @@ import type {
   HoverHighlightItem,
   IgnoreCategories,
   KeywordQuery,
+  OcrItem,
   PinTarget,
   SearchMode,
   TextMatch,
+  TextNodeLike,
 } from "./types";
 import { DEFAULT_IGNORE_CATEGORIES } from "./types";
 
@@ -59,6 +62,27 @@ const comparePairsEl = document.getElementById(
 const addComparePairBtn = document.getElementById(
   "add-compare-pair"
 ) as HTMLButtonElement;
+const imageInline = document.getElementById("image-inline") as HTMLDivElement;
+const imageNameEl = document.getElementById("image-name") as HTMLSpanElement;
+const imageFromSelectionBtn = document.getElementById(
+  "image-from-selection"
+) as HTMLButtonElement;
+const imageRowActionsEl = document.getElementById(
+  "image-row-actions"
+) as HTMLDivElement;
+const imageTargetInputEl = document.getElementById(
+  "image-target-input"
+) as HTMLInputElement;
+const imageTargetListEl = document.getElementById(
+  "image-target-list"
+) as HTMLUListElement;
+const imageTargetFromSelectionBtn = document.getElementById(
+  "image-target-from-selection"
+) as HTMLButtonElement;
+const ocrStatusEl = document.getElementById("ocr-status") as HTMLDivElement;
+const ocrStatusTextEl = document.getElementById(
+  "ocr-status-text"
+) as HTMLSpanElement;
 const pinFromSelectionBtn = document.getElementById(
   "pin-from-selection"
 ) as HTMLButtonElement;
@@ -134,6 +158,19 @@ let pinTargets: PinTarget[] = [];
 let pinnedNodeId: string | null = null;
 let compareTargets: PinTarget[] = [];
 let comparePairs: ComparePairUi[] = [emptyPairUi()];
+let imageTargets: PinTarget[] = [];
+let imageTargetId: string | null = null;
+let imageFilterQuery = "";
+let imageListOpen = false;
+let imageActiveIndex = -1;
+let imageNodeId: string | null = null;
+let imageNodeName = "";
+let imageExportScale = 1;
+let ocrItems: OcrItem[] = [];
+let ocrBusy = false;
+let ocrModelUrls: { detUrl: string; recUrl: string } | null = null;
+/** When true, compare results are showing (OCR image highlights paused). */
+let imageCompareActive = false;
 let pinFilterQuery = "";
 let pinListOpen = false;
 let pinActiveIndex = -1;
@@ -152,6 +189,22 @@ function postToPlugin(message: UiToPluginMessage): void {
 }
 
 function matchToHoverItem(match: TextMatch): HoverHighlightItem {
+  if (match.nodeId.startsWith("ocr:") && imageNodeId) {
+    const ocrItem = ocrItems.find((item) => item.id === match.nodeId);
+    if (ocrItem && ocrItem.poly.length > 0) {
+      return {
+        nodeId: imageNodeId,
+        style: match.exact ? "component" : "instance",
+        exact: match.exact,
+        ranges: [],
+        ocrRegion: {
+          id: ocrItem.id,
+          exportScale: imageExportScale,
+          poly: ocrItem.poly,
+        },
+      };
+    }
+  }
   return {
     nodeId: match.nodeId,
     style: match.exact ? "component" : "instance",
@@ -236,14 +289,22 @@ function collectPinnedItems(): HoverHighlightItem[] {
   return items;
 }
 
+function hoverItemKey(item: HoverHighlightItem): string {
+  if (item.ocrRegion) {
+    const id = item.ocrRegion.id;
+    return id.startsWith("ocr:") ? id : `ocr:${id}`;
+  }
+  const range = item.ranges[0];
+  if (range) {
+    return `${item.nodeId}:${range.start}:${range.end}`;
+  }
+  return `${item.nodeId}:exact`;
+}
+
 function publishVisibleHighlights(extraItems: HoverHighlightItem[] = []): void {
   const byKey = new Map<string, HoverHighlightItem>();
   for (const item of [...collectPinnedItems(), ...extraItems]) {
-    const range = item.ranges[0];
-    const key = range
-      ? `${item.nodeId}:${range.start}:${range.end}`
-      : `${item.nodeId}:exact`;
-    byKey.set(key, item);
+    byKey.set(hoverItemKey(item), item);
   }
   const items = [...byKey.values()];
   if (items.length === 0) {
@@ -363,12 +424,364 @@ function collectIgnoreCategories(): IgnoreCategories {
   };
 }
 
+function ocrTextsPayload(): TextNodeLike[] {
+  return ocrItems.map((item) => ({ id: item.id, characters: item.text }));
+}
+
+function setOcrStatus(
+  message: string | null,
+  options: { busy?: boolean } = {}
+): void {
+  if (!message) {
+    ocrStatusEl.hidden = true;
+    ocrStatusEl.classList.remove("is-busy");
+    ocrStatusTextEl.textContent = "";
+    return;
+  }
+  ocrStatusEl.hidden = false;
+  ocrStatusTextEl.textContent = message;
+  ocrStatusEl.classList.toggle("is-busy", Boolean(options.busy));
+}
+
+function setImageControlsDisabled(disabled: boolean): void {
+  imageFromSelectionBtn.disabled = disabled;
+  imageTargetFromSelectionBtn.disabled = disabled;
+  imageTargetInputEl.disabled = disabled;
+  const menuTrigger = imageRowActionsEl.querySelector(
+    ".row-menu-trigger"
+  ) as HTMLButtonElement | null;
+  if (menuTrigger) {
+    menuTrigger.disabled = disabled;
+  }
+}
+
+function ocrToHighlightItems(items: OcrItem[] = ocrItems): HoverHighlightItem[] {
+  if (!imageNodeId) {
+    return [];
+  }
+  return items
+    .filter((item) => item.poly.length > 0)
+    .map((item) => ({
+      nodeId: imageNodeId!,
+      style: "component" as const,
+      exact: true,
+      ranges: [],
+      ocrRegion: {
+        id: item.id,
+        exportScale: imageExportScale,
+        poly: item.poly,
+      },
+    }));
+}
+
+function publishOcrHighlights(items?: HoverHighlightItem[]): void {
+  if (imageCompareActive) {
+    return;
+  }
+  const list = items ?? ocrToHighlightItems();
+  if (list.length === 0) {
+    postToPlugin({ type: "CLEAR_HIGHLIGHT" });
+    return;
+  }
+  postToPlugin({ type: "HOVER_HIGHLIGHT", items: list });
+}
+
+function buildAndShowOcrHighlights(): void {
+  if (imageCompareActive || !imageNodeId || ocrItems.length === 0) {
+    return;
+  }
+  const items = ocrToHighlightItems();
+  if (items.length === 0) {
+    postToPlugin({ type: "CLEAR_HIGHLIGHT" });
+    return;
+  }
+  postToPlugin({ type: "BUILD_HIGHLIGHT_POOL", items });
+}
+
+async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.left = "-9999px";
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand("copy");
+    document.body.removeChild(area);
+  }
+}
+
+function renderOcrList(): void {
+  resultsEl.innerHTML = "";
+  if (ocrBusy) {
+    const li = document.createElement("li");
+    li.className = "empty is-loading";
+    li.textContent = "読み込み中…";
+    resultsEl.appendChild(li);
+    return;
+  }
+  if (ocrItems.length === 0) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = imageNodeId
+      ? "テキストを検出できませんでした"
+      : "まだチェック結果がありません";
+    resultsEl.appendChild(li);
+    return;
+  }
+
+  for (const item of ocrItems) {
+    const li = document.createElement("li");
+    li.className = "ocr-item";
+    li.dataset.ocrId = item.id;
+
+    const textEl = document.createElement("div");
+    textEl.className = "ocr-item-text";
+    textEl.textContent = item.text;
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "ocr-copy-btn";
+    copyBtn.title = "コピー";
+    copyBtn.setAttribute("aria-label", "コピー");
+    copyBtn.innerHTML = copyIcon;
+    copyBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void copyText(item.text);
+    });
+
+    li.addEventListener("mouseenter", () => {
+      publishOcrHighlights(ocrToHighlightItems([item]));
+    });
+    li.addEventListener("mouseleave", () => {
+      publishOcrHighlights();
+    });
+    li.addEventListener("click", () => {
+      if (imageNodeId) {
+        postToPlugin({ type: "FOCUS_NODE", nodeId: imageNodeId });
+      }
+    });
+
+    li.appendChild(textEl);
+    li.appendChild(copyBtn);
+    resultsEl.appendChild(li);
+  }
+}
+
+function clearImageLocal(notifyPlugin = true): void {
+  imageNodeId = null;
+  imageNodeName = "";
+  imageExportScale = 1;
+  imageNameEl.textContent = "画像未選択";
+  ocrItems = [];
+  imageCompareActive = false;
+  setOcrStatus(null);
+  if (notifyPlugin) {
+    postToPlugin({ type: "CLEAR_IMAGE" });
+  }
+  if (mode === "image") {
+    renderOcrList();
+    postToPlugin({ type: "CLEAR_HIGHLIGHT" });
+  }
+}
+
+function clearImageMode(): void {
+  clearImageLocal(true);
+  commitImageTarget(null);
+  showError(null);
+}
+
+async function ensureOcrModels(): Promise<{ detUrl: string; recUrl: string }> {
+  if (ocrModelUrls) {
+    return ocrModelUrls;
+  }
+  setOcrStatus("OCR モデルを取得しています…", { busy: true });
+  const { loadOcrModelUrls } = await import("./ocr/paddle");
+  ocrModelUrls = await loadOcrModelUrls();
+  return ocrModelUrls;
+}
+
+async function processExportedImage(
+  bytes: number[],
+  nodeId: string,
+  name: string,
+  exportScale: number
+): Promise<void> {
+  clearImageLocal(false);
+  imageNodeId = nodeId;
+  imageNodeName = name;
+  imageExportScale = exportScale > 0 ? exportScale : 1;
+  imageNameEl.textContent = name || "(untitled)";
+
+  const blob = new Blob([new Uint8Array(bytes)], { type: "image/png" });
+
+  ocrBusy = true;
+  imageCompareActive = false;
+  setImageControlsDisabled(true);
+  setOcrStatus("OCR を準備しています…", { busy: true });
+  renderOcrList();
+  showError(null);
+  try {
+    const models = await ensureOcrModels();
+    const { getOcrEngine, runOcr } = await import("./ocr/paddle");
+    setOcrStatus("OCR エンジンを読み込んでいます…", { busy: true });
+    await getOcrEngine(models);
+    setOcrStatus("テキストを抽出しています…", { busy: true });
+    ocrItems = await runOcr(blob, models);
+    setOcrStatus(
+      ocrItems.length > 0
+        ? `${ocrItems.length} 件のテキストを抽出しました`
+        : "テキストを検出できませんでした",
+      { busy: false }
+    );
+    if (imageTargetId) {
+      runImageCompare();
+    } else {
+      renderOcrList();
+      buildAndShowOcrHighlights();
+    }
+  } catch (err) {
+    const { formatUnknownError } = await import("./ocr/paddle");
+    showError(`OCR に失敗しました: ${formatUnknownError(err)}`);
+    setOcrStatus(null);
+    ocrItems = [];
+    renderOcrList();
+  } finally {
+    ocrBusy = false;
+    setImageControlsDisabled(false);
+    if (ocrItems.length > 0 && !imageTargetId) {
+      renderOcrList();
+    }
+  }
+}
+
+function runImageCompare(): void {
+  if (!imageTargetId || ocrItems.length === 0) {
+    imageCompareActive = false;
+    renderOcrList();
+    buildAndShowOcrHighlights();
+    return;
+  }
+  if (!imageNodeId) {
+    showError("画像が未選択です");
+    return;
+  }
+  imageCompareActive = true;
+  showError(null);
+  postToPlugin({
+    type: "RUN_IMAGE_COMPARE",
+    ocrTexts: ocrTextsPayload(),
+    imageNodeId,
+    exportScale: imageExportScale,
+    ocrRegions: ocrItems.map((item) => ({
+      id: item.id,
+      poly: item.poly,
+    })),
+    ignoreStrings: collectIgnoreStrings(),
+    ignoreCategories: collectIgnoreCategories(),
+  });
+}
+
+function getImageTarget(): PinTarget | null {
+  if (!imageTargetId) {
+    return null;
+  }
+  return imageTargets.find((t) => t.id === imageTargetId) ?? null;
+}
+
+function filteredImageTargets(): PinTarget[] {
+  const query = imageFilterQuery.trim().toLowerCase();
+  if (!query) {
+    return imageTargets;
+  }
+  return imageTargets.filter((target) => {
+    return (
+      target.label.toLowerCase().includes(query) ||
+      target.name.toLowerCase().includes(query)
+    );
+  });
+}
+
+function setImageTargetInputToSelection(): void {
+  const selected = getImageTarget();
+  imageFilterQuery = "";
+  imageTargetInputEl.value = selected ? selected.label : "";
+}
+
+function closeImageTargetList(): void {
+  imageListOpen = false;
+  imageActiveIndex = -1;
+  imageTargetListEl.hidden = true;
+  imageTargetInputEl.setAttribute("aria-expanded", "false");
+}
+
+function renderImageTargetList(): void {
+  const filtered = filteredImageTargets();
+  imageTargetListEl.innerHTML = "";
+  filtered.forEach((target, index) => {
+    const li = document.createElement("li");
+    li.className = "pin-combobox-option";
+    li.setAttribute("role", "option");
+    li.dataset.id = target.id;
+    li.textContent = target.label;
+    if (target.id === imageTargetId) {
+      li.classList.add("is-selected");
+    }
+    if (index === imageActiveIndex) {
+      li.classList.add("is-active");
+    }
+    li.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      commitImageTarget(target.id);
+    });
+    imageTargetListEl.appendChild(li);
+  });
+}
+
+function openImageTargetList(): void {
+  closePinList();
+  closeAllCompareLists();
+  imageListOpen = true;
+  imageTargetListEl.hidden = false;
+  imageTargetInputEl.setAttribute("aria-expanded", "true");
+  renderImageTargetList();
+}
+
+function commitImageTarget(nextId: string | null): void {
+  imageTargetId = nextId;
+  setImageTargetInputToSelection();
+  closeImageTargetList();
+  postToPlugin({ type: "SET_IMAGE_COMPARE_TARGET", targetId: imageTargetId });
+  if (mode === "image") {
+    if (imageTargetId && ocrItems.length > 0) {
+      runImageCompare();
+    } else {
+      imageCompareActive = false;
+      renderOcrList();
+      buildAndShowOcrHighlights();
+    }
+  }
+}
+
 function runSearch(): void {
   showError(null);
   const ignoreStrings = collectIgnoreStrings();
   const ignoreCategories = collectIgnoreCategories();
   if (mode === "compare") {
     postToPlugin({ type: "RUN_COMPARE", ignoreStrings, ignoreCategories });
+    return;
+  }
+  if (mode === "image") {
+    if (imageTargetId && ocrItems.length > 0) {
+      runImageCompare();
+    } else if (imageNodeId) {
+      renderOcrList();
+    } else {
+      postToPlugin({ type: "EXPORT_IMAGE_FROM_SELECTION" });
+    }
     return;
   }
   const queries = collectQueries();
@@ -390,9 +803,13 @@ function runSearch(): void {
 function updateScopeVisibility(): void {
   pinInline.hidden = mode !== "pinned";
   compareInline.hidden = mode !== "compare";
-  const hideKeywords = mode === "compare";
+  imageInline.hidden = mode !== "image";
+  const hideKeywords = mode === "compare" || mode === "image";
   keywordsSection.hidden = hideKeywords;
   keywordsDivider.hidden = hideKeywords;
+  if (mode === "image" && !(imageTargetId && ocrItems.length > 0)) {
+    renderOcrList();
+  }
 }
 
 function filteredPinTargets(): PinTarget[] {
@@ -436,6 +853,7 @@ function commitPinnedNode(nextId: string | null): void {
 
 function openPinList(): void {
   closeAllCompareLists();
+  closeImageTargetList();
   pinListOpen = true;
   pinListEl.hidden = false;
   pinInputEl.setAttribute("aria-expanded", "true");
@@ -839,39 +1257,27 @@ function renderComparePairs(): void {
 
     const actions = document.createElement("div");
     actions.className = "compare-pair-actions";
-
-    const clearBtn = document.createElement("button");
-    clearBtn.type = "button";
-    clearBtn.className = "btn-icon";
-    clearBtn.title = "この行をクリア";
-    clearBtn.setAttribute("aria-label", "この行をクリア");
-    clearBtn.innerHTML = clearIcon;
-    clearBtn.addEventListener("click", () => {
-      pair.idA = null;
-      pair.idB = null;
-      pair.filterA = "";
-      pair.filterB = "";
-      renderComparePairs();
-      syncComparePairsToPlugin();
-    });
-
-    const removeBtn = document.createElement("button");
-    removeBtn.type = "button";
-    removeBtn.className = "btn-icon";
-    removeBtn.title = "このペアを削除";
-    removeBtn.setAttribute("aria-label", "このペアを削除");
-    removeBtn.textContent = "-";
-    removeBtn.disabled = comparePairs.length <= 1;
-    removeBtn.addEventListener("click", () => {
-      if (comparePairs.length <= 1) {
-        return;
-      }
-      comparePairs.splice(index, 1);
-      renderComparePairs();
-      syncComparePairsToPlugin();
-    });
-
-    actions.append(clearBtn, removeBtn);
+    actions.append(
+      createRowMenu({
+        onClear: () => {
+          pair.idA = null;
+          pair.idB = null;
+          pair.filterA = "";
+          pair.filterB = "";
+          renderComparePairs();
+          syncComparePairsToPlugin();
+        },
+        onRemove: () => {
+          if (comparePairs.length <= 1) {
+            return;
+          }
+          comparePairs.splice(index, 1);
+          renderComparePairs();
+          syncComparePairsToPlugin();
+        },
+        canRemove: () => comparePairs.length > 1,
+      })
+    );
     row.append(sides, actions);
     comparePairsEl.append(row);
   });
@@ -907,11 +1313,94 @@ function clearComparePairs(): void {
   showError(null);
 }
 
+function closeAllRowMenus(except?: HTMLElement): void {
+  document.querySelectorAll<HTMLElement>(".row-menu-panel").forEach((panel) => {
+    if (except && panel === except) {
+      return;
+    }
+    panel.hidden = true;
+    const trigger = panel
+      .closest(".row-menu")
+      ?.querySelector(".row-menu-trigger");
+    trigger?.setAttribute("aria-expanded", "false");
+  });
+}
+
+function createRowMenu(options: {
+  onClear: () => void;
+  onRemove: () => void;
+  canRemove: () => boolean;
+}): HTMLDivElement {
+  const menu = document.createElement("div");
+  menu.className = "row-menu";
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "btn-icon row-menu-trigger";
+  trigger.title = "行メニュー";
+  trigger.setAttribute("aria-label", "行メニュー");
+  trigger.setAttribute("aria-haspopup", "menu");
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.textContent = "⋯";
+
+  const panel = document.createElement("div");
+  panel.className = "row-menu-panel";
+  panel.hidden = true;
+  panel.setAttribute("role", "menu");
+
+  const clearItem = document.createElement("button");
+  clearItem.type = "button";
+  clearItem.className = "row-menu-item";
+  clearItem.setAttribute("role", "menuitem");
+  clearItem.textContent = "クリア";
+  clearItem.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeAllRowMenus();
+    options.onClear();
+  });
+
+  const removeItem = document.createElement("button");
+  removeItem.type = "button";
+  removeItem.className = "row-menu-item row-menu-remove";
+  removeItem.setAttribute("role", "menuitem");
+  removeItem.textContent = "削除";
+  removeItem.disabled = !options.canRemove();
+  removeItem.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (!options.canRemove()) {
+      return;
+    }
+    closeAllRowMenus();
+    options.onRemove();
+  });
+
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const willOpen = panel.hidden;
+    closeAllRowMenus();
+    setIgnorePopoverOpen(false);
+    if (willOpen) {
+      removeItem.disabled = !options.canRemove();
+      panel.hidden = false;
+      trigger.setAttribute("aria-expanded", "true");
+    }
+  });
+
+  panel.append(clearItem, removeItem);
+  menu.append(trigger, panel);
+  return menu;
+}
+
 function updateRemoveButtons(): void {
   const rows = keywordRowsEl.querySelectorAll(".keyword-row");
+  const canRemove = rows.length > 1;
   rows.forEach((row) => {
-    const removeBtn = row.querySelector(".btn-remove") as HTMLButtonElement;
-    removeBtn.disabled = rows.length <= 1;
+    const removeItem = row.querySelector(
+      ".row-menu-remove"
+    ) as HTMLButtonElement | null;
+    if (removeItem) {
+      removeItem.disabled = !canRemove;
+    }
   });
 }
 
@@ -927,36 +1416,26 @@ function addKeywordRow(initialValue = ""): void {
 
   const actions = document.createElement("div");
   actions.className = "keyword-row-actions";
-
-  const clearRowBtn = document.createElement("button");
-  clearRowBtn.type = "button";
-  clearRowBtn.className = "btn-icon btn-clear-row";
-  clearRowBtn.title = "この行をクリア";
-  clearRowBtn.setAttribute("aria-label", "この行をクリア");
-  clearRowBtn.innerHTML = clearIcon;
-  clearRowBtn.addEventListener("click", () => {
-    textarea.value = "";
-    textarea.focus();
-    debounceSearch();
-  });
-
-  const removeBtn = document.createElement("button");
-  removeBtn.type = "button";
-  removeBtn.className = "btn-icon btn-remove";
-  removeBtn.title = "削除";
-  removeBtn.setAttribute("aria-label", "削除");
-  removeBtn.textContent = "-";
-  removeBtn.addEventListener("click", () => {
-    const rows = keywordRowsEl.querySelectorAll(".keyword-row");
-    if (rows.length <= 1) {
-      return;
-    }
-    row.remove();
-    updateRemoveButtons();
-    debounceSearch();
-  });
-
-  actions.append(clearRowBtn, removeBtn);
+  actions.append(
+    createRowMenu({
+      onClear: () => {
+        textarea.value = "";
+        textarea.focus();
+        debounceSearch();
+      },
+      onRemove: () => {
+        const rows = keywordRowsEl.querySelectorAll(".keyword-row");
+        if (rows.length <= 1) {
+          return;
+        }
+        row.remove();
+        updateRemoveButtons();
+        debounceSearch();
+      },
+      canRemove: () =>
+        keywordRowsEl.querySelectorAll(".keyword-row").length > 1,
+    })
+  );
   row.append(textarea, actions);
 
   row.addEventListener("mouseenter", () => {
@@ -1326,7 +1805,17 @@ Array.from(
       mode,
       pinnedNodeId: mode === "pinned" ? pinnedNodeId : undefined,
       comparePairs: mode === "compare" ? pairsToPayload() : undefined,
+      imageTargetId: mode === "image" ? imageTargetId : undefined,
     });
+
+    if (mode === "image") {
+      postToPlugin({ type: "LIST_IMAGE_TARGETS" });
+      if (!imageNodeId) {
+        renderOcrList();
+      } else if (!imageTargetId) {
+        renderOcrList();
+      }
+    }
   });
 });
 
@@ -1347,6 +1836,7 @@ function setIgnorePopoverOpen(open: boolean): void {
 ignoreToggleBtn.innerHTML = sortIcon;
 ignoreToggleBtn.addEventListener("click", (event) => {
   event.stopPropagation();
+  closeAllRowMenus();
   const open = ignoreToggleBtn.getAttribute("aria-expanded") === "true";
   setIgnorePopoverOpen(!open);
 });
@@ -1435,9 +1925,15 @@ document.addEventListener("click", (event) => {
   if (!compareInline.contains(target)) {
     closeAllCompareLists();
   }
+  if (!imageInline.contains(target)) {
+    closeImageTargetList();
+  }
   const ignoreMenu = ignoreToggleBtn.closest(".ignore-menu");
   if (ignoreMenu && !ignoreMenu.contains(target)) {
     setIgnorePopoverOpen(false);
+  }
+  if (!(target as Element).closest?.(".row-menu")) {
+    closeAllRowMenus();
   }
 });
 
@@ -1459,6 +1955,10 @@ function clearKeywords(): void {
 function clearAll(): void {
   if (mode === "compare") {
     clearComparePairs();
+    return;
+  }
+  if (mode === "image") {
+    clearImageMode();
     return;
   }
   clearKeywords();
@@ -1541,7 +2041,11 @@ window.onmessage = (event: MessageEvent) => {
     showError(msg.message);
     pinnedKeywords.clear();
     postToPlugin({ type: "CLEAR_HIGHLIGHT" });
-    renderResults([]);
+    if (mode === "image" && !imageTargetId) {
+      renderOcrList();
+    } else {
+      renderResults([]);
+    }
     return;
   }
 
@@ -1567,12 +2071,118 @@ window.onmessage = (event: MessageEvent) => {
     return;
   }
 
+  if (msg.type === "IMAGE_STATE") {
+    imageTargets = msg.targets;
+    imageTargetId = msg.targetId;
+    if (imageTargetId && !getImageTarget()) {
+      imageTargetId = null;
+    }
+    setImageTargetInputToSelection();
+    if (imageListOpen) {
+      renderImageTargetList();
+    }
+    if (mode === "image" && imageTargetId && ocrItems.length > 0 && !ocrBusy) {
+      runImageCompare();
+    }
+    return;
+  }
+
+  if (msg.type === "IMAGE_EXPORTED") {
+    void processExportedImage(
+      msg.bytes,
+      msg.nodeId,
+      msg.name,
+      msg.exportScale
+    );
+    return;
+  }
+
+  if (msg.type === "IMAGE_CLEARED") {
+    clearImageLocal(false);
+    return;
+  }
+
   if (msg.type === "SEARCH_RESULT") {
     showError(null);
     renderResults(msg.results);
     syncHighlightPrefsAfterSearch();
   }
 };
+
+imageFromSelectionBtn.innerHTML = selectIcon;
+imageTargetFromSelectionBtn.innerHTML = selectIcon;
+
+imageRowActionsEl.append(
+  createRowMenu({
+    onClear: () => {
+      clearImageMode();
+    },
+    onRemove: () => {
+      /* image mode has a single row */
+    },
+    canRemove: () => false,
+  })
+);
+
+imageFromSelectionBtn.addEventListener("click", () => {
+  postToPlugin({ type: "EXPORT_IMAGE_FROM_SELECTION" });
+});
+
+imageTargetFromSelectionBtn.addEventListener("click", () => {
+  postToPlugin({ type: "SET_IMAGE_TARGET_FROM_SELECTION" });
+});
+
+imageTargetInputEl.addEventListener("focus", () => {
+  openImageTargetList();
+});
+
+imageTargetInputEl.addEventListener("input", () => {
+  imageFilterQuery = imageTargetInputEl.value;
+  imageActiveIndex = 0;
+  openImageTargetList();
+});
+
+imageTargetInputEl.addEventListener("keydown", (event) => {
+  const filtered = filteredImageTargets();
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    if (!imageListOpen) {
+      openImageTargetList();
+    }
+    imageActiveIndex = Math.min(imageActiveIndex + 1, filtered.length - 1);
+    if (imageActiveIndex < 0 && filtered.length > 0) {
+      imageActiveIndex = 0;
+    }
+    renderImageTargetList();
+    return;
+  }
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    imageActiveIndex = Math.max(imageActiveIndex - 1, 0);
+    renderImageTargetList();
+    return;
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    if (imageActiveIndex >= 0 && imageActiveIndex < filtered.length) {
+      commitImageTarget(filtered[imageActiveIndex].id);
+    }
+    return;
+  }
+  if (event.key === "Escape") {
+    closeImageTargetList();
+    setImageTargetInputToSelection();
+  }
+});
+
+imageTargetInputEl.addEventListener("blur", () => {
+  window.setTimeout(() => {
+    if (!imageTargetListEl.contains(document.activeElement)) {
+      closeImageTargetList();
+      setImageTargetInputToSelection();
+    }
+  }, 0);
+});
 
 updateScopeVisibility();
 addKeywordRow();

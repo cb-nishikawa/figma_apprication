@@ -1,11 +1,17 @@
 {
-  "name": "CbTextChecker",
-  "id": "text-checker-local",
+  "name": "もじ検索比較くん",
+  "id": "1682627294332914932",
   "api": "1.0.0",
   "main": "dist/code.js",
   "ui": "dist/ui.html",
   "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
   "networkAccess": {
-    "allowedDomains": ["none"]
+    "allowedDomains": [
+      "https://cdn.jsdelivr.net",
+      "https://files.catbox.moe",
+      "https://raw.githubusercontent.com"
+    ],
+    "reasoning": "Load OCR runtime (jsDelivr) and Japanese PP-OCRv5 mobile models from CORS-enabled CDNs. Image bytes stay local in the plugin."
   }
 }

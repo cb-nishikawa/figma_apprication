@@ -21,7 +21,7 @@ const shareManifest = {
   ui: "ui.html",
 };
 
-const readmeTxt = `CbTextChecker（共有パック）
+const readmeTxt = `もじ検索比較くん（共有パック）
 ========================
 
 このフォルダだけで Figma に読み込めます。Node.js / npm は不要です。
@@ -32,18 +32,18 @@ const readmeTxt = `CbTextChecker（共有パック）
 2. Figma Desktop を開く
 3. メニュー: Plugins → Development → Import plugin from manifest…
 4. このフォルダ内の manifest.json を選択する
-5. Plugins → Development → CbTextChecker で起動する
+5. Plugins → Development から起動する
 
 含まれているファイル
 --------------------
 - manifest.json … プラグイン定義
 - code.js ……… プラグイン本体
-- ui.html ……… UI
-- README.txt … この説明
+- ui.html ……… UI（CSS/JS/OCR資産をインライン）
 
 注意
 ----
-- 開発用のソース一式ではありません。更新版を受け取ったら、同じ手順で再 Import してください。
+- オフラインで OCR が動作します（外部通信なし）
+- 更新版を受け取ったら、同じ手順で再 Import してください。
 `;
 
 rmSync(shareRoot, { recursive: true, force: true });

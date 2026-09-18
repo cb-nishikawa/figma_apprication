@@ -5,11 +5,14 @@ import { resolve } from "path";
 export default defineConfig({
   plugins: [viteSingleFile()],
   root: resolve(__dirname, "src"),
+  base: "./",
   build: {
     outDir: resolve(__dirname, "dist"),
     emptyOutDir: false,
     cssCodeSplit: false,
+    // Inline CSS/JS/WASM/models into ui.html for Figma __html__
     assetsInlineLimit: 100000000,
+    chunkSizeWarningLimit: 100000,
     rollupOptions: {
       input: resolve(__dirname, "src/ui.html"),
       output: {
@@ -17,5 +20,8 @@ export default defineConfig({
         assetFileNames: "[name][extname]",
       },
     },
+  },
+  optimizeDeps: {
+    exclude: ["@paddleocr/paddleocr-js"],
   },
 });

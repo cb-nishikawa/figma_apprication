@@ -34,6 +34,10 @@ type MeasureScale = { scaleX: number; scaleY: number; replaced: boolean };
 const measureScaleCache = new Map<string, MeasureScale>();
 
 export function highlightItemKey(item: HoverHighlightItem): string {
+  if (item.ocrRegion) {
+    const id = item.ocrRegion.id;
+    return id.startsWith("ocr:") ? id : `ocr:${id}`;
+  }
   const range = item.ranges?.[0];
   if (range) {
     return `${item.nodeId}:${range.start}:${range.end}`;
@@ -507,6 +511,72 @@ async function createExactHighlight(
   return rect;
 }
 
+function localToAbsolute(
+  transform: Transform,
+  x: number,
+  y: number
+): { x: number; y: number } {
+  return {
+    x: transform[0][0] * x + transform[0][1] * y + transform[0][2],
+    y: transform[1][0] * x + transform[1][1] * y + transform[1][2],
+  };
+}
+
+async function createOcrRegionHighlight(
+  sceneNode: SceneNode,
+  region: NonNullable<HoverHighlightItem["ocrRegion"]>
+): Promise<SceneNode | null> {
+  const poly = region.poly;
+  if (!poly || poly.length === 0) {
+    return null;
+  }
+  const scale = region.exportScale > 0 ? region.exportScale : 1;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const point of poly) {
+    const lx = Number(point[0]) / scale;
+    const ly = Number(point[1]) / scale;
+    if (!Number.isFinite(lx) || !Number.isFinite(ly)) {
+      continue;
+    }
+    minX = Math.min(minX, lx);
+    minY = Math.min(minY, ly);
+    maxX = Math.max(maxX, lx);
+    maxY = Math.max(maxY, ly);
+  }
+  if (!Number.isFinite(minX) || maxX <= minX || maxY <= minY) {
+    return null;
+  }
+
+  const transform = sceneNode.absoluteTransform;
+  const corners = [
+    localToAbsolute(transform, minX, minY),
+    localToAbsolute(transform, maxX, minY),
+    localToAbsolute(transform, maxX, maxY),
+    localToAbsolute(transform, minX, maxY),
+  ];
+  const absMinX = Math.min(...corners.map((c) => c.x));
+  const absMinY = Math.min(...corners.map((c) => c.y));
+  const absMaxX = Math.max(...corners.map((c) => c.x));
+  const absMaxY = Math.max(...corners.map((c) => c.y));
+  const width = absMaxX - absMinX;
+  const height = absMaxY - absMinY;
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+
+  const rect = figma.createRectangle();
+  rect.resize(width, height);
+  rect.x = absMinX;
+  rect.y = absMinY;
+  applyHighlightPaint(rect);
+  rect.visible = true;
+  figma.currentPage.appendChild(rect);
+  return rect;
+}
+
 async function createPartialSegmentRect(
   textNode: TextNode,
   style: HoverHighlightStyle,
@@ -683,6 +753,11 @@ async function createHighlightForItem(
   const sceneNode = node as SceneNode;
   if (!isOnCurrentPage(sceneNode)) {
     return [];
+  }
+
+  if (item.ocrRegion) {
+    const ocrNode = await createOcrRegionHighlight(sceneNode, item.ocrRegion);
+    return ocrNode ? [ocrNode] : [];
   }
 
   if (item.exact || sceneNode.type !== "TEXT") {

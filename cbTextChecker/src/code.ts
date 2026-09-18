@@ -7,6 +7,7 @@ import type {
   KeywordQuery,
   SearchMode,
   TextMatch,
+  TextNodeLike,
 } from "./types";
 import { DEFAULT_IGNORE_CATEGORIES } from "./types";
 import {
@@ -53,9 +54,12 @@ function emptyComparePair(): ComparePair {
   return { idA: null, idB: null };
 }
 
+const IMAGE_EXPORT_MAX_SIDE = 1600;
+
 let mode: SearchMode = "pinned";
 let pinnedNodeId: string | null = null;
 let comparePairs: ComparePair[] = [emptyComparePair()];
+let imageTargetId: string | null = null;
 let lastQueries: KeywordQuery[] = [];
 let lastIgnoreStrings: string[] = [];
 let lastIgnoreCategories: IgnoreCategories = { ...DEFAULT_IGNORE_CATEGORIES };
@@ -123,18 +127,20 @@ function makeRangePreview(characters: string, start: number, end: number): strin
 
 function enrichMatches(
   matches: TextMatch[],
-  nodeById: Map<string, TextNode>
+  nodeById: Map<string, TextNode>,
+  likeById?: Map<string, TextNodeLike>
 ): TextMatch[] {
   return matches.map((match) => {
     const node = nodeById.get(match.nodeId);
-    const characters = node?.characters ?? "";
+    const like = likeById?.get(match.nodeId);
+    const characters = node?.characters ?? like?.characters ?? "";
     const range = match.ranges[0];
     const preview = range
       ? makeRangePreview(characters, range.start, range.end)
       : makePreview(characters);
     return {
       ...match,
-      nodeName: node?.name || "(untitled)",
+      nodeName: node?.name || (like ? "OCR" : "(untitled)"),
       preview,
     };
   });
@@ -142,14 +148,17 @@ function enrichMatches(
 
 function enrichResults(
   results: CheckResult[],
-  nodes: TextNode[]
+  nodes: TextNode[],
+  likes: TextNodeLike[] = []
 ): CheckResult[] {
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  const likeById =
+    likes.length > 0 ? new Map(likes.map((n) => [n.id, n])) : undefined;
   return results.map((result) => ({
     ...result,
-    matches: enrichMatches(result.matches, nodeById),
+    matches: enrichMatches(result.matches, nodeById, likeById),
     children: result.children
-      ? enrichResults(result.children, nodes)
+      ? enrichResults(result.children, nodes, likes)
       : undefined,
   }));
 }
@@ -193,6 +202,149 @@ function postCompareState(): void {
   });
 }
 
+function postImageState(): void {
+  const targets = collectPinTargets();
+  if (imageTargetId && !targets.some((t) => t.id === imageTargetId)) {
+    imageTargetId = null;
+  }
+  postToUi({
+    type: "IMAGE_STATE",
+    targets,
+    targetId: imageTargetId,
+  });
+}
+
+function exportScaleForNode(node: SceneNode): number {
+  const width = "width" in node ? Number(node.width) || 1 : 1;
+  const height = "height" in node ? Number(node.height) || 1 : 1;
+  const maxSide = Math.max(width, height);
+  if (maxSide <= 0) {
+    return 1;
+  }
+  const scale = IMAGE_EXPORT_MAX_SIDE / maxSide;
+  return Math.min(2, Math.max(0.25, scale));
+}
+
+async function handleExportImageFromSelection(): Promise<void> {
+  const selection = figma.currentPage.selection;
+  if (selection.length === 0) {
+    postToUi({
+      type: "ERROR",
+      message: "画像にするノードを選択してください",
+    });
+    return;
+  }
+
+  const node = selection[0];
+  if (!("exportAsync" in node)) {
+    postToUi({
+      type: "ERROR",
+      message: "このノードは画像として書き出せません",
+    });
+    return;
+  }
+
+  const exportScale = exportScaleForNode(node);
+  const bytes = await node.exportAsync({
+    format: "PNG",
+    constraint: { type: "SCALE", value: exportScale },
+  });
+
+  postToUi({
+    type: "IMAGE_EXPORTED",
+    nodeId: node.id,
+    name: node.name || "(untitled)",
+    bytes: Array.from(bytes),
+    exportScale,
+  });
+}
+
+async function handleImageCompare(
+  ocrTexts: TextNodeLike[],
+  options: {
+    imageNodeId: string;
+    exportScale: number;
+    ocrRegions: Array<{ id: string; poly: Array<[number, number]> }>;
+    ignoreStrings?: string[];
+    ignoreCategories?: IgnoreCategories;
+  }
+): Promise<void> {
+  const ignoreStrings = options.ignoreStrings ?? lastIgnoreStrings;
+  const ignoreCategories = options.ignoreCategories ?? lastIgnoreCategories;
+  lastIgnoreStrings = ignoreStrings;
+  lastIgnoreCategories = ignoreCategories;
+  await withHighlightMutation(async () => {
+    clearHoverHighlight();
+  });
+
+  if (ocrTexts.length === 0) {
+    lastResults = [];
+    postToUi({ type: "ERROR", message: "OCR 結果がありません" });
+    return;
+  }
+
+  if (!imageTargetId) {
+    lastResults = [];
+    postToUi({ type: "ERROR", message: "比較ターゲットが未選択です" });
+    return;
+  }
+
+  const root = await resolveCompareRoot(imageTargetId, "比較ターゲット");
+  if ("error" in root) {
+    lastResults = [];
+    postImageState();
+    postToUi({ type: "ERROR", message: root.error });
+    return;
+  }
+
+  const nodesB = dedupeTextNodes(collectTextFromRoot(root));
+  const diff = compareTextNodes(
+    ocrTexts,
+    nodesB.map((n) => ({ id: n.id, characters: n.characters })),
+    ignoreStrings,
+    ignoreCategories
+  );
+  const results = enrichResults(
+    compareDiffToResults(diff),
+    nodesB,
+    ocrTexts
+  );
+  lastResults = results;
+
+  const regionById = new Map(
+    options.ocrRegions.map((region) => [region.id, region])
+  );
+  const exportScale =
+    options.exportScale > 0 ? options.exportScale : 1;
+  const highlightItems: HoverHighlightItem[] = [];
+  for (const item of resultsToHighlightItems(results)) {
+    if (!item.nodeId.startsWith("ocr:")) {
+      highlightItems.push(item);
+      continue;
+    }
+    const region = regionById.get(item.nodeId);
+    if (!region || region.poly.length === 0 || !options.imageNodeId) {
+      continue;
+    }
+    highlightItems.push({
+      nodeId: options.imageNodeId,
+      style: item.style,
+      exact: item.exact,
+      ranges: [],
+      ocrRegion: {
+        id: region.id,
+        exportScale,
+        poly: region.poly,
+      },
+    });
+  }
+  await withHighlightMutation(async () => {
+    await buildHighlightPool(highlightItems);
+  });
+
+  postToUi({ type: "SEARCH_RESULT", results });
+}
+
 /** Prefer selected pin target, else nearest pin-target ancestor. */
 function resolvePinTargetFromSelection(): string | null {
   const selection = figma.currentPage.selection;
@@ -218,8 +370,8 @@ function resolvePinTargetFromSelection(): string | null {
 }
 
 async function getSearchNodes(): Promise<TextNode[] | { error: string }> {
-  if (mode === "compare") {
-    return { error: "比較モードではキーワード検索は使えません" };
+  if (mode === "compare" || mode === "image") {
+    return { error: "このモードではキーワード検索は使えません" };
   }
 
   if (!pinnedNodeId) {
@@ -293,6 +445,9 @@ async function handleSearch(
 ): Promise<void> {
   if (mode === "compare") {
     await handleCompare(ignoreStrings, ignoreCategories);
+    return;
+  }
+  if (mode === "image") {
     return;
   }
 
@@ -442,6 +597,9 @@ async function rerunSearch(): Promise<void> {
     await handleCompare();
     return;
   }
+  if (mode === "image") {
+    return;
+  }
   await handleSearch(lastQueries);
 }
 
@@ -491,6 +649,9 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
       case "LIST_COMPARE_TARGETS":
         postCompareState();
         break;
+      case "LIST_IMAGE_TARGETS":
+        postImageState();
+        break;
       case "SET_MODE": {
         mode = msg.mode;
 
@@ -519,9 +680,53 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
           postCompareState();
         }
 
+        if (mode === "image") {
+          if (msg.imageTargetId !== undefined) {
+            imageTargetId = msg.imageTargetId;
+          }
+          postImageState();
+        }
+
         await rerunSearch();
         break;
       }
+      case "EXPORT_IMAGE_FROM_SELECTION":
+        await handleExportImageFromSelection();
+        break;
+      case "CLEAR_IMAGE":
+        postToUi({ type: "IMAGE_CLEARED" });
+        break;
+      case "SET_IMAGE_COMPARE_TARGET":
+        imageTargetId = msg.targetId;
+        postImageState();
+        break;
+      case "SET_IMAGE_TARGET_FROM_SELECTION": {
+        const fromSelection = resolvePinTargetFromSelection();
+        const targets = collectPinTargets();
+        const nodeId =
+          fromSelection && targets.some((t) => t.id === fromSelection)
+            ? fromSelection
+            : null;
+        if (!nodeId) {
+          postToUi({
+            type: "ERROR",
+            message: "選択から比較ターゲットを解決できません",
+          });
+          break;
+        }
+        imageTargetId = nodeId;
+        postImageState();
+        break;
+      }
+      case "RUN_IMAGE_COMPARE":
+        await handleImageCompare(msg.ocrTexts, {
+          imageNodeId: msg.imageNodeId,
+          exportScale: msg.exportScale,
+          ocrRegions: msg.ocrRegions,
+          ignoreStrings: msg.ignoreStrings ?? lastIgnoreStrings,
+          ignoreCategories: msg.ignoreCategories ?? lastIgnoreCategories,
+        });
+        break;
       case "SET_PINNED_NODE":
         pinnedNodeId = msg.pinnedNodeId;
         if (mode === "pinned") {
@@ -625,6 +830,12 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
       case "FOCUS_NODE":
         await handleFocusNode(msg.nodeId);
         break;
+      case "BUILD_HIGHLIGHT_POOL":
+        await withHighlightMutation(async () => {
+          await buildHighlightPool(msg.items);
+          showHoverHighlight(msg.items);
+        });
+        break;
       case "HOVER_HIGHLIGHT":
         await withHighlightMutation(() => {
           showHoverHighlight(msg.items);
@@ -664,6 +875,9 @@ figma.on("currentpagechange", () => {
   postPinTargets();
   if (mode === "compare") {
     postCompareState();
+  }
+  if (mode === "image") {
+    postImageState();
   }
   void rerunSearch();
 });

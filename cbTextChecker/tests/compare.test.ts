@@ -254,3 +254,26 @@ describe("compareDiffToResults", () => {
     expect(results[3].matches[0].side).toBe("B");
   });
 });
+
+describe("image OCR compare payload", () => {
+  it("compares ocr virtual nodes against target texts", () => {
+    const diff = compareTextNodes(
+      [
+        { id: "ocr:0", characters: "ログイン" },
+        { id: "ocr:1", characters: "パスワード" },
+      ],
+      [
+        { id: "t1", characters: "ログイン" },
+        { id: "t2", characters: "新規登録" },
+      ]
+    );
+    expect(diff.matchedExact).toHaveLength(1);
+    expect(diff.matchedExact[0].a.id).toBe("ocr:0");
+    expect(diff.onlyA.map((n) => n.id)).toEqual(["ocr:1"]);
+    expect(diff.onlyB.map((n) => n.id)).toEqual(["t2"]);
+    const results = compareDiffToResults(diff);
+    expect(results.find((r) => r.keyword === COMPARE_EXACT)?.count).toBe(2);
+    expect(results.find((r) => r.keyword === COMPARE_ONLY_A)?.count).toBe(1);
+    expect(results.find((r) => r.keyword === COMPARE_ONLY_B)?.count).toBe(1);
+  });
+});

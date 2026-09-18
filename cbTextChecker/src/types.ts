@@ -24,7 +24,16 @@ export interface CheckResult {
   children?: CheckResult[];
 }
 
-export type SearchMode = "pinned" | "compare";
+export type SearchMode = "pinned" | "compare" | "image";
+
+/** One OCR line from PaddleOCR.js. */
+export interface OcrItem {
+  id: string;
+  text: string;
+  score: number;
+  /** Quadrilateral points [[x,y], ...] in source image coordinates. */
+  poly: Array<[number, number]>;
+}
 
 /** One A↔B comparison pair. */
 export interface ComparePair {
@@ -36,11 +45,20 @@ export type HoverHighlightStyle = "component" | "instance";
 
 export type HighlightColor = "red" | "yellow" | "green" | "purple";
 
+/** OCR region on the exported image node (poly in export-pixel coords). */
+export interface OcrHighlightRegion {
+  id: string;
+  exportScale: number;
+  poly: Array<[number, number]>;
+}
+
 export interface HoverHighlightItem {
   nodeId: string;
   style: HoverHighlightStyle;
   exact: boolean;
   ranges: MatchRange[];
+  /** When set, highlight is a region on an image/frame node (not TEXT). */
+  ocrRegion?: OcrHighlightRegion;
 }
 
 export interface PinTarget {

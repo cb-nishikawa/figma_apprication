@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CbTextChecker</title>
+    <title>もじ検索比較くん</title>
   </head>
   <body>
     <div class="app">
@@ -11,11 +11,15 @@
         <div class="mode-row" role="radiogroup" aria-label="検索範囲">
           <label class="radio">
             <input type="radio" name="mode" value="pinned" checked />
-            <span>固定</span>
+            <span>検索</span>
           </label>
           <label class="radio">
             <input type="radio" name="mode" value="compare" />
             <span>比較</span>
+          </label>
+          <label class="radio">
+            <input type="radio" name="mode" value="image" />
+            <span>画像</span>
           </label>
         </div>
         <div id="pin-inline" class="pin-inline">
@@ -60,6 +64,62 @@
           >
             ＋
           </button>
+        </div>
+        <div id="image-inline" class="image-inline" hidden>
+          <div class="compare-pair-row">
+            <div class="compare-pair-sides">
+              <div class="compare-side">
+                <div class="compare-side-top">
+                  <span class="compare-side-label">画</span>
+                  <span id="image-name" class="image-name">画像未選択</span>
+                  <button
+                    id="image-from-selection"
+                    class="btn-icon"
+                    type="button"
+                    title="選択から画像"
+                    aria-label="選択から画像"
+                  ></button>
+                </div>
+              </div>
+              <div class="compare-side">
+                <div class="compare-side-top">
+                  <span class="compare-side-label">比</span>
+                  <div class="pin-combobox">
+                    <input
+                      id="image-target-input"
+                      class="pin-combobox-input"
+                      type="text"
+                      role="combobox"
+                      aria-autocomplete="list"
+                      aria-controls="image-target-list"
+                      aria-expanded="false"
+                      aria-label="比較ターゲット"
+                      placeholder="ターゲット（任意）"
+                      autocomplete="off"
+                    />
+                    <ul
+                      id="image-target-list"
+                      class="pin-combobox-list"
+                      role="listbox"
+                      hidden
+                    ></ul>
+                  </div>
+                  <button
+                    id="image-target-from-selection"
+                    class="btn-icon"
+                    type="button"
+                    title="選択をターゲットに"
+                    aria-label="選択をターゲットに"
+                  ></button>
+                </div>
+              </div>
+            </div>
+            <div id="image-row-actions" class="compare-pair-actions"></div>
+          </div>
+          <div id="ocr-status" class="ocr-status" hidden>
+            <span class="ocr-spinner" aria-hidden="true"></span>
+            <span id="ocr-status-text" class="ocr-status-text"></span>
+          </div>
         </div>
       </section>
 
