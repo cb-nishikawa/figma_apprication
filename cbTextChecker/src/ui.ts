@@ -44,6 +44,7 @@ const DEBOUNCE_MS = 300;
 const MIN_UI_HEIGHT = 320;
 const MAX_UI_HEIGHT = 900;
 const DEFAULT_HIGHLIGHT_COLOR: HighlightColor = "green";
+const OCR_RESULT_KEY = "ocr:all";
 const HIGHLIGHT_COLOR_SWATCHES: Record<HighlightColor, string> = {
   red: "#ff3b30",
   yellow: "#ffcc00",
@@ -316,13 +317,72 @@ function colorForResult(result: CheckResult, key: string): HighlightColor {
   return keywordColors.get(key) ?? defaultColorForResult(result);
 }
 
+function colorForOcrGroup(): HighlightColor {
+  return keywordColors.get(OCR_RESULT_KEY) ?? DEFAULT_HIGHLIGHT_COLOR;
+}
+
+function colorForOcrItem(itemId: string): HighlightColor {
+  return keywordColors.get(itemId) ?? colorForOcrGroup();
+}
+
+function highlightItemsForKey(keyword: string): HoverHighlightItem[] {
+  const fromResults = itemsForKeyword(keyword);
+  if (fromResults.length > 0) {
+    return fromResults;
+  }
+  if (keyword === OCR_RESULT_KEY) {
+    return ocrToHighlightItems();
+  }
+  const ocrItem = ocrItems.find((item) => item.id === keyword);
+  if (!ocrItem) {
+    return [];
+  }
+  return ocrToHighlightItems([ocrItem]);
+}
+
 function applyKeywordColor(keyword: string, color: HighlightColor): void {
   keywordColors.set(keyword, color);
-  const items = itemsForKeyword(keyword);
+  const items = highlightItemsForKey(keyword);
   if (items.length === 0) {
     return;
   }
   postToPlugin({ type: "SET_HIGHLIGHT_COLOR", color, items });
+}
+
+function pruneOcrHighlightPrefs(): void {
+  const validIds = new Set(ocrItems.map((item) => item.id));
+  const keepGroup = ocrItems.length > 0;
+  for (const key of [...pinnedKeywords]) {
+    if (!key.startsWith("ocr:")) {
+      continue;
+    }
+    if (key === OCR_RESULT_KEY) {
+      if (!keepGroup) {
+        pinnedKeywords.delete(key);
+      }
+      continue;
+    }
+    if (!validIds.has(key)) {
+      pinnedKeywords.delete(key);
+    }
+  }
+  for (const key of [...keywordColors.keys()]) {
+    if (!key.startsWith("ocr:")) {
+      continue;
+    }
+    if (key === OCR_RESULT_KEY) {
+      if (!keepGroup) {
+        keywordColors.delete(key);
+      }
+      continue;
+    }
+    if (!validIds.has(key)) {
+      keywordColors.delete(key);
+    }
+  }
+  if (!keepGroup) {
+    expandedKeywords.delete(OCR_RESULT_KEY);
+  }
 }
 
 function syncHighlightPrefsAfterSearch(): void {
@@ -475,11 +535,28 @@ function ocrToHighlightItems(items: OcrItem[] = ocrItems): HoverHighlightItem[] 
     }));
 }
 
-function publishOcrHighlights(items?: HoverHighlightItem[]): void {
+function collectPinnedOcrItems(): HoverHighlightItem[] {
+  if (pinnedKeywords.has(OCR_RESULT_KEY)) {
+    return ocrToHighlightItems();
+  }
+  const items: HoverHighlightItem[] = [];
+  for (const item of ocrItems) {
+    if (pinnedKeywords.has(item.id)) {
+      items.push(...ocrToHighlightItems([item]));
+    }
+  }
+  return items;
+}
+
+function publishOcrHighlights(extraItems: HoverHighlightItem[] = []): void {
   if (imageCompareActive) {
     return;
   }
-  const list = items ?? ocrToHighlightItems();
+  const byKey = new Map<string, HoverHighlightItem>();
+  for (const item of [...collectPinnedOcrItems(), ...extraItems]) {
+    byKey.set(hoverItemKey(item), item);
+  }
+  const list = [...byKey.values()];
   if (list.length === 0) {
     postToPlugin({ type: "CLEAR_HIGHLIGHT" });
     return;
@@ -497,6 +574,15 @@ function buildAndShowOcrHighlights(): void {
     return;
   }
   postToPlugin({ type: "BUILD_HIGHLIGHT_POOL", items });
+  // Align with search/compare: only pinned (or hover) stay visible.
+  publishOcrHighlights();
+  applyKeywordColor(OCR_RESULT_KEY, colorForOcrGroup());
+  for (const item of ocrItems) {
+    if (item.poly.length === 0 || !keywordColors.has(item.id)) {
+      continue;
+    }
+    applyKeywordColor(item.id, colorForOcrItem(item.id));
+  }
 }
 
 async function copyText(text: string): Promise<void> {
@@ -513,6 +599,67 @@ async function copyText(text: string): Promise<void> {
     document.execCommand("copy");
     document.body.removeChild(area);
   }
+}
+
+function createOcrMatchList(): HTMLUListElement {
+  const matchList = document.createElement("ul");
+  matchList.className = "match-list";
+
+  for (const item of ocrItems) {
+    const matchItem = document.createElement("li");
+    matchItem.className = "match-item ocr-match-item";
+    matchItem.title = "クリックで画像へジャンプ";
+
+    const head = document.createElement("div");
+    head.className = "match-item-head";
+
+    const name = document.createElement("span");
+    name.className = "match-name";
+    name.textContent = item.text;
+    name.title = item.text;
+
+    const hasRegion = item.poly.length > 0;
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "ocr-copy-btn";
+    copyBtn.title = "コピー";
+    copyBtn.setAttribute("aria-label", "コピー");
+    copyBtn.innerHTML = copyIcon;
+    copyBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void copyText(item.text);
+    });
+
+    const actions = document.createElement("div");
+    actions.className = "ocr-match-actions";
+    actions.append(
+      createPinButton(item.id, hasRegion, () => {
+        publishOcrHighlights();
+      }),
+      createColorSelect(item.id, hasRegion, colorForOcrItem(item.id)),
+      copyBtn
+    );
+
+    head.append(name, actions);
+    matchItem.append(head);
+
+    matchItem.addEventListener("mouseenter", () => {
+      publishOcrHighlights(ocrToHighlightItems([item]));
+    });
+    matchItem.addEventListener("mouseleave", () => {
+      publishOcrHighlights();
+    });
+    matchItem.addEventListener("click", () => {
+      if (imageNodeId) {
+        postToPlugin({ type: "FOCUS_NODE", nodeId: imageNodeId });
+      }
+    });
+
+    matchList.appendChild(matchItem);
+  }
+
+  return matchList;
 }
 
 function renderOcrList(): void {
@@ -534,42 +681,75 @@ function renderOcrList(): void {
     return;
   }
 
-  for (const item of ocrItems) {
-    const li = document.createElement("li");
-    li.className = "ocr-item";
-    li.dataset.ocrId = item.id;
+  const count = ocrItems.length;
+  const hasRegion = ocrItems.some((item) => item.poly.length > 0);
+  const isExpanded = expandedKeywords.has(OCR_RESULT_KEY);
 
-    const textEl = document.createElement("div");
-    textEl.className = "ocr-item-text";
-    textEl.textContent = item.text;
+  const li = document.createElement("li");
+  li.className = "result-group";
 
-    const copyBtn = document.createElement("button");
-    copyBtn.type = "button";
-    copyBtn.className = "ocr-copy-btn";
-    copyBtn.title = "コピー";
-    copyBtn.setAttribute("aria-label", "コピー");
-    copyBtn.innerHTML = copyIcon;
-    copyBtn.addEventListener("click", (event) => {
-      event.stopPropagation();
-      void copyText(item.text);
-    });
+  const header = document.createElement("div");
+  header.className = "result-header";
 
-    li.addEventListener("mouseenter", () => {
-      publishOcrHighlights(ocrToHighlightItems([item]));
-    });
-    li.addEventListener("mouseleave", () => {
+  const expandBtn = document.createElement("button");
+  expandBtn.type = "button";
+  expandBtn.className = "result-expand";
+  expandBtn.setAttribute("aria-label", "詳細を開閉");
+  expandBtn.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+  expandBtn.textContent = isExpanded ? "▾" : "▸";
+
+  const keyword = document.createElement("button");
+  keyword.type = "button";
+  keyword.className = "keyword";
+  keyword.textContent = "検出テキスト";
+  keyword.title = "クリックで画像へジャンプ";
+
+  const countBtn = document.createElement("button");
+  countBtn.type = "button";
+  countBtn.className = "count";
+  countBtn.textContent = `${count}件`;
+  countBtn.title = "クリックで画像へジャンプ";
+
+  header.append(
+    expandBtn,
+    keyword,
+    countBtn,
+    createPinButton(OCR_RESULT_KEY, hasRegion, () => {
       publishOcrHighlights();
-    });
-    li.addEventListener("click", () => {
-      if (imageNodeId) {
-        postToPlugin({ type: "FOCUS_NODE", nodeId: imageNodeId });
-      }
-    });
+    }),
+    createColorSelect(OCR_RESULT_KEY, hasRegion, colorForOcrGroup())
+  );
 
-    li.appendChild(textEl);
-    li.appendChild(copyBtn);
-    resultsEl.appendChild(li);
+  const jumpImage = () => {
+    if (imageNodeId) {
+      postToPlugin({ type: "FOCUS_NODE", nodeId: imageNodeId });
+    }
+  };
+
+  keyword.addEventListener("click", jumpImage);
+  countBtn.addEventListener("click", jumpImage);
+
+  expandBtn.addEventListener("click", () => {
+    if (expandedKeywords.has(OCR_RESULT_KEY)) {
+      expandedKeywords.delete(OCR_RESULT_KEY);
+    } else {
+      expandedKeywords.add(OCR_RESULT_KEY);
+    }
+    renderOcrList();
+  });
+
+  header.addEventListener("mouseenter", () => {
+    publishOcrHighlights(ocrToHighlightItems());
+  });
+  header.addEventListener("mouseleave", () => {
+    publishOcrHighlights();
+  });
+
+  li.appendChild(header);
+  if (isExpanded) {
+    li.appendChild(createOcrMatchList());
   }
+  resultsEl.appendChild(li);
 }
 
 function clearImageLocal(notifyPlugin = true): void {
@@ -578,6 +758,7 @@ function clearImageLocal(notifyPlugin = true): void {
   imageExportScale = 1;
   ocrItems = [];
   imageCompareActive = false;
+  pruneOcrHighlightPrefs();
   setOcrStatus(null);
   imagePicker?.refresh();
   if (notifyPlugin) {
@@ -1090,9 +1271,10 @@ function pruneExpandedKeywords(results: CheckResult[]): void {
   }
 }
 
-function createResultPinButton(
-  result: CheckResult,
-  key: string
+function createPinButton(
+  key: string,
+  enabled: boolean,
+  publish: () => void
 ): HTMLButtonElement {
   const pinBtn = document.createElement("button");
   pinBtn.type = "button";
@@ -1103,10 +1285,10 @@ function createResultPinButton(
   pinBtn.title = pinned ? "ハイライト固定を解除" : "ハイライトを固定";
   pinBtn.setAttribute("aria-label", pinBtn.title);
   pinBtn.innerHTML = pinIcon;
-  pinBtn.disabled = result.count === 0;
+  pinBtn.disabled = !enabled;
   pinBtn.addEventListener("click", (event) => {
     event.stopPropagation();
-    if (result.count === 0) {
+    if (!enabled) {
       return;
     }
     if (pinnedKeywords.has(key)) {
@@ -1119,9 +1301,18 @@ function createResultPinButton(
     pinBtn.classList.toggle("is-on", nowPinned);
     pinBtn.title = nowPinned ? "ハイライト固定を解除" : "ハイライトを固定";
     pinBtn.setAttribute("aria-label", pinBtn.title);
-    publishVisibleHighlights();
+    publish();
   });
   return pinBtn;
+}
+
+function createResultPinButton(
+  result: CheckResult,
+  key: string
+): HTMLButtonElement {
+  return createPinButton(key, result.count > 0, () => {
+    publishVisibleHighlights();
+  });
 }
 
 function closeAllColorMenus(): void {
@@ -1152,9 +1343,10 @@ function setColorTriggerSwatch(
   trigger.dataset.color = color;
 }
 
-function createResultColorSelect(
-  result: CheckResult,
-  key: string
+function createColorSelect(
+  key: string,
+  enabled: boolean,
+  current: HighlightColor
 ): HTMLDivElement {
   const wrap = document.createElement("div");
   wrap.className = "result-color";
@@ -1166,7 +1358,7 @@ function createResultColorSelect(
   trigger.setAttribute("aria-label", "ハイライト色");
   trigger.setAttribute("aria-haspopup", "listbox");
   trigger.setAttribute("aria-expanded", "false");
-  trigger.disabled = result.count === 0;
+  trigger.disabled = !enabled;
 
   const currentSwatch = document.createElement("span");
   currentSwatch.className = "result-color-swatch";
@@ -1177,7 +1369,6 @@ function createResultColorSelect(
   menu.hidden = true;
   menu.setAttribute("role", "listbox");
 
-  const current = colorForResult(result, key);
   setColorTriggerSwatch(trigger, current);
 
   for (const color of HIGHLIGHT_COLOR_OPTIONS) {
@@ -1241,6 +1432,13 @@ function createResultColorSelect(
 
   wrap.append(trigger, menu);
   return wrap;
+}
+
+function createResultColorSelect(
+  result: CheckResult,
+  key: string
+): HTMLDivElement {
+  return createColorSelect(key, result.count > 0, colorForResult(result, key));
 }
 
 function createMatchList(result: CheckResult): HTMLUListElement {
@@ -1316,10 +1514,6 @@ function createResultGroup(
   expandBtn.disabled = result.count === 0;
   expandBtn.textContent = isExpanded ? "▾" : "▸";
 
-  const status = document.createElement("span");
-  status.className = `status ${result.count > 0 ? "ok" : "ng"}`;
-  status.textContent = result.count > 0 ? "✓" : "✕";
-
   const keyword = document.createElement("button");
   keyword.type = "button";
   keyword.className = "keyword";
@@ -1338,7 +1532,6 @@ function createResultGroup(
 
   header.append(
     expandBtn,
-    status,
     keyword,
     count,
     createResultPinButton(result, key),
