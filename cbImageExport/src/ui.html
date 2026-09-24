@@ -13,45 +13,20 @@
             <span class="scope-title">対象フレーム</span>
             <span id="frame-summary" class="scope-summary">未選択</span>
           </div>
-          <button
-            id="rescan"
-            class="btn-secondary"
-            type="button"
-            title="再読み込み"
-          >
-            再読み込み
-          </button>
+          <div class="scope-actions">
+            <button id="export-all" class="btn-primary" type="button">
+              書き出し
+            </button>
+            <button
+              id="rescan"
+              class="btn-secondary"
+              type="button"
+              title="再読み込み"
+            >
+              再読み込み
+            </button>
+          </div>
         </div>
-      </section>
-
-      <hr class="divider" />
-
-      <section class="section">
-        <label class="search-label" for="search-input">検索</label>
-        <input
-          id="search-input"
-          class="search-input"
-          type="search"
-          placeholder="名前で絞り込み"
-          autocomplete="off"
-        />
-      </section>
-
-      <hr class="divider" />
-
-      <section class="section toolbar-section">
-        <label class="bulk-format">
-          <span>一括形式</span>
-          <select id="bulk-format" aria-label="一括形式">
-            <option value="PNG">PNG</option>
-            <option value="JPG">JPG</option>
-            <option value="SVG">SVG</option>
-            <option value="PDF">PDF</option>
-          </select>
-        </label>
-        <button id="export-checked" class="btn-primary" type="button">
-          チェックを書き出し
-        </button>
       </section>
 
       <hr class="divider" />

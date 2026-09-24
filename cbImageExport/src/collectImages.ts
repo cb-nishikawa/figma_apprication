@@ -17,66 +17,8 @@ function hasImageFill(node: SceneNode): boolean {
   );
 }
 
-function parentOf(node: BaseNode): (BaseNode & ChildrenMixin) | null {
-  const parent = node.parent;
-  if (!parent || parent.type === "PAGE" || parent.type === "DOCUMENT") {
-    return null;
-  }
-  if ("children" in parent) {
-    return parent as BaseNode & ChildrenMixin;
-  }
-  return null;
-}
-
-/** Parent that contains an isMask child (the visual mask unit). */
-function findMaskContainer(node: SceneNode): SceneNode | null {
-  let current: BaseNode | null = node;
-  while (current && current.type !== "PAGE" && current.type !== "DOCUMENT") {
-    if ("children" in current) {
-      const container = current as SceneNode & ChildrenMixin;
-      const hasMask = container.children.some(
-        (child) => "isMask" in child && (child as SceneNode & { isMask: boolean }).isMask
-      );
-      if (hasMask && (container.type === "GROUP" || container.type === "FRAME" || container.type === "COMPONENT" || container.type === "INSTANCE")) {
-        return container;
-      }
-    }
-    current = current.parent;
-  }
-  return null;
-}
-
-/** Nearest ancestor FRAME/COMPONENT/INSTANCE with clipsContent. */
-function findClipFrame(node: SceneNode): FrameNode | ComponentNode | InstanceNode | null {
-  let current: BaseNode | null = node.parent;
-  while (current && current.type !== "PAGE" && current.type !== "DOCUMENT") {
-    if (
-      (current.type === "FRAME" ||
-        current.type === "COMPONENT" ||
-        current.type === "INSTANCE") &&
-      "clipsContent" in current &&
-      (current as FrameNode).clipsContent
-    ) {
-      return current as FrameNode | ComponentNode | InstanceNode;
-    }
-    current = current.parent;
-  }
-  return null;
-}
-
-function resolveExportTarget(node: SceneNode): {
-  target: SceneNode;
-  kind: ImageListItem["kind"];
-} {
-  const mask = findMaskContainer(node);
-  if (mask) {
-    return { target: mask, kind: "mask" };
-  }
-  const clip = findClipFrame(node);
-  if (clip) {
-    return { target: clip, kind: "clip" };
-  }
-  return { target: node, kind: "image" };
+function isMaskNode(node: SceneNode): boolean {
+  return "isMask" in node && (node as SceneNode & { isMask: boolean }).isMask;
 }
 
 function walkVisible(
@@ -94,40 +36,42 @@ function walkVisible(
   }
 }
 
-function canExport(node: SceneNode): boolean {
-  return "exportAsync" in node;
+function parentNameOf(node: SceneNode, root: FrameNode): string {
+  const parent = node.parent;
+  if (parent && parent.type !== "PAGE" && parent.type !== "DOCUMENT" && "name" in parent) {
+    const name = String(parent.name).trim();
+    if (name) {
+      return name;
+    }
+  }
+  return root.name || "(untitled)";
 }
 
 /**
- * Collect unique export targets under selected frames.
- * Masked / clipped images resolve to the mask parent or clip frame.
+ * Collect every visible image source node under the selected frames.
+ * Each IMAGE fill node becomes its own export unit (no mask/clip grouping).
  */
 export function collectImageTargets(
   roots: FrameNode[]
-): Array<{ target: SceneNode; kind: ImageListItem["kind"]; frameName: string }> {
+): Array<{ target: SceneNode; parentName: string }> {
   const byId = new Map<
     string,
-    { target: SceneNode; kind: ImageListItem["kind"]; frameName: string }
+    { target: SceneNode; parentName: string }
   >();
 
   for (const root of roots) {
     if (!isVisible(root)) {
       continue;
     }
-    const frameName = root.name || "(untitled)";
     walkVisible(root, (node) => {
-      if ("isMask" in node && (node as SceneNode & { isMask: boolean }).isMask) {
+      if (isMaskNode(node)) {
         return;
       }
-      if (!hasImageFill(node)) {
+      if (!hasImageFill(node) || !("exportAsync" in node)) {
         return;
       }
-      const { target, kind } = resolveExportTarget(node);
-      if (!canExport(target) || !isVisible(target)) {
-        return;
-      }
-      if (!byId.has(target.id)) {
-        byId.set(target.id, { target, kind, frameName });
+      if (!byId.has(node.id)) {
+        byId.set(node.id, { target: node, parentName: parentNameOf(node, root) });
       }
     });
   }

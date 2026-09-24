@@ -51,9 +51,8 @@ async function scanSelection(): Promise<void> {
     items.push({
       id: entry.target.id,
       name: entry.target.name || "(untitled)",
-      kind: entry.kind,
+      parentName: entry.parentName,
       thumbBytes,
-      frameName: entry.frameName,
     });
   }
 
@@ -69,19 +68,21 @@ async function scanSelection(): Promise<void> {
 }
 
 function exportSettings(
-  format: ExportFormat
+  format: ExportFormat,
+  scale: number
 ): ExportSettings {
+  const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
   if (format === "JPG") {
     return {
       format: "JPG",
-      constraint: { type: "SCALE", value: 2 },
+      constraint: { type: "SCALE", value: safeScale },
       contentsOnly: true,
     };
   }
   if (format === "PNG") {
     return {
       format: "PNG",
-      constraint: { type: "SCALE", value: 2 },
+      constraint: { type: "SCALE", value: safeScale },
       contentsOnly: true,
     };
   }
@@ -113,7 +114,7 @@ async function exportNodes(requests: ExportRequest[]): Promise<void> {
     }
     const scene = node as SceneNode;
     try {
-      const bytes = await scene.exportAsync(exportSettings(req.format));
+      const bytes = await scene.exportAsync(exportSettings(req.format, req.scale));
       results.push({
         id: req.id,
         name: scene.name || "(untitled)",

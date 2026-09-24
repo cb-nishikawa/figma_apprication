@@ -2,6 +2,7 @@ import "./ui.css";
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
 import type {
   ExportFormat,
+  ExportRequest,
   ExportResultItem,
   ImageListItem,
 } from "./types";
@@ -9,18 +10,20 @@ import { EXPORT_FORMATS } from "./types";
 
 const MIN_UI_HEIGHT = 320;
 const MAX_UI_HEIGHT = 900;
-const DEBOUNCE_MS = 200;
+
+interface ExportConfig {
+  format: ExportFormat;
+  scale: number;
+}
+
+const DEFAULT_CONFIG: ExportConfig = { format: "PNG", scale: 1 };
 
 const frameSummaryEl = document.getElementById(
   "frame-summary"
 ) as HTMLSpanElement;
 const rescanBtn = document.getElementById("rescan") as HTMLButtonElement;
-const searchInput = document.getElementById("search-input") as HTMLInputElement;
-const bulkFormatEl = document.getElementById(
-  "bulk-format"
-) as HTMLSelectElement;
-const exportCheckedBtn = document.getElementById(
-  "export-checked"
+const exportAllBtn = document.getElementById(
+  "export-all"
 ) as HTMLButtonElement;
 const selectAllEl = document.getElementById("select-all") as HTMLInputElement;
 const resultsEl = document.getElementById("results") as HTMLUListElement;
@@ -31,10 +34,8 @@ const resizeHandle = document.getElementById(
 ) as HTMLDivElement;
 
 let items: ImageListItem[] = [];
-let searchQuery = "";
-let debounceTimer: number | null = null;
 const checkedIds = new Set<string>();
-const formatById = new Map<string, ExportFormat>();
+const configsByNode = new Map<string, ExportConfig[]>();
 const rowErrorById = new Map<string, string>();
 
 function postToPlugin(msg: UiToPluginMessage): void {
@@ -61,30 +62,16 @@ function showStatus(message: string | null): void {
   statusEl.textContent = message;
 }
 
-function kindLabel(kind: ImageListItem["kind"]): string {
-  if (kind === "mask") {
-    return "マスク範囲";
+function parseScale(raw: string): number {
+  const value = Number.parseFloat(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    return 1;
   }
-  if (kind === "clip") {
-    return "フレーム範囲";
-  }
-  return "画像";
+  return value;
 }
 
-function filteredItems(): ImageListItem[] {
-  const q = searchQuery.trim().toLowerCase();
-  if (!q) {
-    return items;
-  }
-  return items.filter(
-    (item) =>
-      item.name.toLowerCase().includes(q) ||
-      item.frameName.toLowerCase().includes(q)
-  );
-}
-
-function formatFor(id: string): ExportFormat {
-  return formatById.get(id) ?? "PNG";
+function configsFor(id: string): ExportConfig[] {
+  return configsByNode.get(id) ?? [DEFAULT_CONFIG];
 }
 
 function bytesToObjectUrl(bytes: number[], mime: string): string {
@@ -143,7 +130,7 @@ function createFormatSelect(
   onChange: (format: ExportFormat) => void
 ): HTMLSelectElement {
   const select = document.createElement("select");
-  select.className = "row-format";
+  select.className = "config-format";
   select.setAttribute("aria-label", "書き出し形式");
   for (const format of EXPORT_FORMATS) {
     const option = document.createElement("option");
@@ -161,9 +148,78 @@ function createFormatSelect(
   return select;
 }
 
+function createScaleInput(
+  value: number,
+  onInput: (raw: string) => void
+): HTMLInputElement {
+  const input = document.createElement("input");
+  input.className = "config-scale";
+  input.type = "number";
+  input.min = "0";
+  input.step = "0.1";
+  input.value = String(value);
+  input.setAttribute("aria-label", "書き出し倍率");
+  input.title = "2 なら 2 倍、0.5 なら半分、未入力なら等倍";
+  input.addEventListener("click", (event) => event.stopPropagation());
+  input.addEventListener("input", () => onInput(input.value));
+  return input;
+}
+
+function createAddButton(id: string): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "config-add";
+  btn.textContent = "+";
+  btn.title = "書き出し形式を追加";
+  btn.setAttribute("aria-label", "書き出し形式を追加");
+  btn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const existing = configsByNode.get(id);
+    if (existing) {
+      existing.push({ ...DEFAULT_CONFIG });
+    } else {
+      configsByNode.set(id, [{ ...DEFAULT_CONFIG }]);
+    }
+    renderList();
+  });
+  return btn;
+}
+
+function createRemoveButton(id: string, index: number): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "config-remove";
+  btn.textContent = "✕";
+  btn.title = "この書き出し形式を削除";
+  btn.setAttribute("aria-label", "この書き出し形式を削除");
+  btn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    configsByNode.get(id)?.splice(index, 1);
+    renderList();
+  });
+  return btn;
+}
+
+function createConfigRow(id: string, config: ExportConfig, index: number): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "config-row";
+
+  const scale = createScaleInput(config.scale, (raw) => {
+    config.scale = parseScale(raw);
+  });
+
+  const format = createFormatSelect(config.format, (next) => {
+    config.format = next;
+  });
+
+  const remove = createRemoveButton(id, index);
+
+  row.append(scale, format, remove);
+  return row;
+}
+
 function renderList(): void {
   resultsEl.innerHTML = "";
-  const list = filteredItems();
 
   if (items.length === 0) {
     const li = document.createElement("li");
@@ -173,19 +229,14 @@ function renderList(): void {
       : statusEl.textContent || "まだ画像がありません";
     resultsEl.appendChild(li);
     selectAllEl.checked = false;
+    exportAllBtn.disabled = true;
     return;
   }
 
-  if (list.length === 0) {
-    const li = document.createElement("li");
-    li.className = "empty";
-    li.textContent = "検索に一致する画像がありません";
-    resultsEl.appendChild(li);
-    return;
-  }
+  exportAllBtn.disabled = false;
 
   let allChecked = true;
-  for (const item of list) {
+  for (const item of items) {
     if (!checkedIds.has(item.id)) {
       allChecked = false;
     }
@@ -230,43 +281,27 @@ function renderList(): void {
     const name = document.createElement("div");
     name.className = "result-name";
     name.textContent = item.name;
-    const kind = document.createElement("div");
-    kind.className = "result-kind";
-    kind.textContent = `${kindLabel(item.kind)} · ${item.frameName}`;
-    meta.append(name, kind);
+    const parent = document.createElement("div");
+    parent.className = "result-kind";
+    parent.textContent = `親: ${item.parentName}`;
+    meta.append(name, parent);
     meta.addEventListener("click", () => {
       postToPlugin({ type: "FOCUS_NODE", nodeId: item.id });
     });
 
-    const formatSelect = createFormatSelect(formatFor(item.id), (format) => {
-      formatById.set(item.id, format);
-    });
+    const configBox = document.createElement("div");
+    configBox.className = "config-box";
+    const configs = configsFor(item.id);
+    for (let i = 0; i < configs.length; i += 1) {
+      configBox.appendChild(createConfigRow(item.id, configs[i], i));
+    }
+    configBox.appendChild(createAddButton(item.id));
 
-    const exportBtn = document.createElement("button");
-    exportBtn.type = "button";
-    exportBtn.className = "btn-row";
-    exportBtn.textContent = "書き出し";
-    exportBtn.addEventListener("click", (event) => {
-      event.stopPropagation();
-      showError(null);
-      postToPlugin({
-        type: "EXPORT_NODES",
-        items: [{ id: item.id, format: formatFor(item.id) }],
-      });
-    });
-
-    li.append(check, thumb, meta, formatSelect, exportBtn);
+    li.append(check, thumb, meta, configBox);
     resultsEl.appendChild(li);
   }
 
-  selectAllEl.checked = list.length > 0 && allChecked;
-}
-
-function applyBulkFormat(format: ExportFormat): void {
-  for (const item of items) {
-    formatById.set(item.id, format);
-  }
-  renderList();
+  selectAllEl.checked = items.length > 0 && allChecked;
 }
 
 function handleExportResults(results: ExportResultItem[]): void {
@@ -302,47 +337,34 @@ rescanBtn.addEventListener("click", () => {
   postToPlugin({ type: "SCAN_SELECTION" });
 });
 
-searchInput.addEventListener("input", () => {
-  if (debounceTimer !== null) {
-    window.clearTimeout(debounceTimer);
-  }
-  debounceTimer = window.setTimeout(() => {
-    searchQuery = searchInput.value;
-    renderList();
-  }, DEBOUNCE_MS);
-});
-
-bulkFormatEl.addEventListener("change", () => {
-  applyBulkFormat(bulkFormatEl.value as ExportFormat);
-});
-
-exportCheckedBtn.addEventListener("click", () => {
-  const targets = filteredItems().filter((item) => checkedIds.has(item.id));
+exportAllBtn.addEventListener("click", () => {
+  const targets = items.filter((item) => checkedIds.has(item.id));
   if (targets.length === 0) {
     showError("書き出す画像にチェックを入れてください");
     return;
   }
+  const requests: ExportRequest[] = [];
+  for (const item of targets) {
+    for (const config of configsFor(item.id)) {
+      requests.push({ id: item.id, format: config.format, scale: config.scale });
+    }
+  }
+  if (requests.length === 0) {
+    showError("書き出し設定がありません");
+    return;
+  }
   showError(null);
   showStatus("書き出し中…");
-  postToPlugin({
-    type: "EXPORT_NODES",
-    items: targets.map((item) => ({
-      id: item.id,
-      format: formatFor(item.id),
-    })),
-  });
+  postToPlugin({ type: "EXPORT_NODES", items: requests });
 });
 
 selectAllEl.addEventListener("change", () => {
-  const list = filteredItems();
   if (selectAllEl.checked) {
-    for (const item of list) {
+    for (const item of items) {
       checkedIds.add(item.id);
     }
   } else {
-    for (const item of list) {
-      checkedIds.delete(item.id);
-    }
+    checkedIds.clear();
   }
   renderList();
 });
@@ -360,9 +382,9 @@ window.onmessage = (event: MessageEvent) => {
         checkedIds.delete(id);
       }
     }
-    for (const id of [...formatById.keys()]) {
+    for (const id of [...configsByNode.keys()]) {
       if (!valid.has(id)) {
-        formatById.delete(id);
+        configsByNode.delete(id);
       }
     }
     for (const id of [...rowErrorById.keys()]) {
@@ -371,8 +393,8 @@ window.onmessage = (event: MessageEvent) => {
       }
     }
     for (const item of items) {
-      if (!formatById.has(item.id)) {
-        formatById.set(item.id, bulkFormatEl.value as ExportFormat);
+      if (!configsByNode.has(item.id)) {
+        configsByNode.set(item.id, [{ ...DEFAULT_CONFIG }]);
       }
     }
     if (msg.frameNames.length === 0) {

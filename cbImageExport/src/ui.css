@@ -116,50 +116,15 @@ body.is-resizing * {
   white-space: nowrap;
 }
 
-.search-label {
-  display: block;
-  margin-bottom: 4px;
-  font-weight: 600;
-}
-
-.search-input {
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid #d0d0d0;
-  border-radius: 4px;
-  font: inherit;
-}
-
-.search-input:focus {
-  outline: none;
-  border-color: #18a0fb;
-}
-
-.toolbar-section {
+.scope-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.bulk-format {
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
-}
-
-.bulk-format select,
-.row-format {
-  padding: 4px 6px;
-  border: 1px solid #d0d0d0;
-  border-radius: 4px;
-  font: inherit;
-  background: #fff;
+  flex-shrink: 0;
 }
 
 .btn-primary,
-.btn-secondary,
-.btn-row {
+.btn-secondary {
   border-radius: 4px;
   font: inherit;
   cursor: pointer;
@@ -191,19 +156,6 @@ body.is-resizing * {
 
 .btn-secondary:hover {
   background: #f3f3f3;
-}
-
-.btn-row {
-  padding: 4px 8px;
-  border: 1px solid #d0d0d0;
-  background: #fff;
-  color: #333;
-}
-
-.btn-row:hover {
-  background: #eaf6ff;
-  border-color: #18a0fb;
-  color: #18a0fb;
 }
 
 .results-head {
@@ -292,11 +244,76 @@ body.is-resizing * {
 .result-kind {
   font-size: 10px;
   color: #888;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.row-format {
+.config-box {
   flex-shrink: 0;
-  width: 72px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.config-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.config-format,
+.config-scale {
+  padding: 3px 4px;
+  border: 1px solid #d0d0d0;
+  border-radius: 4px;
+  font: inherit;
+  background: #fff;
+}
+
+.config-format {
+  flex-shrink: 0;
+  width: 64px;
+}
+
+.config-scale {
+  flex-shrink: 0;
+  width: 56px;
+}
+
+.config-add,
+.config-remove {
+  border-radius: 4px;
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid #d0d0d0;
+  background: #fff;
+  color: #333;
+  line-height: 1;
+}
+
+.config-add {
+  padding: 2px 8px;
+}
+
+.config-add:hover {
+  background: #eaf6ff;
+  border-color: #18a0fb;
+  color: #18a0fb;
+}
+
+.config-remove {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: #888;
+}
+
+.config-remove:hover {
+  background: #fff5f5;
+  border-color: #b00020;
+  color: #b00020;
 }
 
 .error {
