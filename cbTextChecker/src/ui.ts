@@ -531,6 +531,7 @@ function ocrToHighlightItems(items: OcrItem[] = ocrItems): HoverHighlightItem[] 
         id: item.id,
         exportScale: imageExportScale,
         poly: item.poly,
+        text: item.text,
       },
     }));
 }
@@ -861,6 +862,7 @@ function runImageCompare(): void {
     ocrRegions: ocrItems.map((item) => ({
       id: item.id,
       poly: item.poly,
+      text: item.text,
     })),
     ignoreStrings: collectIgnoreStrings(),
     ignoreCategories: collectIgnoreCategories(),

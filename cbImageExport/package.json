@@ -1,0 +1,21 @@
+{
+  "name": "figma-image-export",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Figma plugin to list and export images from selected frames",
+  "scripts": {
+    "build": "rm -rf dist && npm run build:ui && npm run build:code",
+    "build:ui": "vite build --config vite.config.ts",
+    "build:code": "vite build --config vite.code.config.ts",
+    "pack:share": "npm run build && node scripts/pack-share.mjs",
+    "dev": "npm run build && concurrently \"vite build --config vite.config.ts --watch\" \"vite build --config vite.code.config.ts --watch\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.ui.json"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.109.0",
+    "concurrently": "^9.1.2",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.2",
+    "vite-plugin-singlefile": "^2.1.0"
+  }
+}

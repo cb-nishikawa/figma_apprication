@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>画像一括書き出しくん</title>
+  </head>
+  <body>
+    <div class="app">
+      <section class="section">
+        <div class="scope-row">
+          <div class="scope-label">
+            <span class="scope-title">対象フレーム</span>
+            <span id="frame-summary" class="scope-summary">未選択</span>
+          </div>
+          <button
+            id="rescan"
+            class="btn-secondary"
+            type="button"
+            title="再読み込み"
+          >
+            再読み込み
+          </button>
+        </div>
+      </section>
+
+      <hr class="divider" />
+
+      <section class="section">
+        <label class="search-label" for="search-input">検索</label>
+        <input
+          id="search-input"
+          class="search-input"
+          type="search"
+          placeholder="名前で絞り込み"
+          autocomplete="off"
+        />
+      </section>
+
+      <hr class="divider" />
+
+      <section class="section toolbar-section">
+        <label class="bulk-format">
+          <span>一括形式</span>
+          <select id="bulk-format" aria-label="一括形式">
+            <option value="PNG">PNG</option>
+            <option value="JPG">JPG</option>
+            <option value="SVG">SVG</option>
+            <option value="PDF">PDF</option>
+          </select>
+        </label>
+        <button id="export-checked" class="btn-primary" type="button">
+          チェックを書き出し
+        </button>
+      </section>
+
+      <hr class="divider" />
+
+      <section class="section results-section" aria-labelledby="results-label">
+        <div class="results-head">
+          <h2 id="results-label">画像一覧</h2>
+          <label class="select-all">
+            <input id="select-all" type="checkbox" />
+            <span>すべて</span>
+          </label>
+        </div>
+        <p id="error" class="error" hidden></p>
+        <p id="status" class="status" hidden></p>
+        <ul id="results" class="results"></ul>
+      </section>
+    </div>
+    <div
+      id="resize-handle"
+      class="resize-handle"
+      title="高さをドラッグで調整"
+      aria-label="高さをドラッグで調整"
+      role="separator"
+      aria-orientation="horizontal"
+    ></div>
+    <script type="module" src="./ui.ts"></script>
+  </body>
+</html>

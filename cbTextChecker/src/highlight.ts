@@ -14,6 +14,7 @@ export { splitRangeByHeightBreaks, splitRangeByNewlines };
 
 export const HOVER_HIGHLIGHT_NAME = "__CB_TC_HIGHLIGHT__";
 export const HIGHLIGHT_POOL_NAME = "__CB_TC_HIGHLIGHT_POOL__";
+export const OCR_LABEL_NAME = "__CB_TC_OCR_LABEL__";
 
 const HIGHLIGHT_COLORS: Record<HighlightColor, RGB> = {
   red: { r: 1, g: 59 / 255, b: 48 / 255 },
@@ -23,11 +24,13 @@ const HIGHLIGHT_COLORS: Record<HighlightColor, RGB> = {
 };
 
 const DEFAULT_HIGHLIGHT_COLOR: HighlightColor = "green";
+const OCR_LABEL_FONT_SIZE = 8;
 
 const HEIGHT_EPS = 0.5;
 
 let poolRoot: SceneNode | null = null;
 const poolEntries = new Map<string, SceneNode>();
+const ocrLabelEntries = new Map<string, TextNode>();
 
 /** Per-text-node scale when fallback fonts were used for measurement. */
 type MeasureScale = { scaleX: number; scaleY: number; replaced: boolean };
@@ -49,6 +52,7 @@ export function clearHoverHighlight(): void {
   poolEntries.clear();
   poolRoot = null;
   measureScaleCache.clear();
+  ocrLabelEntries.clear();
 
   const page = figma.currentPage;
   for (const child of [...page.children]) {
@@ -59,7 +63,8 @@ export function clearHoverHighlight(): void {
         child.type === "TEXT") &&
       (child.name === HOVER_HIGHLIGHT_NAME ||
         child.name === HIGHLIGHT_POOL_NAME ||
-        child.name.startsWith(`${HOVER_HIGHLIGHT_NAME}:`))
+        child.name.startsWith(`${HOVER_HIGHLIGHT_NAME}:`) ||
+        child.name.startsWith(`${OCR_LABEL_NAME}:`))
     ) {
       child.remove();
     }
@@ -69,6 +74,12 @@ export function clearHoverHighlight(): void {
 export function setHighlightVisibility(keys: string[] | null): void {
   const enabled = new Set(keys ?? []);
   for (const [key, node] of poolEntries) {
+    if (node.removed) {
+      continue;
+    }
+    node.visible = enabled.has(key);
+  }
+  for (const [key, node] of ocrLabelEntries) {
     if (node.removed) {
       continue;
     }
@@ -522,6 +533,79 @@ function localToAbsolute(
   };
 }
 
+async function createOcrCopyLabel(
+  key: string,
+  text: string,
+  box: { x: number; y: number; width: number; height: number }
+): Promise<void> {
+  const content = text.trim();
+  if (!content || box.width <= 0 || box.height <= 0) {
+    return;
+  }
+
+  const fontCandidates: FontName[] = [
+    { family: "Noto Sans JP", style: "Regular" },
+    { family: "Inter", style: "Regular" },
+    { family: "Roboto", style: "Regular" },
+  ];
+  let font: FontName | null = null;
+  for (const candidate of fontCandidates) {
+    if (await tryLoadFont(candidate)) {
+      font = candidate;
+      break;
+    }
+  }
+  if (!font) {
+    return;
+  }
+
+  // createText requires the default font to be loaded first.
+  await tryLoadFont({ family: "Inter", style: "Regular" });
+
+  const label = figma.createText();
+  label.name = `${OCR_LABEL_NAME}:${key}`;
+  label.locked = false;
+  figma.currentPage.appendChild(label);
+  label.fontName = font;
+  label.fontSize = OCR_LABEL_FONT_SIZE;
+  label.fills = [
+    {
+      type: "SOLID",
+      color: { r: 0, g: 0, b: 0 },
+      opacity: 0.9,
+    },
+  ];
+  label.lineHeight = { unit: "PIXELS", value: OCR_LABEL_FONT_SIZE + 2 };
+  label.textAutoResize = "HEIGHT";
+  const maxWidth = Math.max(box.width, 1);
+  const maxHeight = Math.max(box.height, 1);
+  label.resize(maxWidth, OCR_LABEL_FONT_SIZE);
+  label.characters = content;
+
+  if (label.height > maxHeight + HEIGHT_EPS) {
+    let lo = 0;
+    let hi = content.length;
+    let best = "";
+    while (lo <= hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      const candidate = content.slice(0, mid);
+      label.characters = candidate;
+      if (label.height <= maxHeight + HEIGHT_EPS) {
+        best = candidate;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    label.characters = best.length > 0 ? best : content.slice(0, 1);
+  }
+
+  label.x = box.x;
+  label.y = box.y;
+  label.visible = false;
+  ocrLabelEntries.set(key, label);
+}
+
 async function createOcrRegionHighlight(
   sceneNode: SceneNode,
   region: NonNullable<HoverHighlightItem["ocrRegion"]>
@@ -574,6 +658,15 @@ async function createOcrRegionHighlight(
   applyHighlightPaint(rect);
   rect.visible = true;
   figma.currentPage.appendChild(rect);
+
+  const key = region.id.startsWith("ocr:") ? region.id : `ocr:${region.id}`;
+  await createOcrCopyLabel(key, region.text ?? "", {
+    x: absMinX,
+    y: absMinY,
+    width,
+    height,
+  });
+
   return rect;
 }
 
@@ -798,18 +891,24 @@ export async function buildHighlightPool(
 
   if (packaged.length === 1) {
     poolRoot = packaged[0].entry;
-    return;
+  } else {
+    const group = figma.group(
+      packaged.map((p) => p.entry),
+      figma.currentPage
+    );
+    group.name = HIGHLIGHT_POOL_NAME;
+    group.locked = true;
+    group.visible = true;
+    group.expanded = false;
+    poolRoot = group;
   }
 
-  const group = figma.group(
-    packaged.map((p) => p.entry),
-    figma.currentPage
-  );
-  group.name = HIGHLIGHT_POOL_NAME;
-  group.locked = true;
-  group.visible = true;
-  group.expanded = false;
-  poolRoot = group;
+  // Keep unlocked OCR labels above the locked pool for selection/copy.
+  for (const label of ocrLabelEntries.values()) {
+    if (!label.removed) {
+      figma.currentPage.appendChild(label);
+    }
+  }
 }
 
 /** Show prebuilt pool entries for the given hover items (visibility only). */

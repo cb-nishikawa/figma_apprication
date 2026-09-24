@@ -275,7 +275,11 @@ async function handleImageCompare(
   options: {
     imageNodeId: string;
     exportScale: number;
-    ocrRegions: Array<{ id: string; poly: Array<[number, number]> }>;
+    ocrRegions: Array<{
+      id: string;
+      poly: Array<[number, number]>;
+      text: string;
+    }>;
     ignoreStrings?: string[];
     ignoreCategories?: IgnoreCategories;
   }
@@ -346,6 +350,7 @@ async function handleImageCompare(
         id: region.id,
         exportScale,
         poly: region.poly,
+        text: region.text,
       },
     });
   }

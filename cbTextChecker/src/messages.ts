@@ -56,7 +56,11 @@ export type UiToPluginMessage =
       ocrTexts: TextNodeLike[];
       imageNodeId: string;
       exportScale: number;
-      ocrRegions: Array<{ id: string; poly: Array<[number, number]> }>;
+      ocrRegions: Array<{
+        id: string;
+        poly: Array<[number, number]>;
+        text: string;
+      }>;
       ignoreStrings?: string[];
       ignoreCategories?: IgnoreCategories;
     }

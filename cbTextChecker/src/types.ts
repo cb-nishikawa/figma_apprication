@@ -50,6 +50,8 @@ export interface OcrHighlightRegion {
   id: string;
   exportScale: number;
   poly: Array<[number, number]>;
+  /** Recognized text shown as a copyable canvas label. */
+  text: string;
 }
 
 export interface HoverHighlightItem {

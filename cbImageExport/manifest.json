@@ -1,0 +1,12 @@
+{
+  "name": "画像一括書き出しくん",
+  "id": "cb-image-export",
+  "api": "1.0.0",
+  "main": "dist/code.js",
+  "ui": "dist/ui.html",
+  "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": ["none"]
+  }
+}
