@@ -9,21 +9,54 @@
     <div class="app">
       <section class="section">
         <div class="scope-row">
-          <div class="scope-label">
-            <span class="scope-title">対象フレーム</span>
-            <span id="frame-summary" class="scope-summary">未選択</span>
-          </div>
+          <div id="target-picker-root" class="target-picker-row"></div>
           <div class="scope-actions">
-            <button id="export-all" class="btn-primary" type="button">
-              書き出し
+            <button
+              id="export-all"
+              class="btn-icon primary"
+              type="button"
+              title="書き出し"
+              aria-label="書き出し"
+            >
+              <svg
+                width="14"
+                height="16"
+                viewBox="0 0 14 16"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                aria-hidden="true"
+              >
+                <path
+                  d="M7 1V10M7 10L3.5 6.5M7 10L10.5 6.5M1 12.5V13.5C1 14 1.4 14.4 1.9 14.4H12.1C12.6 14.4 13 14 13 13.5V12.5"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
             </button>
             <button
               id="rescan"
-              class="btn-secondary"
+              class="btn-icon"
               type="button"
               title="再読み込み"
+              aria-label="再読み込み"
             >
-              再読み込み
+              <svg
+                width="14"
+                height="16"
+                viewBox="0 0 14 16"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                aria-hidden="true"
+              >
+                <path
+                  d="M12.6 12C11.4 13.5 9.6 14.5 7.5 14.5C3.9 14.5 1 11.6 1 8C1 4.4 3.9 1.5 7.5 1.5C9.7 1.5 11.6 2.6 12.8 4.2M13 1V4C13 4.3 12.8 4.5 12.5 4.5H9.5"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                />
+              </svg>
             </button>
           </div>
         </div>

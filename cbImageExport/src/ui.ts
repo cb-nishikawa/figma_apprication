@@ -1,9 +1,11 @@
 import "./ui.css";
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
+import { createTargetPicker, unregisterPicker } from "./targetPicker";
 import type {
   ExportFormat,
   ExportRequest,
   ExportResultItem,
+  FrameTarget,
   ImageListItem,
 } from "./types";
 import { EXPORT_FORMATS } from "./types";
@@ -18,9 +20,9 @@ interface ExportConfig {
 
 const DEFAULT_CONFIG: ExportConfig = { format: "PNG", scale: 1 };
 
-const frameSummaryEl = document.getElementById(
-  "frame-summary"
-) as HTMLSpanElement;
+const targetPickerRoot = document.getElementById(
+  "target-picker-root"
+) as HTMLDivElement;
 const rescanBtn = document.getElementById("rescan") as HTMLButtonElement;
 const exportAllBtn = document.getElementById(
   "export-all"
@@ -34,12 +36,42 @@ const resizeHandle = document.getElementById(
 ) as HTMLDivElement;
 
 let items: ImageListItem[] = [];
+let frameTargets: FrameTarget[] = [];
+let targetId: string | null = null;
 const checkedIds = new Set<string>();
 const configsByNode = new Map<string, ExportConfig[]>();
+const nameOverridesById = new Map<string, string>();
 const rowErrorById = new Map<string, string>();
 
 function postToPlugin(msg: UiToPluginMessage): void {
   parent.postMessage({ pluginMessage: msg }, "*");
+}
+
+let targetPicker: ReturnType<typeof createTargetPicker> | null = null;
+
+function getSelectedTarget(): FrameTarget | null {
+  return frameTargets.find((t) => t.id === targetId) ?? null;
+}
+
+function mountTargetPicker(): void {
+  targetPickerRoot.replaceChildren();
+  if (targetPicker) {
+    unregisterPicker(targetPicker);
+  }
+  targetPicker = createTargetPicker({
+    emptyLabel: "フレーム未選択",
+    ariaLabel: "対象フレーム",
+    getLabel: () => getSelectedTarget()?.label ?? "",
+    getSelectedId: () => targetId,
+    getTargets: () => frameTargets,
+    onApplySelection: () => {
+      postToPlugin({ type: "SET_FRAME_FROM_SELECTION" });
+    },
+    onPick: (id) => {
+      postToPlugin({ type: "SET_FRAME_NODE", nodeId: id });
+    },
+  });
+  targetPickerRoot.append(targetPicker.root);
 }
 
 function showError(message: string | null): void {
@@ -71,7 +103,12 @@ function parseScale(raw: string): number {
 }
 
 function configsFor(id: string): ExportConfig[] {
-  return configsByNode.get(id) ?? [DEFAULT_CONFIG];
+  return configsByNode.get(id) ?? [];
+}
+
+function nameFor(item: ImageListItem): string {
+  const override = nameOverridesById.get(item.id)?.trim();
+  return override || item.name;
 }
 
 function bytesToObjectUrl(bytes: number[], mime: string): string {
@@ -162,6 +199,27 @@ function createScaleInput(
   input.title = "2 なら 2 倍、0.5 なら半分、未入力なら等倍";
   input.addEventListener("click", (event) => event.stopPropagation());
   input.addEventListener("input", () => onInput(input.value));
+  return input;
+}
+
+function createNameInput(item: ImageListItem): HTMLInputElement {
+  const input = document.createElement("input");
+  input.className = "result-name-input";
+  input.type = "text";
+  input.value = nameFor(item);
+  input.setAttribute("aria-label", "レイヤー名");
+  input.title = "レイヤー名";
+  input.addEventListener("click", (event) => event.stopPropagation());
+  input.addEventListener("change", () => {
+    const next = input.value.trim();
+    const current = nameFor(item);
+    if (!next || next === current) {
+      input.value = current;
+      return;
+    }
+    nameOverridesById.set(item.id, next);
+    postToPlugin({ type: "RENAME_NODE", nodeId: item.id, name: next });
+  });
   return input;
 }
 
@@ -275,19 +333,14 @@ function renderList(): void {
       placeholder.textContent = "—";
       thumb = placeholder;
     }
-
-    const meta = document.createElement("div");
-    meta.className = "result-meta";
-    const name = document.createElement("div");
-    name.className = "result-name";
-    name.textContent = item.name;
-    const parent = document.createElement("div");
-    parent.className = "result-kind";
-    parent.textContent = `親: ${item.parentName}`;
-    meta.append(name, parent);
-    meta.addEventListener("click", () => {
+    thumb.addEventListener("click", () => {
       postToPlugin({ type: "FOCUS_NODE", nodeId: item.id });
     });
+
+    const head = document.createElement("div");
+    head.className = "result-head";
+    const nameInput = createNameInput(item);
+    head.append(check, thumb, nameInput, createAddButton(item.id));
 
     const configBox = document.createElement("div");
     configBox.className = "config-box";
@@ -295,9 +348,8 @@ function renderList(): void {
     for (let i = 0; i < configs.length; i += 1) {
       configBox.appendChild(createConfigRow(item.id, configs[i], i));
     }
-    configBox.appendChild(createAddButton(item.id));
 
-    li.append(check, thumb, meta, configBox);
+    li.append(head, configBox);
     resultsEl.appendChild(li);
   }
 
@@ -308,7 +360,8 @@ function handleExportResults(results: ExportResultItem[]): void {
   let okCount = 0;
   for (const result of results) {
     if (result.ok && result.bytes) {
-      downloadBytes(result.bytes, result.name, result.format);
+      const name = nameOverridesById.get(result.id)?.trim() || result.name;
+      downloadBytes(result.bytes, name, result.format);
       rowErrorById.delete(result.id);
       okCount += 1;
     } else {
@@ -334,7 +387,7 @@ function handleExportResults(results: ExportResultItem[]): void {
 
 rescanBtn.addEventListener("click", () => {
   showError(null);
-  postToPlugin({ type: "SCAN_SELECTION" });
+  postToPlugin({ type: "SCAN_TARGET" });
 });
 
 exportAllBtn.addEventListener("click", () => {
@@ -374,6 +427,16 @@ window.onmessage = (event: MessageEvent) => {
   if (!msg) {
     return;
   }
+  if (msg.type === "FRAME_TARGETS") {
+    frameTargets = msg.targets;
+    targetId = msg.targetId;
+    targetPicker?.refresh();
+    return;
+  }
+  if (msg.type === "SELECTION_EMPTY") {
+    targetPicker?.openPopover();
+    return;
+  }
   if (msg.type === "IMAGE_LIST") {
     items = msg.items;
     const valid = new Set(items.map((i) => i.id));
@@ -392,17 +455,10 @@ window.onmessage = (event: MessageEvent) => {
         rowErrorById.delete(id);
       }
     }
-    for (const item of items) {
-      if (!configsByNode.has(item.id)) {
-        configsByNode.set(item.id, [{ ...DEFAULT_CONFIG }]);
+    for (const id of [...nameOverridesById.keys()]) {
+      if (!valid.has(id)) {
+        nameOverridesById.delete(id);
       }
-    }
-    if (msg.frameNames.length === 0) {
-      frameSummaryEl.textContent = "未選択";
-    } else if (msg.frameNames.length === 1) {
-      frameSummaryEl.textContent = msg.frameNames[0];
-    } else {
-      frameSummaryEl.textContent = `${msg.frameNames.length} 件: ${msg.frameNames.join(", ")}`;
     }
     showStatus(msg.message ?? null);
     showError(null);
@@ -455,5 +511,6 @@ function setupResize(): void {
 }
 
 setupResize();
-postToPlugin({ type: "SCAN_SELECTION" });
+mountTargetPicker();
+postToPlugin({ type: "LIST_FRAME_TARGETS" });
 renderList();

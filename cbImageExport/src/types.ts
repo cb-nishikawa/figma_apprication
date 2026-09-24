@@ -2,12 +2,20 @@ export type ExportFormat = "PNG" | "JPG" | "SVG" | "PDF";
 
 export const EXPORT_FORMATS: ExportFormat[] = ["PNG", "JPG", "SVG", "PDF"];
 
+export type FrameTargetKind = "SECTION" | "FRAME" | "INSTANCE" | "GROUP";
+
+/** Selectable target frame shown in the scope picker (cbTextChecker style). */
+export interface FrameTarget {
+  id: string;
+  name: string;
+  kind: FrameTargetKind;
+  label: string;
+}
+
 /** One list row: a visible image source node. */
 export interface ImageListItem {
   id: string;
   name: string;
-  /** Direct parent node's name. */
-  parentName: string;
   /** Small PNG preview (optional; may be omitted on error). */
   thumbBytes?: number[];
 }

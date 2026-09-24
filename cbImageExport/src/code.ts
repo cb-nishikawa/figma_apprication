@@ -1,6 +1,13 @@
-import { collectImageTargets, selectedFrames } from "./collectImages";
+import { collectImageTargets } from "./collectImages";
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
-import type { ExportFormat, ExportRequest, ExportResultItem, ImageListItem } from "./types";
+import type {
+  ExportFormat,
+  ExportRequest,
+  ExportResultItem,
+  FrameTarget,
+  FrameTargetKind,
+  ImageListItem,
+} from "./types";
 
 const UI_WIDTH = 360;
 const MIN_UI_HEIGHT = 320;
@@ -8,6 +15,8 @@ const MAX_UI_HEIGHT = 900;
 const DEFAULT_UI_HEIGHT = 480;
 const UI_HEIGHT_STORAGE_KEY = "cbImageExport.uiHeight";
 const THUMB_WIDTH = 80;
+
+let targetNodeId: string | null = null;
 
 function clampUiHeight(height: number): number {
   return Math.min(MAX_UI_HEIGHT, Math.max(MIN_UI_HEIGHT, Math.round(height)));
@@ -32,26 +41,130 @@ async function makeThumb(node: SceneNode): Promise<number[] | undefined> {
   }
 }
 
-async function scanSelection(): Promise<void> {
-  const frames = selectedFrames();
-  if (frames.length === 0) {
+function isFrameTargetNode(
+  node: BaseNode
+): node is FrameNode | SectionNode | InstanceNode | GroupNode {
+  return (
+    node.type === "FRAME" ||
+    node.type === "SECTION" ||
+    node.type === "INSTANCE" ||
+    node.type === "GROUP"
+  );
+}
+
+function parentKindName(node: SceneNode): string | null {
+  let current: BaseNode | null = node.parent;
+  while (current && current.type !== "PAGE" && current.type !== "DOCUMENT") {
+    if (isFrameTargetNode(current)) {
+      return current.name;
+    }
+    current = current.parent;
+  }
+  return null;
+}
+
+function buildLabel(
+  node: SceneNode,
+  kind: FrameTargetKind,
+  duplicateNames: Set<string>
+): string {
+  const base = node.name;
+  if (!duplicateNames.has(node.name)) {
+    return base;
+  }
+  const parentName = parentKindName(node);
+  if (parentName) {
+    return `${base} (${parentName})`;
+  }
+  return `${base} [${node.id}]`;
+}
+
+function collectFrameTargets(): FrameTarget[] {
+  const nodes = figma.currentPage.findAllWithCriteria({
+    types: ["SECTION", "FRAME", "INSTANCE", "GROUP"],
+  }) as Array<SceneNode & { type: FrameTargetKind }>;
+
+  const nameCounts = new Map<string, number>();
+  for (const node of nodes) {
+    nameCounts.set(node.name, (nameCounts.get(node.name) ?? 0) + 1);
+  }
+
+  const duplicateNames = new Set<string>();
+  for (const [name, count] of nameCounts) {
+    if (count > 1) {
+      duplicateNames.add(name);
+    }
+  }
+
+  return nodes.map((node) => ({
+    id: node.id,
+    name: node.name,
+    kind: node.type,
+    label: buildLabel(node, node.type, duplicateNames),
+  }));
+}
+
+/** Prefer selected target frame, else nearest target-frame ancestor. */
+function resolveFrameTargetFromSelection(): string | null {
+  const selection = figma.currentPage.selection;
+  for (const node of selection) {
+    if (isFrameTargetNode(node)) {
+      return node.id;
+    }
+  }
+
+  const first = selection[0];
+  if (!first) {
+    return null;
+  }
+
+  let current: BaseNode | null = first.parent;
+  while (current && current.type !== "PAGE" && current.type !== "DOCUMENT") {
+    if (isFrameTargetNode(current)) {
+      return current.id;
+    }
+    current = current.parent;
+  }
+  return null;
+}
+
+function postFrameTargets(): void {
+  postToUi({
+    type: "FRAME_TARGETS",
+    targets: collectFrameTargets(),
+    targetId: targetNodeId,
+  });
+}
+
+async function scanTarget(): Promise<void> {
+  if (!targetNodeId) {
     postToUi({
       type: "IMAGE_LIST",
       items: [],
-      frameNames: [],
-      message: "フレームを選択してください",
+      message: "対象フレームを選択してください",
     });
     return;
   }
 
-  const collected = collectImageTargets(frames);
+  const node = await figma.getNodeByIdAsync(targetNodeId);
+  if (!node || !isFrameTargetNode(node)) {
+    targetNodeId = null;
+    postFrameTargets();
+    postToUi({
+      type: "IMAGE_LIST",
+      items: [],
+      message: "対象フレームが見つかりません",
+    });
+    return;
+  }
+
+  const collected = collectImageTargets([node as SceneNode]);
   const items: ImageListItem[] = [];
-  for (const entry of collected) {
-    const thumbBytes = await makeThumb(entry.target);
+  for (const target of collected) {
+    const thumbBytes = await makeThumb(target);
     items.push({
-      id: entry.target.id,
-      name: entry.target.name || "(untitled)",
-      parentName: entry.parentName,
+      id: target.id,
+      name: target.name || "(untitled)",
       thumbBytes,
     });
   }
@@ -59,7 +172,6 @@ async function scanSelection(): Promise<void> {
   postToUi({
     type: "IMAGE_LIST",
     items,
-    frameNames: frames.map((f) => f.name || "(untitled)"),
     message:
       items.length === 0
         ? "表示中の画像が見つかりませんでした"
@@ -114,7 +226,9 @@ async function exportNodes(requests: ExportRequest[]): Promise<void> {
     }
     const scene = node as SceneNode;
     try {
-      const bytes = await scene.exportAsync(exportSettings(req.format, req.scale));
+      const bytes = await scene.exportAsync(
+        exportSettings(req.format, req.scale)
+      );
       results.push({
         id: req.id,
         name: scene.name || "(untitled)",
@@ -146,6 +260,14 @@ async function focusNode(nodeId: string): Promise<void> {
   figma.viewport.scrollAndZoomIntoView([scene]);
 }
 
+async function renameNode(nodeId: string, name: string): Promise<void> {
+  const node = await figma.getNodeByIdAsync(nodeId);
+  if (!node || !("name" in node)) {
+    return;
+  }
+  node.name = name;
+}
+
 async function initUiHeight(): Promise<number> {
   const stored = await figma.clientStorage.getAsync(UI_HEIGHT_STORAGE_KEY);
   if (typeof stored === "number" && Number.isFinite(stored)) {
@@ -165,11 +287,40 @@ async function main(): Promise<void> {
   figma.ui.onmessage = async (raw: UiToPluginMessage) => {
     try {
       switch (raw.type) {
-        case "SCAN_SELECTION":
-          await scanSelection();
+        case "LIST_FRAME_TARGETS":
+          postFrameTargets();
+          break;
+        case "SET_FRAME_FROM_SELECTION": {
+          if (figma.currentPage.selection.length === 0) {
+            postToUi({ type: "SELECTION_EMPTY" });
+            break;
+          }
+          const fromSelection = resolveFrameTargetFromSelection();
+          if (!fromSelection) {
+            postToUi({
+              type: "ERROR",
+              message: "選択から対象フレームを解決できません",
+            });
+            break;
+          }
+          targetNodeId = fromSelection;
+          postFrameTargets();
+          await scanTarget();
+          break;
+        }
+        case "SET_FRAME_NODE":
+          targetNodeId = raw.nodeId;
+          postFrameTargets();
+          await scanTarget();
+          break;
+        case "SCAN_TARGET":
+          await scanTarget();
           break;
         case "FOCUS_NODE":
           await focusNode(raw.nodeId);
+          break;
+        case "RENAME_NODE":
+          await renameNode(raw.nodeId, raw.name);
           break;
         case "EXPORT_NODES":
           await exportNodes(raw.items);
@@ -187,11 +338,12 @@ async function main(): Promise<void> {
     }
   };
 
-  figma.on("selectionchange", () => {
-    void scanSelection();
+  figma.on("currentpagechange", () => {
+    postFrameTargets();
+    void scanTarget();
   });
 
-  void scanSelection();
+  postFrameTargets();
 }
 
 void main();

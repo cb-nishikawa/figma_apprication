@@ -1,5 +1,3 @@
-import type { ImageListItem } from "./types";
-
 function isVisible(node: SceneNode): boolean {
   return node.visible !== false;
 }
@@ -21,6 +19,84 @@ function isMaskNode(node: SceneNode): boolean {
   return "isMask" in node && (node as SceneNode & { isMask: boolean }).isMask;
 }
 
+/** Parent that contains an isMask child (the visual mask unit). */
+function findMaskContainer(node: SceneNode): SceneNode | null {
+  let current: BaseNode | null = node;
+  while (current && current.type !== "PAGE" && current.type !== "DOCUMENT") {
+    if ("children" in current) {
+      const container = current as SceneNode & ChildrenMixin;
+      const hasMask = container.children.some(
+        (child) =>
+          "isMask" in child &&
+          (child as SceneNode & { isMask: boolean }).isMask
+      );
+      if (
+        hasMask &&
+        (container.type === "GROUP" ||
+          container.type === "FRAME" ||
+          container.type === "COMPONENT" ||
+          container.type === "INSTANCE")
+      ) {
+        return container;
+      }
+    }
+    current = current.parent;
+  }
+  return null;
+}
+
+/** Nearest ancestor FRAME/COMPONENT/INSTANCE with clipsContent. */
+function findClipFrame(
+  node: SceneNode
+): FrameNode | ComponentNode | InstanceNode | null {
+  let current: BaseNode | null = node.parent;
+  while (current && current.type !== "PAGE" && current.type !== "DOCUMENT") {
+    if (
+      (current.type === "FRAME" ||
+        current.type === "COMPONENT" ||
+        current.type === "INSTANCE") &&
+      "clipsContent" in current &&
+      (current as FrameNode).clipsContent
+    ) {
+      return current as FrameNode | ComponentNode | InstanceNode;
+    }
+    current = current.parent;
+  }
+  return null;
+}
+
+/** Count visible image source nodes under a container (mask containers excluded). */
+function countImageSourcesIn(root: SceneNode): number {
+  let count = 0;
+  walkVisible(root, (node) => {
+    if (isMaskNode(node)) {
+      return;
+    }
+    if (hasImageFill(node) && "exportAsync" in node) {
+      count += 1;
+    }
+  });
+  return count;
+}
+
+/**
+ * Resolve what an image node should be shown as:
+ * - a mask container holding exactly one image → the container
+ * - a clipsContent frame holding exactly one image → the frame
+ * - otherwise → the image node itself
+ */
+function resolveRow(node: SceneNode): SceneNode {
+  const mask = findMaskContainer(node);
+  if (mask && countImageSourcesIn(mask) === 1) {
+    return mask;
+  }
+  const clip = findClipFrame(node);
+  if (clip && countImageSourcesIn(clip) === 1) {
+    return clip;
+  }
+  return node;
+}
+
 function walkVisible(
   node: SceneNode,
   visit: (n: SceneNode) => void
@@ -36,28 +112,13 @@ function walkVisible(
   }
 }
 
-function parentNameOf(node: SceneNode, root: FrameNode): string {
-  const parent = node.parent;
-  if (parent && parent.type !== "PAGE" && parent.type !== "DOCUMENT" && "name" in parent) {
-    const name = String(parent.name).trim();
-    if (name) {
-      return name;
-    }
-  }
-  return root.name || "(untitled)";
-}
-
 /**
- * Collect every visible image source node under the selected frames.
- * Each IMAGE fill node becomes its own export unit (no mask/clip grouping).
+ * Collect the rows shown in the list. Each row is either:
+ * - a mask / clipsContent container holding exactly one visible image
+ * - or an individual image source node
  */
-export function collectImageTargets(
-  roots: FrameNode[]
-): Array<{ target: SceneNode; parentName: string }> {
-  const byId = new Map<
-    string,
-    { target: SceneNode; parentName: string }
-  >();
+export function collectImageTargets(roots: SceneNode[]): SceneNode[] {
+  const byId = new Map<string, SceneNode>();
 
   for (const root of roots) {
     if (!isVisible(root)) {
@@ -70,17 +131,12 @@ export function collectImageTargets(
       if (!hasImageFill(node) || !("exportAsync" in node)) {
         return;
       }
-      if (!byId.has(node.id)) {
-        byId.set(node.id, { target: node, parentName: parentNameOf(node, root) });
+      const row = resolveRow(node);
+      if (!byId.has(row.id)) {
+        byId.set(row.id, row);
       }
     });
   }
 
   return [...byId.values()];
-}
-
-export function selectedFrames(): FrameNode[] {
-  return figma.currentPage.selection.filter(
-    (n): n is FrameNode => n.type === "FRAME"
-  );
 }

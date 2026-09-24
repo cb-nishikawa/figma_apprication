@@ -1,21 +1,27 @@
 import type {
   ExportRequest,
   ExportResultItem,
+  FrameTarget,
   ImageListItem,
 } from "./types";
 
 export type UiToPluginMessage =
-  | { type: "SCAN_SELECTION" }
+  | { type: "LIST_FRAME_TARGETS" }
+  | { type: "SET_FRAME_FROM_SELECTION" }
+  | { type: "SET_FRAME_NODE"; nodeId: string | null }
+  | { type: "SCAN_TARGET" }
   | { type: "FOCUS_NODE"; nodeId: string }
+  | { type: "RENAME_NODE"; nodeId: string; name: string }
   | { type: "EXPORT_NODES"; items: ExportRequest[] }
   | { type: "RESIZE_UI"; height: number };
 
 export type PluginToUiMessage =
   | {
-      type: "IMAGE_LIST";
-      items: ImageListItem[];
-      frameNames: string[];
-      message?: string;
+      type: "FRAME_TARGETS";
+      targets: FrameTarget[];
+      targetId: string | null;
     }
+  | { type: "IMAGE_LIST"; items: ImageListItem[]; message?: string }
+  | { type: "SELECTION_EMPTY" }
   | { type: "EXPORT_RESULT"; results: ExportResultItem[] }
   | { type: "ERROR"; message: string };
