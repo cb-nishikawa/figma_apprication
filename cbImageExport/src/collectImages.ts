@@ -82,7 +82,7 @@ function countImageSourcesIn(root: SceneNode): number {
 /**
  * Resolve what an image node should be shown as:
  * - a mask container holding exactly one image → the container
- * - a clipsContent frame holding exactly one image → the frame
+ * - any clipsContent ancestor → that frame (regardless of image count)
  * - otherwise → the image node itself
  */
 function resolveRow(node: SceneNode): SceneNode {
@@ -91,7 +91,7 @@ function resolveRow(node: SceneNode): SceneNode {
     return mask;
   }
   const clip = findClipFrame(node);
-  if (clip && countImageSourcesIn(clip) === 1) {
+  if (clip) {
     return clip;
   }
   return node;
@@ -114,7 +114,8 @@ function walkVisible(
 
 /**
  * Collect the rows shown in the list. Each row is either:
- * - a mask / clipsContent container holding exactly one visible image
+ * - a clipsContent ancestor frame (masked by image-count rule above)
+ * - a mask container holding exactly one visible image
  * - or an individual image source node
  */
 export function collectImageTargets(roots: SceneNode[]): SceneNode[] {
