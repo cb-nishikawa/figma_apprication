@@ -26,6 +26,12 @@ export type UiToPluginMessage =
       nodeId: string;
       constraint: ExportConstraint;
       options: ExportOptions;
+    }
+  | {
+      type: "FETCH_URI_DATA";
+      nodeId: string;
+      constraint: ExportConstraint;
+      options: ExportOptions;
     };
 
 export type PluginToUiMessage =
@@ -48,5 +54,12 @@ export type PluginToUiMessage =
       nodeId: string;
       svg: string;
       /** true のとき svg は空で、message がエラー内容。 */
+      message?: string;
+    }
+  | {
+      type: "URI_DATA";
+      nodeId: string;
+      bytes: number[];
+      /** true のとき bytes は空で、message がエラー内容。 */
       message?: string;
     };

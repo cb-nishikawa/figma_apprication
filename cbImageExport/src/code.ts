@@ -713,6 +713,58 @@ async function fetchSvgCode(
   }
 }
 
+async function fetchUriData(
+  nodeId: string,
+  constraint: ExportConstraint,
+  options: ExportOptions
+): Promise<void> {
+  const node = resolveNode(nodeId);
+  if (!node || !("exportAsync" in node)) {
+    postToUi({
+      type: "URI_DATA",
+      nodeId,
+      bytes: [],
+      message: "ノードが見つからないか書き出せません",
+    });
+    return;
+  }
+  try {
+    let bytes: Uint8Array;
+    try {
+      // ラスタ形式は PNG として書出し、品質・圧縮は UI 側で反映する。
+      bytes = await exportSceneNode(
+        node as SceneNode,
+        renderSettings("PNG", constraint),
+        options
+      );
+    } catch {
+      // クローン除去・appendChild 起因の失敗に備え、除外オプション無しで
+      // 直接書き出しを一度だけ試す。
+      bytes = await (node as SceneNode).exportAsync(
+        renderSettings("PNG", constraint)
+      );
+    }
+    if (bytes.length === 0) {
+      postToUi({
+        type: "URI_DATA",
+        nodeId,
+        bytes: [],
+        message: "空の画像データが返されました",
+      });
+      return;
+    }
+    postToUi({ type: "URI_DATA", nodeId, bytes: Array.from(bytes) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    postToUi({
+      type: "URI_DATA",
+      nodeId,
+      bytes: [],
+      message: `画像データの取得に失敗: ${message}`,
+    });
+  }
+}
+
 async function focusNode(nodeId: string): Promise<void> {
   const node = resolveNode(nodeId);
   if (!node || !("x" in node)) {
@@ -1014,6 +1066,9 @@ async function main(): Promise<void> {
           break;
         case "FETCH_SVG_CODE":
           await fetchSvgCode(raw.nodeId, raw.constraint, raw.options);
+          break;
+        case "FETCH_URI_DATA":
+          await fetchUriData(raw.nodeId, raw.constraint, raw.options);
           break;
         case "SET_ASSET_URL_CONFIG":
           if (!raw.nodeId) {

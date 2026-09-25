@@ -71,6 +71,15 @@ const svgErrorById = new Map<string, string>();
 const svgPending = new Set<string>();
 /** 開いているコピーポップオーバーの SVG ボタン描画関数（ノード ID → 描画）。 */
 const svgBtnRenderers = new Map<string, () => void>();
+/** ラスタ形式の Data URI 用バイト列（ノード ID → PNG bytes）キャッシュ。 */
+const uriBytesById = new Map<string, Uint8Array>();
+const uriErrorById = new Map<string, string>();
+const uriPending = new Set<string>();
+/** 開いているコピーポップオーバーの Data URI ボタン描画関数（ノード ID → 描画）。 */
+const uriBtnRenderers = new Map<string, () => void>();
+/** SVG / ラスタの取得完了を待ってコピーするための待機コールバック（ノード ID → 解決）。 */
+const svgWaiters = new Map<string, () => void>();
+const uriWaiters = new Map<string, () => void>();
 
 function postToPlugin(msg: UiToPluginMessage): void {
   parent.postMessage({ pluginMessage: msg }, "*");
@@ -274,6 +283,32 @@ async function bytesForResult(
     return quantizePng(result.bytes!, colorsForQuality(quality));
   }
   return new Uint8Array(result.bytes!);
+}
+
+/** バイト列を Base64 エンコードする（巨大データでもコールスタックが落ちないよう分割）。 */
+function u8ToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+/** Data URI（data:*;base64,...）の MIME を形式から決める。 */
+function mimeFor(format: ExportFormat): string {
+  switch (format) {
+    case "JPG":
+      return "image/jpeg";
+    case "WEBP":
+      return "image/webp";
+    case "AVIF":
+      return "image/avif";
+    case "SVG":
+      return "image/svg+xml";
+    default:
+      return "image/png";
+  }
 }
 
 /** 圧縮率（%）を設定から取得。未設定は形式ごとの既定値。 */
@@ -702,6 +737,107 @@ function createCopyMenu(id: string, config: ExportConfig): HTMLElement {
     renderSvgBtn();
     panel.append(svgBtn);
   }
+
+  const uriBtn = document.createElement("button");
+  uriBtn.type = "button";
+  uriBtn.className = "btn-secondary copy-button";
+  uriBtn.textContent = "Data URI をコピー";
+  const isSvgRow = config.format === "SVG";
+
+  const renderUriBtn = (): void => {
+    const error = isSvgRow ? svgErrorById.get(id) : uriErrorById.get(id);
+    const ready = isSvgRow ? svgCodeById.has(id) : uriBytesById.has(id);
+    const pending = isSvgRow ? svgPending.has(id) : uriPending.has(id);
+    if (error) {
+      uriBtn.title = error;
+      uriBtn.textContent =
+        error.length > 32 ? `${error.slice(0, 32)}…` : error;
+    } else if (ready) {
+      uriBtn.removeAttribute("title");
+      uriBtn.textContent = "Data URI をコピー";
+    } else if (pending) {
+      uriBtn.removeAttribute("title");
+      uriBtn.textContent = "読み込み中…";
+    } else {
+      uriBtn.removeAttribute("title");
+      uriBtn.textContent = "Data URI をコピー";
+    }
+  };
+
+  const waitForData = (nodeId: string): Promise<void> => {
+    return new Promise<void>((resolve) => {
+      (isSvgRow ? svgWaiters : uriWaiters).set(nodeId, resolve);
+    });
+  };
+
+  uriBtn.addEventListener("click", async () => {
+    if (isSvgRow) {
+      let svg = svgCodeById.get(id);
+      if (!svg) {
+        if (svgErrorById.has(id)) {
+          svgErrorById.delete(id);
+        }
+        requestSvg?.();
+        await waitForData(id);
+        svg = svgCodeById.get(id);
+        if (!svg) {
+          return;
+        }
+      }
+      const dataUri = `data:${mimeFor("SVG")};base64,${u8ToBase64(
+        new TextEncoder().encode(svg)
+      )}`;
+      const ok = await copyText(dataUri);
+      uriBtn.textContent = ok ? "コピーしました" : "コピーに失敗";
+      window.setTimeout(renderUriBtn, 1200);
+      return;
+    }
+    let bytes = uriBytesById.get(id);
+    if (!bytes) {
+      if (!uriPending.has(id)) {
+        uriErrorById.delete(id);
+        uriPending.add(id);
+        renderUriBtn();
+        postToPlugin({
+          type: "FETCH_URI_DATA",
+          nodeId: id,
+          constraint: { ...config.constraint },
+          options: excludeOptionsFor(id),
+        });
+      }
+      await waitForData(id);
+      bytes = uriBytesById.get(id);
+      if (!bytes) {
+        return;
+      }
+    }
+    try {
+      const finalBytes = await bytesForResult({
+        id,
+        name: "",
+        format: config.format,
+        constraint: config.constraint,
+        ok: true,
+        bytes: Array.from(bytes),
+      });
+      const dataUri = `data:${mimeFor(config.format)};base64,${u8ToBase64(
+        finalBytes
+      )}`;
+      const ok = await copyText(dataUri);
+      uriBtn.textContent = ok ? "コピーしました" : "コピーに失敗";
+      window.setTimeout(renderUriBtn, 1200);
+    } catch (err) {
+      uriErrorById.set(
+        id,
+        err instanceof Error ? err.message : String(err)
+      );
+      renderUriBtn();
+    }
+  });
+
+  uriBtnRenderers.set(id, renderUriBtn);
+  renderUriBtn();
+  panel.append(uriBtn);
 
   trigger.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -1174,6 +1310,23 @@ window.onmessage = (event: MessageEvent) => {
       svgErrorById.delete(msg.nodeId);
     }
     svgBtnRenderers.get(msg.nodeId)?.();
+    uriBtnRenderers.get(msg.nodeId)?.();
+    svgWaiters.get(msg.nodeId)?.();
+    svgWaiters.delete(msg.nodeId);
+    return;
+  }
+  if (msg.type === "URI_DATA") {
+    uriPending.delete(msg.nodeId);
+    if (msg.message) {
+      uriBytesById.delete(msg.nodeId);
+      uriErrorById.set(msg.nodeId, msg.message);
+    } else {
+      uriBytesById.set(msg.nodeId, new Uint8Array(msg.bytes));
+      uriErrorById.delete(msg.nodeId);
+    }
+    uriBtnRenderers.get(msg.nodeId)?.();
+    uriWaiters.get(msg.nodeId)?.();
+    uriWaiters.delete(msg.nodeId);
     return;
   }
   if (msg.type === "IMAGE_LIST") {
@@ -1216,6 +1369,16 @@ window.onmessage = (event: MessageEvent) => {
         svgErrorById.delete(id);
         svgPending.delete(id);
         svgBtnRenderers.delete(id);
+        svgWaiters.delete(id);
+      }
+    }
+    for (const id of [...uriBytesById.keys()]) {
+      if (!valid.has(id)) {
+        uriBytesById.delete(id);
+        uriErrorById.delete(id);
+        uriPending.delete(id);
+        uriBtnRenderers.delete(id);
+        uriWaiters.delete(id);
       }
     }
     showStatus(msg.message ?? null);
