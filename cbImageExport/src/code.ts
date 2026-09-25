@@ -1,4 +1,4 @@
-import { collectFloatingImageTargets, collectImageTargets } from "./collectImages";
+import { collectImageTargets } from "./collectImages";
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
 import type {
   ExportConfig,
@@ -371,27 +371,16 @@ async function scanTarget(): Promise<void> {
   }
 
   const collected = collectImageTargets([node as SceneNode]);
-  const byId = new Map<string, SceneNode>();
-  for (const target of collected) {
-    byId.set(target.id, target);
-  }
-  // 対象フレーム配下に加えて、ページ直下の独立画像も一覧に加える。
-  for (const target of collectFloatingImageTargets(figma.currentPage)) {
-    if (!byId.has(target.id)) {
-      byId.set(target.id, target);
-    }
-  }
-  const allTargets = [...byId.values()];
   nodeCache.clear();
-  for (const target of allTargets) {
+  for (const target of collected) {
     nodeCache.set(target.id, target);
   }
   const sentinelConfigs = restoreSentinelConfigs(
     node as SceneNode,
-    new Set(allTargets.map((target) => target.id))
+    new Set(collected.map((target) => target.id))
   );
   const items: ImageListItem[] = [];
-  for (const target of allTargets) {
+  for (const target of collected) {
     const thumbBytes = await makeThumb(target);
     const exportConfigs = exportSettingsToConfigs(target);
     const rowSentinels = sentinelConfigs.get(target.id);
