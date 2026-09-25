@@ -1,4 +1,5 @@
 import type {
+  ExportConfig,
   ExportRequest,
   ExportResultItem,
   FrameTarget,
@@ -12,6 +13,8 @@ export type UiToPluginMessage =
   | { type: "SCAN_TARGET" }
   | { type: "FOCUS_NODE"; nodeId: string }
   | { type: "RENAME_NODE"; nodeId: string; name: string }
+  | { type: "SET_EXPORT_SETTINGS"; nodeId: string; configs: ExportConfig[] }
+  | { type: "HOVER_ROW"; nodeId: string | null }
   | { type: "EXPORT_NODES"; items: ExportRequest[] }
   | { type: "RESIZE_UI"; height: number };
 

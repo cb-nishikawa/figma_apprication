@@ -223,6 +223,7 @@ function dumpDiagnostics(roots: SceneNode[]): void {
  */
 export function collectImageTargets(roots: SceneNode[]): SceneNode[] {
   const byId = new Map<string, SceneNode>();
+  const rootIds = new Set(roots.map((root) => root.id));
 
   for (const root of roots) {
     if (!isVisible(root)) {
@@ -241,6 +242,14 @@ export function collectImageTargets(roots: SceneNode[]): SceneNode[] {
 
     for (const node of candidates) {
       const row = resolveRow(node);
+      if (rootIds.has(row.id)) {
+        if (DEBUG) {
+          console.log(
+            `[cbImageExport][DEBUG] candidate ${node.type} "${node.name}" (${node.id}) -> row ${row.type} "${row.name}" (${row.id}) EXCLUDED (selected frame itself)`
+          );
+        }
+        continue;
+      }
       if (DEBUG) {
         console.log(
           `[cbImageExport][DEBUG] candidate ${node.type} "${node.name}" (${node.id}) -> row ${row.type} "${row.name}" (${row.id})`

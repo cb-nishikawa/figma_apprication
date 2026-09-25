@@ -2,6 +2,7 @@ import "./ui.css";
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
 import { createTargetPicker, unregisterPicker } from "./targetPicker";
 import type {
+  ExportConfig,
   ExportFormat,
   ExportRequest,
   ExportResultItem,
@@ -12,11 +13,6 @@ import { EXPORT_FORMATS } from "./types";
 
 const MIN_UI_HEIGHT = 320;
 const MAX_UI_HEIGHT = 900;
-
-interface ExportConfig {
-  format: ExportFormat;
-  scale: number;
-}
 
 const DEFAULT_CONFIG: ExportConfig = { format: "PNG", scale: 1 };
 
@@ -111,6 +107,15 @@ function nameFor(item: ImageListItem): string {
   return override || item.name;
 }
 
+/** Reflect the row's export configs to the actual Figma layer. */
+function syncExportSettings(id: string): void {
+  postToPlugin({
+    type: "SET_EXPORT_SETTINGS",
+    nodeId: id,
+    configs: configsFor(id).map((config) => ({ ...config })),
+  });
+}
+
 function bytesToObjectUrl(bytes: number[], mime: string): string {
   const arr = new Uint8Array(bytes);
   const blob = new Blob([arr], { type: mime });
@@ -187,7 +192,8 @@ function createFormatSelect(
 
 function createScaleInput(
   value: number,
-  onInput: (raw: string) => void
+  onInput: (raw: string) => void,
+  onChange?: () => void
 ): HTMLInputElement {
   const input = document.createElement("input");
   input.className = "config-scale";
@@ -199,6 +205,10 @@ function createScaleInput(
   input.title = "2 なら 2 倍、0.5 なら半分、未入力なら等倍";
   input.addEventListener("click", (event) => event.stopPropagation());
   input.addEventListener("input", () => onInput(input.value));
+  input.addEventListener("change", () => {
+    onInput(input.value);
+    onChange?.();
+  });
   return input;
 }
 
@@ -238,6 +248,7 @@ function createAddButton(id: string): HTMLButtonElement {
     } else {
       configsByNode.set(id, [{ ...DEFAULT_CONFIG }]);
     }
+    syncExportSettings(id);
     renderList();
   });
   return btn;
@@ -253,6 +264,7 @@ function createRemoveButton(id: string, index: number): HTMLButtonElement {
   btn.addEventListener("click", (event) => {
     event.stopPropagation();
     configsByNode.get(id)?.splice(index, 1);
+    syncExportSettings(id);
     renderList();
   });
   return btn;
@@ -264,10 +276,13 @@ function createConfigRow(id: string, config: ExportConfig, index: number): HTMLE
 
   const scale = createScaleInput(config.scale, (raw) => {
     config.scale = parseScale(raw);
+  }, () => {
+    syncExportSettings(id);
   });
 
   const format = createFormatSelect(config.format, (next) => {
     config.format = next;
+    syncExportSettings(id);
   });
 
   const remove = createRemoveButton(id, index);
@@ -305,6 +320,13 @@ function renderList(): void {
       li.classList.add("is-error");
       li.title = rowErrorById.get(item.id) ?? "";
     }
+
+    li.addEventListener("mouseenter", () => {
+      postToPlugin({ type: "HOVER_ROW", nodeId: item.id });
+    });
+    li.addEventListener("mouseleave", () => {
+      postToPlugin({ type: "HOVER_ROW", nodeId: null });
+    });
 
     const check = document.createElement("input");
     check.type = "checkbox";

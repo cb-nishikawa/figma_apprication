@@ -20,6 +20,13 @@ export interface ImageListItem {
   thumbBytes?: number[];
 }
 
+/** 書き出し単位の設定（形式 + 倍率）。 */
+export interface ExportConfig {
+  format: ExportFormat;
+  /** 書き出し倍率。1 = 等倍。ラスター形式（PNG/JPG）のみ有効。 */
+  scale: number;
+}
+
 export interface ExportRequest {
   id: string;
   format: ExportFormat;

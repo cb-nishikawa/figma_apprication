@@ -37,6 +37,73 @@ function resolveNode(nodeId: string): SceneNode | null {
   return cached;
 }
 
+const HOVER_NAME = "hoverEffect";
+let hoverOverlay: RectangleNode | null = null;
+
+const HIGHLIGHT_RGB: RGB = { r: 0, g: 1, b: 64 / 255 };
+
+function applyHighlightPaint(rect: RectangleNode): void {
+  rect.fills = [
+    { type: "SOLID", color: HIGHLIGHT_RGB, opacity: 0.4 },
+  ];
+  rect.strokes = [{ type: "SOLID", color: HIGHLIGHT_RGB }];
+  rect.strokeWeight = 1;
+  rect.dashPattern = [10, 10];
+}
+
+function ensureHoverOverlay(): RectangleNode {
+  if (hoverOverlay && !hoverOverlay.removed) {
+    if (hoverOverlay.parent && hoverOverlay.parent.id !== figma.currentPage.id) {
+      figma.currentPage.appendChild(hoverOverlay);
+    }
+    return hoverOverlay;
+  }
+  const rect = figma.createRectangle();
+  rect.name = HOVER_NAME;
+  rect.locked = true;
+  rect.visible = false;
+  applyHighlightPaint(rect);
+  figma.currentPage.appendChild(rect);
+  hoverOverlay = rect;
+  return rect;
+}
+
+function showHoverOverlay(nodeId: string | null): void {
+  if (!nodeId) {
+    hideHoverOverlay();
+    return;
+  }
+  const node = resolveNode(nodeId);
+  if (!node || !("absoluteBoundingBox" in node)) {
+    hideHoverOverlay();
+    return;
+  }
+  const box = (node as SceneNode).absoluteBoundingBox;
+  if (!box || box.width <= 0 || box.height <= 0) {
+    hideHoverOverlay();
+    return;
+  }
+  const rect = ensureHoverOverlay();
+  rect.resize(box.width, box.height);
+  rect.x = box.x;
+  rect.y = box.y;
+  figma.currentPage.appendChild(rect);
+  rect.visible = true;
+}
+
+function hideHoverOverlay(): void {
+  if (hoverOverlay && !hoverOverlay.removed) {
+    hoverOverlay.visible = false;
+  }
+}
+
+function clearHoverOverlay(): void {
+  if (hoverOverlay && !hoverOverlay.removed) {
+    hoverOverlay.remove();
+  }
+  hoverOverlay = null;
+}
+
 function clampUiHeight(height: number): number {
   return Math.min(MAX_UI_HEIGHT, Math.max(MIN_UI_HEIGHT, Math.round(height)));
 }
@@ -156,6 +223,7 @@ function postFrameTargets(): void {
 }
 
 async function scanTarget(): Promise<void> {
+  hideHoverOverlay();
   if (!targetNodeId) {
     postToUi({
       type: "IMAGE_LIST",
@@ -291,6 +359,24 @@ async function renameNode(nodeId: string, name: string): Promise<void> {
   node.name = name;
 }
 
+/**
+ * Reflect the plugin's export configs to the actual Figma layer
+ * (node.exportSettings). Empty configs clear the layer's export settings.
+ */
+function applyExportSettings(
+  nodeId: string,
+  configs: { format: ExportFormat; scale: number }[]
+): void {
+  const node = resolveNode(nodeId);
+  if (!node || !("exportSettings" in node)) {
+    return;
+  }
+  const scene = node as SceneNode;
+  scene.exportSettings = configs.map((config) =>
+    exportSettings(config.format, config.scale)
+  );
+}
+
 async function initUiHeight(): Promise<number> {
   const stored = await figma.clientStorage.getAsync(UI_HEIGHT_STORAGE_KEY);
   if (typeof stored === "number" && Number.isFinite(stored)) {
@@ -346,6 +432,12 @@ async function main(): Promise<void> {
         case "RENAME_NODE":
           await renameNode(raw.nodeId, raw.name);
           break;
+        case "SET_EXPORT_SETTINGS":
+          applyExportSettings(raw.nodeId, raw.configs);
+          break;
+        case "HOVER_ROW":
+          showHoverOverlay(raw.nodeId);
+          break;
         case "EXPORT_NODES":
           await exportNodes(raw.items);
           break;
@@ -363,8 +455,13 @@ async function main(): Promise<void> {
   };
 
   figma.on("currentpagechange", () => {
+    hideHoverOverlay();
     postFrameTargets();
     void scanTarget();
+  });
+
+  figma.on("close", () => {
+    clearHoverOverlay();
   });
 
   postFrameTargets();
