@@ -1,5 +1,6 @@
 import "./ui.css";
 import excludeIcon from "./assets/exclude.svg?raw";
+import exportIcon from "./assets/export.svg?raw";
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
 import { closeAllTargetPopovers, createTargetPicker, unregisterPicker } from "./targetPicker";
 import type {
@@ -17,6 +18,7 @@ import {
   DEFAULT_EXPORT_CONSTRAINT,
   EXPORT_FORMATS,
 } from "./types";
+import { zipEntries, type ZipEntry } from "./zip";
 
 const MIN_UI_HEIGHT = 320;
 const MAX_UI_HEIGHT = 900;
@@ -49,6 +51,7 @@ const configsByNode = new Map<string, ExportConfig[]>();
 const excludeOptionsById = new Map<string, ExportOptions>();
 const nameOverridesById = new Map<string, string>();
 const rowErrorById = new Map<string, string>();
+let activeExportDir: FileSystemDirectoryHandle | null = null;
 
 function postToPlugin(msg: UiToPluginMessage): void {
   parent.postMessage({ pluginMessage: msg }, "*");
@@ -162,19 +165,6 @@ function bytesToObjectUrl(bytes: number[], mime: string): string {
   return URL.createObjectURL(blob);
 }
 
-function mimeFor(format: ExportFormat): string {
-  switch (format) {
-    case "JPG":
-      return "image/jpeg";
-    case "SVG":
-      return "image/svg+xml";
-    case "PDF":
-      return "application/pdf";
-    default:
-      return "image/png";
-  }
-}
-
 function extFor(format: ExportFormat): string {
   switch (format) {
     case "JPG":
@@ -183,6 +173,8 @@ function extFor(format: ExportFormat): string {
       return "svg";
     case "PDF":
       return "pdf";
+    case "WEBP":
+      return "webp";
     default:
       return "png";
   }
@@ -192,19 +184,62 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, "_").trim() || "export";
 }
 
-function downloadBytes(
-  bytes: number[],
-  name: string,
-  format: ExportFormat
-): void {
-  const url = bytesToObjectUrl(bytes, mimeFor(format));
+function downloadUint8(data: Uint8Array, fileName: string, mime: string): void {
+  const blob = new Blob([new Uint8Array(data)], { type: mime });
+  const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${sanitizeFilename(name)}.${extFor(format)}`;
+  a.download = fileName;
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function timestampForName(): string {
+  const d = new Date();
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
+/**
+ * WebP is rendered as PNG by the plugin (Figma has no WebP export), so the
+ * bytes are transcoded here in the UI (Chromium canvas) before saving.
+ */
+async function bytesToWebP(pngBytes: number[]): Promise<Uint8Array<ArrayBuffer>> {
+  const blob = new Blob([new Uint8Array(pngBytes)], { type: "image/png" });
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    bitmap.close();
+    throw new Error("canvas 2D を取得できません");
+  }
+  try {
+    ctx.drawImage(bitmap, 0, 0);
+  } finally {
+    bitmap.close();
+  }
+  const out = await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error("WebP 変換に失敗しました"))),
+      "image/webp",
+      0.92
+    );
+  });
+  return new Uint8Array(await out.arrayBuffer());
+}
+
+/** Final bytes for a result: WebP for WEBP results, otherwise the bytes as-is. */
+async function bytesForResult(
+  result: ExportResultItem
+): Promise<Uint8Array<ArrayBuffer>> {
+  if (result.format === "WEBP") {
+    return bytesToWebP(result.bytes!);
+  }
+  return new Uint8Array(result.bytes!);
 }
 
 function createFormatSelect(
@@ -298,6 +333,20 @@ function createAddButton(id: string): HTMLButtonElement {
     }
     syncExportSettings(id);
     renderList();
+  });
+  return btn;
+}
+
+function createExportButton(id: string): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn-icon row-export";
+  btn.title = "この行を書き出し";
+  btn.setAttribute("aria-label", "この行を書き出し");
+  btn.innerHTML = exportIcon;
+  btn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    exportRows([id]);
   });
   return btn;
 }
@@ -501,6 +550,7 @@ function renderList(): void {
       thumb,
       nameInput,
       createExcludeMenu(item.id),
+      createExportButton(item.id),
       createAddButton(item.id)
     );
 
@@ -518,24 +568,76 @@ function renderList(): void {
   selectAllEl.checked = items.length > 0 && allChecked;
 }
 
-function handleExportResults(results: ExportResultItem[]): void {
+async function handleExportResults(results: ExportResultItem[]): Promise<void> {
   let okCount = 0;
-  for (const result of results) {
-    if (result.ok && result.bytes) {
+
+  if (activeExportDir) {
+    const dir = activeExportDir;
+    activeExportDir = null;
+    for (const result of results) {
+      if (!result.ok || !result.bytes) {
+        rowErrorById.set(
+          result.id,
+          result.message ?? "書き出しに失敗しました"
+        );
+        continue;
+      }
       const name = nameOverridesById.get(result.id)?.trim() || result.name;
-      downloadBytes(result.bytes, name, result.format);
-      rowErrorById.delete(result.id);
-      okCount += 1;
-    } else {
-      rowErrorById.set(
-        result.id,
-        result.message ?? "書き出しに失敗しました"
-      );
+      const fileName = `${sanitizeFilename(name)}.${extFor(result.format)}`;
+      try {
+        const data = await bytesForResult(result);
+        const handle = await dir.getFileHandle(fileName, { create: true });
+        const writable = await handle.createWritable();
+        await writable.write(data);
+        await writable.close();
+        rowErrorById.delete(result.id);
+        okCount += 1;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        rowErrorById.set(result.id, `保存に失敗: ${message}`);
+      }
+    }
+  } else {
+    const entries: ZipEntry[] = [];
+    const usedNames = new Set<string>();
+    for (const result of results) {
+      if (result.ok && result.bytes) {
+        const name = nameOverridesById.get(result.id)?.trim() || result.name;
+        const ext = extFor(result.format);
+        const base = sanitizeFilename(name);
+        let fileName = `${base}.${ext}`;
+        let i = 2;
+        while (usedNames.has(fileName)) {
+          fileName = `${base}_${i}.${ext}`;
+          i += 1;
+        }
+        usedNames.add(fileName);
+        try {
+          const data = await bytesForResult(result);
+          entries.push({
+            name: fileName,
+            data,
+          });
+          rowErrorById.delete(result.id);
+          okCount += 1;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          rowErrorById.set(result.id, `書き出しに失敗: ${message}`);
+        }
+      } else {
+        rowErrorById.set(
+          result.id,
+          result.message ?? "書き出しに失敗しました"
+        );
+      }
+    }
+    if (okCount > 0) {
+      const zip = zipEntries(entries);
+      downloadUint8(zip, `cbImageExport-${timestampForName()}.zip`, "application/zip");
     }
   }
-  if (okCount > 0) {
-    showStatus(`${okCount} 件を書き出しました`);
-  }
+
+  showStatus(null);
   const failed = results.filter((r) => !r.ok);
   if (failed.length > 0) {
     showError(
@@ -564,20 +666,15 @@ document.addEventListener(
   true
 );
 
-exportAllBtn.addEventListener("click", () => {
-  const targets = items.filter((item) => checkedIds.has(item.id));
-  if (targets.length === 0) {
-    showError("書き出す画像にチェックを入れてください");
-    return;
-  }
+async function exportRows(targetIds: string[]): Promise<void> {
   const requests: ExportRequest[] = [];
-  for (const item of targets) {
-    for (const config of configsFor(item.id)) {
+  for (const id of targetIds) {
+    for (const config of configsFor(id)) {
       requests.push({
-        id: item.id,
+        id,
         format: config.format,
         constraint: { ...config.constraint },
-        options: excludeOptionsFor(item.id),
+        options: excludeOptionsFor(id),
       });
     }
   }
@@ -585,9 +682,25 @@ exportAllBtn.addEventListener("click", () => {
     showError("書き出し設定がありません");
     return;
   }
+  if (typeof window.showDirectoryPicker === "function") {
+    try {
+      activeExportDir = await window.showDirectoryPicker({ id: "cb-image-export" });
+    } catch {
+      return;
+    }
+  }
   showError(null);
   showStatus("書き出し中…");
   postToPlugin({ type: "EXPORT_NODES", items: requests });
+}
+
+exportAllBtn.addEventListener("click", () => {
+  const targets = items.filter((item) => checkedIds.has(item.id));
+  if (targets.length === 0) {
+    showError("書き出す画像にチェックを入れてください");
+    return;
+  }
+  exportRows(targets.map((item) => item.id));
 });
 
 selectAllEl.addEventListener("change", () => {
@@ -656,7 +769,7 @@ window.onmessage = (event: MessageEvent) => {
     return;
   }
   if (msg.type === "EXPORT_RESULT") {
-    handleExportResults(msg.results);
+    void handleExportResults(msg.results);
     return;
   }
   if (msg.type === "ERROR") {

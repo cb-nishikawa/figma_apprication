@@ -18,6 +18,7 @@ const MAX_UI_HEIGHT = 900;
 const DEFAULT_UI_HEIGHT = 480;
 const UI_HEIGHT_STORAGE_KEY = "cbImageExport.uiHeight";
 const THUMB_WIDTH = 80;
+const WEBP_SENTINEL_PREFIX = "__cb_webp__";
 
 let targetNodeId: string | null = null;
 
@@ -253,14 +254,25 @@ async function scanTarget(): Promise<void> {
   for (const target of collected) {
     nodeCache.set(target.id, target);
   }
+  const webpConfigsByNode = syncWebPSentinelRestore(
+    node as SceneNode,
+    new Set(collected.map((target) => target.id))
+  );
   const items: ImageListItem[] = [];
   for (const target of collected) {
     const thumbBytes = await makeThumb(target);
+    const exportConfigs = exportSettingsToConfigs(target);
+    const webpConfigs = webpConfigsByNode.get(target.id);
+    if (webpConfigs) {
+      for (const config of webpConfigs) {
+        exportConfigs.push(config);
+      }
+    }
     items.push({
       id: target.id,
       name: target.name || "(untitled)",
       thumbBytes,
-      exportConfigs: exportSettingsToConfigs(target),
+      exportConfigs,
     });
   }
 
@@ -293,7 +305,9 @@ function exportSettings(
       contentsOnly: true,
     };
   }
-  if (format === "PNG") {
+  if (format === "PNG" || format === "WEBP") {
+    // WEBP is not supported by Figma's exportSettings, so it is rendered as
+    // PNG here and transcoded to WebP in the UI.
     return {
       format: "PNG",
       constraint: { type: safe.type, value: safe.value },
@@ -465,21 +479,129 @@ async function renameNode(nodeId: string, name: string): Promise<void> {
 }
 
 /**
+ * WEBP is not representable in Figma's exportSettings, so each WEBP config is
+ * carried by a 0x0 sentinel rectangle inside the scanned target frame whose
+ * layer name encodes the row node id and the size: "__cb_webp__|<id>|<size>".
+ * Sentinels are invisible, locked and fill-less so they never surface as rows.
+ */
+
+function webpConstraintText(constraint: ExportConstraint): string {
+  if (constraint.type === "WIDTH") {
+    return `${constraint.value}w`;
+  }
+  if (constraint.type === "HEIGHT") {
+    return `${constraint.value}h`;
+  }
+  return `${constraint.value}x`;
+}
+
+function parseConstraintText(text: string): ExportConstraint {
+  const unit = text.slice(-1).toLowerCase();
+  const value = Number(text.slice(0, -1));
+  const safe = Number.isFinite(value) && value > 0 ? value : 1;
+  if (unit === "w") {
+    return { type: "WIDTH", value: safe };
+  }
+  if (unit === "h") {
+    return { type: "HEIGHT", value: safe };
+  }
+  return { type: "SCALE", value: safe };
+}
+
+/**
+ * On every rescan: rebuild the WEBP configs read from the sentinel layers of
+ * the target frame, and remove sentinels whose row no longer exists.
+ */
+function syncWebPSentinelRestore(
+  frame: SceneNode,
+  validIds: Set<string>
+): Map<string, ExportConfig[]> {
+  const map = new Map<string, ExportConfig[]>();
+  if (!("children" in frame)) {
+    return map;
+  }
+  const children = [...frame.children];
+  for (const child of children) {
+    if (!child.name.startsWith(`${WEBP_SENTINEL_PREFIX}|`)) {
+      continue;
+    }
+    const match = child.name.match(
+      /^__cb_webp__\|(.+)\|([0-9.]+[whx])$/
+    );
+    if (!match) {
+      continue;
+    }
+    const rowId = match[1];
+    if (!validIds.has(rowId)) {
+      child.remove();
+      continue;
+    }
+    const config: ExportConfig = {
+      format: "WEBP",
+      constraint: parseConstraintText(match[2]),
+    };
+    const list = map.get(rowId);
+    if (list) {
+      list.push(config);
+    } else {
+      map.set(rowId, [config]);
+    }
+  }
+  return map;
+}
+
+/** Upsert / remove the sentinel layers of one row based on its WEBP configs. */
+async function syncWebPSentinels(
+  nodeId: string,
+  webpConfigs: ExportConfig[]
+): Promise<void> {
+  if (!targetNodeId) {
+    return;
+  }
+  const frame = await figma.getNodeByIdAsync(targetNodeId);
+  if (!frame || !("children" in frame)) {
+    return;
+  }
+  const prefix = `${WEBP_SENTINEL_PREFIX}|${nodeId}|`;
+  const children = [...frame.children];
+  for (const child of children) {
+    if (child.name.startsWith(prefix)) {
+      child.remove();
+    }
+  }
+  for (const config of webpConfigs) {
+    const rect = figma.createRectangle();
+    rect.name = `${prefix}${webpConstraintText(config.constraint)}`;
+    rect.resize(0, 0);
+    rect.x = 0;
+    rect.y = 0;
+    rect.fills = [];
+    rect.visible = false;
+    rect.locked = true;
+    (frame as ChildrenMixin).appendChild(rect);
+  }
+}
+
+/**
  * Reflect the plugin's export configs to the actual Figma layer
  * (node.exportSettings). Empty configs clear the layer's export settings.
+ * WEBP configs are excluded (not representable in Figma) and instead
+ * persisted as sentinel layers inside the scanned target frame.
  */
-function applyExportSettings(
+async function applyExportSettings(
   nodeId: string,
   configs: ExportConfig[]
-): void {
+): Promise<void> {
   const node = resolveNode(nodeId);
   if (!node || !("exportSettings" in node)) {
     return;
   }
   const scene = node as SceneNode;
-  scene.exportSettings = configs.map((config) =>
-    exportSettings(config.format, config.constraint)
-  );
+  const webpConfigs = configs.filter((config) => config.format === "WEBP");
+  scene.exportSettings = configs
+    .filter((config) => config.format !== "WEBP")
+    .map((config) => exportSettings(config.format, config.constraint));
+  await syncWebPSentinels(nodeId, webpConfigs);
 }
 
 async function initUiHeight(): Promise<number> {
@@ -538,7 +660,7 @@ async function main(): Promise<void> {
           await renameNode(raw.nodeId, raw.name);
           break;
         case "SET_EXPORT_SETTINGS":
-          applyExportSettings(raw.nodeId, raw.configs);
+          await applyExportSettings(raw.nodeId, raw.configs);
           break;
         case "HOVER_ROW":
           showHoverOverlay(raw.nodeId);

@@ -12,5 +12,5 @@
     "resolveJsonModule": true,
     "isolatedModules": true
   },
-  "include": ["src/ui.ts", "src/types.ts", "src/messages.ts", "src/global.d.ts"]
+  "include": ["src/ui.ts", "src/export-folder.d.ts", "src/types.ts", "src/messages.ts", "src/global.d.ts"]
 }

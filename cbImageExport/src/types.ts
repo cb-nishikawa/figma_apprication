@@ -1,6 +1,12 @@
-export type ExportFormat = "PNG" | "JPG" | "SVG" | "PDF";
+export type ExportFormat = "PNG" | "JPG" | "SVG" | "PDF" | "WEBP";
 
-export const EXPORT_FORMATS: ExportFormat[] = ["PNG", "JPG", "SVG", "PDF"];
+export const EXPORT_FORMATS: ExportFormat[] = [
+  "PNG",
+  "JPG",
+  "SVG",
+  "PDF",
+  "WEBP",
+];
 
 export type FrameTargetKind = "SECTION" | "FRAME" | "INSTANCE" | "GROUP";
 
