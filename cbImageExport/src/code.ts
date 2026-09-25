@@ -2,6 +2,7 @@ import { collectImageTargets } from "./collectImages";
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
 import type {
   ExportFormat,
+  ExportOptions,
   ExportRequest,
   ExportResultItem,
   FrameTarget,
@@ -317,8 +318,10 @@ async function exportNodes(requests: ExportRequest[]): Promise<void> {
     }
     const scene = node as SceneNode;
     try {
-      const bytes = await scene.exportAsync(
-        exportSettings(req.format, req.scale)
+      const bytes = await exportSceneNode(
+        scene,
+        exportSettings(req.format, req.scale),
+        req.options
       );
       results.push({
         id: req.id,
@@ -339,6 +342,56 @@ async function exportNodes(requests: ExportRequest[]): Promise<void> {
     }
   }
   postToUi({ type: "EXPORT_RESULT", results });
+}
+
+/**
+ * Strip excluded export options (effects / corner radius / strokes) from the
+ * node itself. Rows can be FRAME / COMPONENT / INSTANCE / SLOT / RECTANGLE /
+ * GROUP, so each property is only touched when the node type supports it.
+ */
+function stripExportOptions(node: SceneNode, options: ExportOptions): void {
+  if (options.excludeEffects && "effects" in node) {
+    (node as SceneNode & { effects: Effect[] }).effects = [];
+  }
+  if (options.excludeCornerRadius && "cornerRadius" in node) {
+    const corner = (node as SceneNode & {
+      cornerRadius: number | typeof figma.mixed;
+    }).cornerRadius;
+    if (typeof corner === "number") {
+      (node as SceneNode & { cornerRadius: number }).cornerRadius = 0;
+    }
+  }
+  if (options.excludeStrokes && "strokes" in node) {
+    (node as SceneNode & { strokes: Paint[] }).strokes = [];
+  }
+}
+
+/**
+ * Export a row honoring the row's exclusion options. When any item is
+ * excluded, a throwaway clone is used: the item is stripped from the clone
+ * only, the original layer stays untouched, and the clone is removed right
+ * after.
+ */
+async function exportSceneNode(
+  node: SceneNode,
+  settings: ExportSettings,
+  options: ExportOptions
+): Promise<Uint8Array> {
+  const needsClone =
+    options.excludeEffects ||
+    options.excludeCornerRadius ||
+    options.excludeStrokes;
+  if (!needsClone) {
+    return node.exportAsync(settings);
+  }
+  const clone = node.clone();
+  stripExportOptions(clone, options);
+  figma.currentPage.appendChild(clone);
+  try {
+    return await clone.exportAsync(settings);
+  } finally {
+    clone.remove();
+  }
 }
 
 async function focusNode(nodeId: string): Promise<void> {

@@ -1,15 +1,17 @@
 import "./ui.css";
+import excludeIcon from "./assets/exclude.svg?raw";
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
-import { createTargetPicker, unregisterPicker } from "./targetPicker";
+import { closeAllTargetPopovers, createTargetPicker, unregisterPicker } from "./targetPicker";
 import type {
   ExportConfig,
   ExportFormat,
+  ExportOptions,
   ExportRequest,
   ExportResultItem,
   FrameTarget,
   ImageListItem,
 } from "./types";
-import { EXPORT_FORMATS } from "./types";
+import { DEFAULT_EXCLUDE_OPTIONS, EXPORT_FORMATS } from "./types";
 
 const MIN_UI_HEIGHT = 320;
 const MAX_UI_HEIGHT = 900;
@@ -36,6 +38,7 @@ let frameTargets: FrameTarget[] = [];
 let targetId: string | null = null;
 const checkedIds = new Set<string>();
 const configsByNode = new Map<string, ExportConfig[]>();
+const excludeOptionsById = new Map<string, ExportOptions>();
 const nameOverridesById = new Map<string, string>();
 const rowErrorById = new Map<string, string>();
 
@@ -100,6 +103,10 @@ function parseScale(raw: string): number {
 
 function configsFor(id: string): ExportConfig[] {
   return configsByNode.get(id) ?? [];
+}
+
+function excludeOptionsFor(id: string): ExportOptions {
+  return excludeOptionsById.get(id) ?? { ...DEFAULT_EXCLUDE_OPTIONS };
 }
 
 function nameFor(item: ImageListItem): string {
@@ -270,6 +277,94 @@ function createRemoveButton(id: string, index: number): HTMLButtonElement {
   return btn;
 }
 
+const EXCLUDE_OPTION_DEFS: Array<{
+  key: keyof ExportOptions;
+  label: string;
+}> = [
+  { key: "excludeEffects", label: "エフェクト" },
+  { key: "excludeStrokes", label: "線" },
+  { key: "excludeCornerRadius", label: "角丸" },
+];
+
+const EXCLUDE_POPOVER_TITLE = "チェック項目を除外する";
+
+function closeAllExcludeMenus(except?: HTMLElement): void {
+  document.querySelectorAll<HTMLElement>(".exclude-popover").forEach((panel) => {
+    if (except && panel === except) {
+      return;
+    }
+    panel.hidden = true;
+    const trigger = panel
+      .closest(".exclude-menu")
+      ?.querySelector<HTMLButtonElement>(".exclude-trigger");
+    trigger?.setAttribute("aria-expanded", "false");
+  });
+}
+
+function createExcludeMenu(id: string): HTMLElement {
+  const menu = document.createElement("div");
+  menu.className = "exclude-menu";
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "btn-icon exclude-trigger";
+  trigger.title = EXCLUDE_POPOVER_TITLE;
+  trigger.setAttribute("aria-label", EXCLUDE_POPOVER_TITLE);
+  trigger.setAttribute("aria-haspopup", "true");
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.innerHTML = excludeIcon;
+
+  const panel = document.createElement("div");
+  panel.className = "exclude-popover";
+  panel.hidden = true;
+  panel.setAttribute("role", "group");
+  panel.setAttribute("aria-label", EXCLUDE_POPOVER_TITLE);
+
+  const title = document.createElement("div");
+  title.className = "exclude-title";
+  title.textContent = EXCLUDE_POPOVER_TITLE;
+
+  const checks = document.createElement("div");
+  checks.className = "exclude-checks";
+  for (const def of EXCLUDE_OPTION_DEFS) {
+    const wrap = document.createElement("label");
+    wrap.className = "exclude-check";
+    wrap.title = `${def.label}を除外する`;
+
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = excludeOptionsFor(id)[def.key];
+    input.addEventListener("change", () => {
+      const next = { ...excludeOptionsFor(id) };
+      next[def.key] = input.checked;
+      excludeOptionsById.set(id, next);
+    });
+
+    const text = document.createElement("span");
+    text.textContent = def.label;
+
+    wrap.append(input, text);
+    checks.append(wrap);
+  }
+
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeAllExcludeMenus();
+    closeAllTargetPopovers();
+    const willOpen = panel.hidden;
+    panel.hidden = !willOpen;
+    trigger.setAttribute("aria-expanded", willOpen ? "true" : "false");
+  });
+
+  panel.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+
+  panel.append(title, checks);
+  menu.append(trigger, panel);
+  return menu;
+}
+
 function createConfigRow(id: string, config: ExportConfig, index: number): HTMLElement {
   const row = document.createElement("div");
   row.className = "config-row";
@@ -362,7 +457,13 @@ function renderList(): void {
     const head = document.createElement("div");
     head.className = "result-head";
     const nameInput = createNameInput(item);
-    head.append(check, thumb, nameInput, createAddButton(item.id));
+    head.append(
+      check,
+      thumb,
+      nameInput,
+      createExcludeMenu(item.id),
+      createAddButton(item.id)
+    );
 
     const configBox = document.createElement("div");
     configBox.className = "config-box";
@@ -412,6 +513,18 @@ rescanBtn.addEventListener("click", () => {
   postToPlugin({ type: "SCAN_TARGET" });
 });
 
+document.addEventListener(
+  "click",
+  (event) => {
+    const target = event.target as Element | null;
+    if (target && target.closest?.(".exclude-menu")) {
+      return;
+    }
+    closeAllExcludeMenus();
+  },
+  true
+);
+
 exportAllBtn.addEventListener("click", () => {
   const targets = items.filter((item) => checkedIds.has(item.id));
   if (targets.length === 0) {
@@ -421,7 +534,12 @@ exportAllBtn.addEventListener("click", () => {
   const requests: ExportRequest[] = [];
   for (const item of targets) {
     for (const config of configsFor(item.id)) {
-      requests.push({ id: item.id, format: config.format, scale: config.scale });
+      requests.push({
+        id: item.id,
+        format: config.format,
+        scale: config.scale,
+        options: excludeOptionsFor(item.id),
+      });
     }
   }
   if (requests.length === 0) {
@@ -470,6 +588,11 @@ window.onmessage = (event: MessageEvent) => {
     for (const id of [...configsByNode.keys()]) {
       if (!valid.has(id)) {
         configsByNode.delete(id);
+      }
+    }
+    for (const id of [...excludeOptionsById.keys()]) {
+      if (!valid.has(id)) {
+        excludeOptionsById.delete(id);
       }
     }
     for (const id of [...rowErrorById.keys()]) {

@@ -27,11 +27,32 @@ export interface ExportConfig {
   scale: number;
 }
 
+/**
+ * チェック項目の書き出し除外設定（行ごと）。RBはデフォルトオン＝除外。
+ * 書き出し時に対象プロパティを除去したクローンを一時使用するため、
+ * 元レイヤー（exportSettings / 見た目）には影響しない。
+ */
+export interface ExportOptions {
+  /** true の場合、行ノードのエフェクトを書き出しに含めない。 */
+  excludeEffects: boolean;
+  /** true の場合、行ノードの角丸を書き出しに含めない。 */
+  excludeCornerRadius: boolean;
+  /** true の場合、行ノードの線（strokes）を書き出しに含めない。 */
+  excludeStrokes: boolean;
+}
+
+export const DEFAULT_EXCLUDE_OPTIONS: ExportOptions = {
+  excludeEffects: true,
+  excludeCornerRadius: true,
+  excludeStrokes: true,
+};
+
 export interface ExportRequest {
   id: string;
   format: ExportFormat;
   /** 書き出し倍率。1 = 等倍。ラスター形式（PNG/JPG）のみ有効。 */
   scale: number;
+  options: ExportOptions;
 }
 
 export interface ExportResultItem {
