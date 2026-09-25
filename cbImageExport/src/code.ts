@@ -291,7 +291,7 @@ async function scanTarget(): Promise<void> {
     items,
     message:
       items.length === 0
-        ? "表示中の画像が見つかりませんでした"
+        ? "表示中の画像やエクスポート設定のあるレイヤーが見つかりませんでした"
         : undefined,
   });
 }

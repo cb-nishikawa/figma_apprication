@@ -608,8 +608,8 @@ function renderList(): void {
     const li = document.createElement("li");
     li.className = "empty";
     li.textContent = statusEl.hidden
-      ? "まだ画像がありません"
-      : statusEl.textContent || "まだ画像がありません";
+      ? "まだ画像やエクスポート設定のあるレイヤーがありません"
+      : statusEl.textContent || "まだ画像やエクスポート設定のあるレイヤーがありません";
     resultsEl.appendChild(li);
     selectAllEl.checked = false;
     exportAllBtn.disabled = true;

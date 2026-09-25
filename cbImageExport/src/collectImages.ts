@@ -110,6 +110,20 @@ function isImageSource(node: SceneNode): boolean {
   return !isMaskNode(node) && hasImageFill(node) && "exportAsync" in node;
 }
 
+/**
+ * Is the node a non-image layer that has Figma-side export settings (shapes,
+ * icons, groups, vectors, text, ...)? It becomes its own list row without any
+ * container resolution (unlike image sources).
+ */
+function isExportSettingSource(node: SceneNode): boolean {
+  return (
+    !isImageSource(node) &&
+    "exportSettings" in node &&
+    "exportAsync" in node &&
+    node.exportSettings.length > 0
+  );
+}
+
 // ---- temporary diagnostic helpers (DEBUG only) ----
 
 function debugRead<T>(label: string, fn: () => T): string {
@@ -216,7 +230,8 @@ function dumpDiagnostics(roots: SceneNode[]): void {
  * - a mask container (any image inside it → the container)
  * - a clipsContent ancestor container (frame / component / instance / slot)
  *   (any image inside it → that container)
- * - or an individual image source node
+ * - an individual image source node
+ * - a non-image layer that has Figma-side export settings (its own row)
  *
  * Uses findAll (not manual child recursion) so that content inside
  * instances / slots is reliably included.
@@ -257,6 +272,36 @@ export function collectImageTargets(roots: SceneNode[]): SceneNode[] {
       }
       if (!byId.has(row.id)) {
         byId.set(row.id, row);
+      }
+    }
+
+    // 第 2 パス: Figma の export settings を持つ画像以外のレイヤー
+    //（図形・アイコンなど）を、ノード自身の行として追加する。
+    const exportSources: SceneNode[] = [];
+    if (isExportSettingSource(root)) {
+      exportSources.push(root);
+    }
+    if ("findAll" in root) {
+      for (const node of (root as ChildrenMixin).findAll(isExportSettingSource)) {
+        exportSources.push(node);
+      }
+    }
+    for (const node of exportSources) {
+      if (rootIds.has(node.id)) {
+        if (DEBUG) {
+          console.log(
+            `[cbImageExport][DEBUG] export-setting ${node.type} "${node.name}" (${node.id}) EXCLUDED (selected frame itself)`
+          );
+        }
+        continue;
+      }
+      if (DEBUG) {
+        console.log(
+          `[cbImageExport][DEBUG] export-setting ${node.type} "${node.name}" (${node.id}) -> row (itself)`
+        );
+      }
+      if (!byId.has(node.id)) {
+        byId.set(node.id, node);
       }
     }
   }
