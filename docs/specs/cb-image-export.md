@@ -38,11 +38,15 @@
   - フォルダ選択 API が使えない環境（Figma デスクトップアプリ等）では、全結果を **ZIP（`cbImageExport-時刻.zip`）にまとめて 1 ファイルでダウンロード**（`fflate` 圧縮・重複名は `_2` 等で一意化）
   - ファイル名はサイズが `1x` 以外のとき `レイヤー名_<サイズ>.ext`（例: `_2x` / `_512w` / `_0.5x`）。`1x` は `レイヤー名.ext`。SVG / PDF はサイズ指定が効かないためサフィックスなし
 - サイズ入力（倍率・寸法）は SVG / PDF では**非活性**（`disabled`）。ラスタ形式に戻すと入力値は保持され編集可能
-- 形式は PNG / JPG / SVG / PDF / **WEBP**
-  - WEBP は Figma の `exportSettings` に無いため、PNG でレンダリング → UI 側で `canvas.toBlob("image/webp")` に変換して保存
-  - **圧縮率（%）入力**を形式の右に表示（PNG / JPG / WEBP のみ。既定 92、1〜100）。JPG / WEBP は `canvas.toBlob(mime, q/100)`、PNG は可逆のため **色数削減（median-cut + Floyd–Steinberg ディザリング + 自前パレット PNG エンコーダ）** で `(256 × q/100)` 色へ量子化して実圧縮（q=100 はそのまま）
-  - PNG / JPG / WEBP / 品質はレイヤーの `exportSettings` に表現できない部分があるため、対象フレーム内の **1 つのセンチネルコンテナ `__cb_export__`**（0×0・`visible=false` / `locked=true` / 塗りなし）に集約して永続化
-    - 中身は 0×0 矩形のセンチネル `__cfg__|<形式>|<行id>|<サイズ>|<品質>`（WEBP は常時、PNG/JPG は品質付き設定時）。設定変更で upsert / 解除で削除
+- 形式は PNG / JPG / SVG / PDF / **WEBP** / **AVIF**
+  - WEBP / AVIF は Figma の `exportSettings` に無いため、PNG でレンダリングしてから UI 側で変換して保存
+    - WEBP / JPG は `canvas.toBlob(mime, q/100)`（Chromium は対応 MIME のみ正しくエンコードし、非対応 MIME は**静かに PNG へフォールバック**するため、出力 MIME を検証して不一致ならエラー）
+    - AVIF は **libavif の WASM（`@jsquash/avif`）** を base64 インラインで同梱し、`WebAssembly` で実エンコード（`canvas.toBlob("image/avif")` は Chromium 非対応で PNG 化するため不使用）。出力が `ftypavif` ブランドかを検証
+  - **圧縮率（%）入力**を形式の右に表示（PNG / JPG / WEBP / AVIF のみ。1〜100）。JPG / WEBP は既定 92 で `canvas.toBlob(mime, q/100)`、AVIF は既定 92 で WASM エンコードの `quality`（q=100 は **lossless**）、PNG は可逆のため**既定 100（無劣化・量子化なし）**とし、**明示的に下げた場合のみ** 高品質量子化で `(256 × q/100)` 色へ変換して実圧縮
+    - PNG 量子化は γ 線形化の**立方根（CIE-L* 近似）** 空間で 5bit ヒストグラム → k-means++ + Lloyd 収束でパレット構築し、プレマルチ立方根空間の **Floyd–Steinberg（蛇行・2 行バッファ）** でディザリング。ユニーク色 ≤ 色数なら**完全一致パレット**で量子化・ディザなし
+    - `png.ts` は書き出し本体を DOM 非依存の純粋関数（`encodeQuantized` / `quantizeImageData`）とし、エンコードは自前パレット PNG エンコーダ（CRC-32 自前実装・deflate は fflate）
+  - PNG / JPG / WEBP / AVIF / 品質はレイヤーの `exportSettings` に表現できない部分があるため、対象フレーム内の **1 つのセンチネルコンテナ `__cb_export__`**（0×0・`visible=false` / `locked=true` / 塗りなし）に集約して永続化
+    - 中身は 0×0 矩形のセンチネル `__cfg__|<形式>|<行id>|<サイズ>|<品質>`（WEBP / AVIF は常時、PNG/JPG は**品質を明示設定したときのみ**）。設定変更で upsert / 解除で削除
     - 再スキャン時はセンチネルが同一形式のレイヤー設定を上書きして**品質を復元**し、行が消えた項目や旧 `__cb_webp__` レイヤーは掃除
 
 ## ホバーハイライト

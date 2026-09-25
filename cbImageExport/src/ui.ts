@@ -20,6 +20,7 @@ import {
   EXPORT_FORMATS,
 } from "./types";
 import { colorsForQuality, quantizePng } from "./png";
+import { avifEncode } from "./avif";
 import { zipEntries, type ZipEntry } from "./zip";
 
 const MIN_UI_HEIGHT = 320;
@@ -28,7 +29,6 @@ const MAX_UI_HEIGHT = 900;
 const DEFAULT_CONFIG: ExportConfig = {
   format: "PNG",
   constraint: { ...DEFAULT_EXPORT_CONSTRAINT },
-  quality: DEFAULT_QUALITY,
 };
 
 const targetPickerRoot = document.getElementById(
@@ -178,6 +178,8 @@ function extFor(format: ExportFormat): string {
       return "pdf";
     case "WEBP":
       return "webp";
+    case "AVIF":
+      return "avif";
     default:
       return "png";
   }
@@ -230,27 +232,28 @@ async function bytesForResult(
   if (result.format === "WEBP") {
     return canvasEncode(result.bytes!, "image/webp", quality / 100);
   }
+  if (result.format === "AVIF") {
+    return avifEncode(await pngToImageData(result.bytes!), quality);
+  }
   if (result.format === "PNG" && quality < 100) {
     return quantizePng(result.bytes!, colorsForQuality(quality));
   }
   return new Uint8Array(result.bytes!);
 }
 
-/** 圧縮率（%）を設定から取得。未設定は既定値。 */
-function qualityFor(id: string, format: ExportFormat): number {
-  const config = configsFor(id).find((c) => c.format === format);
-  return config?.quality ?? DEFAULT_QUALITY;
+/** 圧縮率（%）を設定から取得。未設定は形式ごとの既定値。 */
+function defaultQualityFor(format: ExportFormat): number {
+  // PNG は無劣化画像なので、明示指定が無ければ 100（量子化なし）。
+  return format === "PNG" ? 100 : DEFAULT_QUALITY;
 }
 
-/**
- * Decode PNG bytes drawn from Figma and re-encode with the requested raster
- * codec / quality (JPEG and WebP; Figma has no quality knob for either).
- */
-async function canvasEncode(
-  pngBytes: number[],
-  mime: string,
-  quality: number
-): Promise<Uint8Array<ArrayBuffer>> {
+function qualityFor(id: string, format: ExportFormat): number {
+  const config = configsFor(id).find((c) => c.format === format);
+  return config?.quality ?? defaultQualityFor(format);
+}
+
+/** Figma が出力した PNG バイトをデコードして RGBA の ImageData にする。 */
+async function pngToImageData(pngBytes: number[]): Promise<ImageData> {
   const blob = new Blob([new Uint8Array(pngBytes)], { type: "image/png" });
   const bitmap = await createImageBitmap(blob);
   const canvas = document.createElement("canvas");
@@ -266,6 +269,28 @@ async function canvasEncode(
   } finally {
     bitmap.close();
   }
+  return ctx.getImageData(0, 0, canvas.width, canvas.height);
+}
+
+/**
+ * Decode PNG bytes drawn from Figma and re-encode with the requested raster
+ * codec / quality (JPEG / WebP; AVIF は avifEncode を使用する)。
+ * Chromium は非対応 MIME を静かに PNG へフォールバックするため、出力 MIME を検証する。
+ */
+async function canvasEncode(
+  pngBytes: number[],
+  mime: string,
+  quality: number
+): Promise<Uint8Array<ArrayBuffer>> {
+  const imageData = await pngToImageData(pngBytes);
+  const canvas = document.createElement("canvas");
+  canvas.width = imageData.width;
+  canvas.height = imageData.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error("canvas 2D を取得できません");
+  }
+  ctx.putImageData(imageData, 0, 0);
   const out = await new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
       (b) =>
@@ -274,6 +299,11 @@ async function canvasEncode(
       quality
     );
   });
+  if (out.type !== mime) {
+    throw new Error(
+      `画像変換の出力形式が想定と異なります（${out.type || "不明"}）。対応していない形式です`
+    );
+  }
   return new Uint8Array(await out.arrayBuffer());
 }
 
@@ -502,7 +532,7 @@ function createQualityInput(
   input.min = "1";
   input.max = "100";
   input.step = "1";
-  input.value = String(config.quality ?? DEFAULT_QUALITY);
+  input.value = String(config.quality ?? defaultQualityFor(config.format));
   input.setAttribute("aria-label", "圧縮率");
   input.title = "圧縮率（%）";
   input.addEventListener("click", (event) => event.stopPropagation());
@@ -524,7 +554,9 @@ function createQualityInput(
 }
 
 function updateQualityVisibility(qualityWrap: HTMLDivElement, format: ExportFormat): void {
-  const visible = format === "PNG" || format === "JPG" || format === "WEBP";
+  const visible =
+    format === "PNG" || format === "JPG" || format === "WEBP" ||
+    format === "AVIF";
   qualityWrap.style.display = visible ? "inline-flex" : "none";
 }
 
@@ -552,6 +584,12 @@ function createConfigRow(id: string, config: ExportConfig, index: number): HTMLE
     config.format = next;
     updateConstraintDisabled(size, next);
     updateQualityVisibility(quality, next);
+    if (config.quality == null) {
+      const input = quality.querySelector("input");
+      if (input) {
+        input.value = String(defaultQualityFor(next));
+      }
+    }
     syncExportSettings(id);
   });
   updateConstraintDisabled(size, config.format);

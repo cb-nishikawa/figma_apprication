@@ -315,9 +315,9 @@ function exportSettings(
       contentsOnly: true,
     };
   }
-  if (format === "PNG" || format === "WEBP") {
-    // WEBP is not supported by Figma's exportSettings, so it is rendered as
-    // PNG here and transcoded to WebP in the UI.
+  if (format === "PNG" || format === "WEBP" || format === "AVIF") {
+    // WEBP / AVIF are not supported by Figma's exportSettings, so they are
+    // rendered as PNG here and transcoded in the UI.
     return {
       format: "PNG",
       constraint: { type: safe.type, value: safe.value },
@@ -338,15 +338,16 @@ function exportSettings(
 
 /**
  * Settings actually used to render a row in the plugin. Raster formats whose
- * final encoding happens in the UI (JPG quality / WebP / PNG quantization)
- * are rendered as PNG here; SVG and PDF use their own settings.
+ * final encoding happens in the UI (JPG quality / WebP / AVIF / PNG
+ * quantization) are rendered as PNG here; SVG and PDF use their own settings.
  */
 function renderSettings(
   format: ExportFormat,
   constraint?: ExportConstraint
 ): ExportSettings {
   const rasterToPng =
-    format === "PNG" || format === "JPG" || format === "WEBP";
+    format === "PNG" || format === "JPG" || format === "WEBP" ||
+    format === "AVIF";
   return exportSettings(rasterToPng ? "PNG" : format, constraint);
 }
 
@@ -566,7 +567,7 @@ interface SentinelInfo {
 
 function parseSentinelName(name: string): SentinelInfo | null {
   const match = name.match(
-    /^__cfg__\|(PNG|JPG|WEBP)\|(.+)\|([0-9.]+[whx])\|([0-9]{1,3})$/
+    /^__cfg__\|(PNG|JPG|WEBP|AVIF)\|(.+)\|([0-9.]+[whx])\|([0-9]{1,3})$/
   );
   if (!match) {
     return null;
@@ -583,7 +584,7 @@ function parseSentinelName(name: string): SentinelInfo | null {
  * Sentinel layers live inside a single hidden+locked container frame
  * ("__cb_export__") under the scanned target frame so the Layers panel stays
  * clean. Each 0x0 rectangle encodes one config that Figma's exportSettings
- * cannot carry (WEBP is not a format; PNG/JPG never carry a quality value).
+ * cannot carry (WEBP / AVIF are not formats; PNG/JPG never carry a quality).
  * On rescan the configs are restored (a sentinel overrides the same-format
  * layer entry, e.g. to keep its quality) and orphans/legacy layers are swept.
  */
@@ -662,8 +663,9 @@ async function syncExportSentinels(
   const toPersist = configs.filter(
     (config) =>
       config.format === "WEBP" ||
-      config.format === "JPG" ||
-      config.format === "PNG"
+      config.format === "AVIF" ||
+      ((config.format === "JPG" || config.format === "PNG") &&
+        config.quality != null)
   );
   if (toPersist.length === 0) {
     if (container && container.children.length === 0) {
@@ -693,8 +695,8 @@ async function syncExportSentinels(
 /**
  * Reflect the plugin's export configs to the actual Figma layer
  * (node.exportSettings). Empty configs clear the layer's export settings.
- * WEBP cannot be written to the layer, and PNG/JPG quality cannot either;
- * these are persisted as sentinel layers instead.
+ * WEBP / AVIF cannot be written to the layer, and PNG/JPG quality cannot
+ * either; these are persisted as sentinel layers instead.
  */
 async function applyExportSettings(
   nodeId: string,
@@ -706,7 +708,9 @@ async function applyExportSettings(
   }
   const scene = node as SceneNode;
   scene.exportSettings = configs
-    .filter((config) => config.format !== "WEBP")
+    .filter(
+      (config) => config.format !== "WEBP" && config.format !== "AVIF"
+    )
     .map((config) => exportSettings(config.format, config.constraint));
   await syncExportSentinels(nodeId, configs);
 }

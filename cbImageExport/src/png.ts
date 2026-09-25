@@ -2,9 +2,14 @@ import { zlibSync } from "fflate";
 
 /**
  * PNG の「圧縮率（%）」は色数削減（量子化）で実現する。可逆画像のため
- * canvas の toBlob では品質引数が効かず、ここで median-cut でパレットを
- * 作って Floyd–Steinberg でディザリングし、自前エンコーダで書き出す。
- * 圧縮（deflate）は既存依存の fflate を利用する。
+ * canvas の toBlob では品質引数が効かない。
+ *
+ * 量子化は視覚品質を優先した実装:
+ *  - ユニーク色 ≤ maxColors なら量子化・ディザリングを行わず完全一致でパレット化
+ *  - パレットは γ 線形化 + プレマルチプライド（α 込み）空間の
+ *    重み付き k-means（k-means++ シード + Lloyd 収束）で構築
+ *  - ディザリングはプレマルチ線形空間の Floyd–Steinberg（蛇行スキャン・2 行バッファ）
+ * 伸張（deflate）は既存依存の fflate を利用する。
  */
 
 interface RGBA {
@@ -50,224 +55,432 @@ export async function quantizePng(
   return encodeQuantized(image.data, image.width, image.height, maxColors);
 }
 
-function encodeQuantized(
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-  maxColors: number
-): Uint8Array<ArrayBuffer> {
-  const count = width * height;
-  if (count === 0) {
-    return new Uint8Array();
-  }
-  const px: RGBA[] = [];
-  for (let i = 0; i < count; i++) {
-    const a = data[i * 4 + 3];
-    if (a > 0) {
-      px.push({ r: data[i * 4], g: data[i * 4 + 1], b: data[i * 4 + 2], a });
-    }
-  }
-  if (px.length === 0) {
-    const palette: RGBA[] = [{ r: 0, g: 0, b: 0, a: 0 }];
-    return encodePng({ palette, indices: new Uint8Array(count), width, height });
-  }
-  const palette = medianCut(px, maxColors);
-  const hasTransparent = count !== px.length;
-  if (hasTransparent && !palette.some((p) => p.a === 0)) {
-    palette.push({ r: 0, g: 0, b: 0, a: 0 });
-  }
-  const indices = floydSteinberg(data, width, height, palette);
-  return encodePng({ palette, indices, width, height });
+// ---------- 色空間変換 ----------
+
+/**
+ * 量子化・距離・ディザは「線形の立方根（CIE-L* 近似）」空間で行う。
+ * 線形空間は暗部のベクトルが小さく暗色の判別が潰れるため、
+ * γ 線形化に加えて立方根で圧縮し、暗部も含め視覚的な差を均等に扱う。
+ */
+const LIN_LUT: Float64Array = new Float64Array(256);
+const CUBE_LUT: Float64Array = new Float64Array(256);
+for (let c = 0; c < 256; c++) {
+  const v = c / 255;
+  LIN_LUT[c] =
+    v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  CUBE_LUT[c] = Math.cbrt(LIN_LUT[c]);
 }
 
-function medianCut(px: RGBA[], maxColors: number): RGBA[] {
-  const arr = px.map((_, i) => i);
-  const boxes: { start: number; end: number }[] = [{ start: 0, end: arr.length }];
-  while (boxes.length < maxColors) {
-    let bestBox = -1;
-    let bestRange = -1;
-    let bestInfo: BoxInfo | null = null;
-    for (let i = 0; i < boxes.length; i++) {
-      const box = boxes[i];
-      if (box.end - box.start < 2) {
-        continue;
-      }
-      const info = boxInfo(px, arr, box.start, box.end);
-      const range = Math.max(
-        info.rMax - info.rMin,
-        info.gMax - info.gMin,
-        info.bMax - info.bMin
-      );
-      if (range > bestRange) {
-        bestRange = range;
-        bestBox = i;
-        bestInfo = info;
-      }
-    }
-    if (bestBox < 0 || !bestInfo) {
-      break;
-    }
-    const box = boxes[bestBox];
-    const channel = channelOfLargestRange(bestInfo);
-    const sub = arr.slice(box.start, box.end);
-    sub.sort((x, y) => {
-      const dx = px[x];
-      const dy = px[y];
-      const diff = channelValue(dx, channel) - channelValue(dy, channel);
-      return diff !== 0 ? diff : dx.a - dy.a;
-    });
-    for (let j = 0; j < sub.length; j++) {
-      arr[box.start + j] = sub[j];
-    }
-    const mid = box.start + Math.floor((box.end - box.start) / 2);
-    boxes.splice(
-      bestBox,
-      1,
-      { start: box.start, end: mid },
-      { start: mid, end: box.end }
-    );
+/** 立方根空間の値（プレマルチ解除済み・線形 [0,1]）→ sRGB byte。 */
+function cubeToByte(v: number): number {
+  const clamped = v < 0 ? 0 : v > 1 ? 1 : v;
+  const lin = clamped * clamped * clamped;
+  if (lin <= 0.0031308) {
+    return clamp8(lin * 12.92 * 255);
   }
-  return boxes.map((box) => boxAverage(px, arr, box.start, box.end));
+  return clamp8((1.055 * Math.pow(lin, 1 / 2.4) - 0.055) * 255);
 }
 
-interface BoxInfo {
-  rMin: number;
-  gMin: number;
-  bMin: number;
-  rMax: number;
-  gMax: number;
-  bMax: number;
-}
+// α 差分の距離重み（プレマルチ空間の合成色差に α 差を弱く加味）。0〜1。
+const ALPHA_DIST_WEIGHT = 0.15;
 
-function boxInfo(px: RGBA[], arr: number[], start: number, end: number): BoxInfo {
-  let rMin = 255, gMin = 255, bMin = 255;
-  let rMax = 0, gMax = 0, bMax = 0;
-  for (let i = start; i < end; i++) {
-    const p = px[arr[i]];
-    if (p.r < rMin) rMin = p.r;
-    if (p.g < gMin) gMin = p.g;
-    if (p.b < bMin) bMin = p.b;
-    if (p.r > rMax) rMax = p.r;
-    if (p.g > gMax) gMax = p.g;
-    if (p.b > bMax) bMax = p.b;
-  }
-  return { rMin, gMin, bMin, rMax, gMax, bMax };
-}
-
-type Channel = "r" | "g" | "b";
-
-function channelOfLargestRange(info: BoxInfo): Channel {
-  const r = info.rMax - info.rMin;
-  const g = info.gMax - info.gMin;
-  const b = info.bMax - info.bMin;
-  if (r >= g && r >= b) return "r";
-  if (g >= r && g >= b) return "g";
-  return "b";
-}
-
-function channelValue(p: RGBA, channel: Channel): number {
-  return p[channel];
-}
-
-function boxAverage(px: RGBA[], arr: number[], start: number, end: number): RGBA {
-  let r = 0, g = 0, b = 0, a = 0;
-  for (let i = start; i < end; i++) {
-    const p = px[arr[i]];
-    r += p.r;
-    g += p.g;
-    b += p.b;
-    a += p.a;
-  }
-  const n = end - start;
-  return { r: r / n, g: g / n, b: b / n, a: a / n };
-}
-
-function floydSteinberg(
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-  palette: RGBA[]
-): Uint8Array {
-  const size = width * height;
-  const r = new Float64Array(size);
-  const g = new Float64Array(size);
-  const b = new Float64Array(size);
-  const a = new Float64Array(size);
-  for (let i = 0; i < size; i++) {
-    r[i] = data[i * 4];
-    g[i] = data[i * 4 + 1];
-    b[i] = data[i * 4 + 2];
-    a[i] = data[i * 4 + 3];
-  }
-  const out = new Uint8Array(size);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const k = y * width + x;
-      const pi = nearestPalette(palette, r[k], g[k], b[k], a[k]);
-      out[k] = pi;
-      const p = palette[pi];
-      if (a[k] === 0) {
-        continue;
-      }
-      diffuse(r, r[k] - p.r, width, height, x, y);
-      diffuse(g, g[k] - p.g, width, height, x, y);
-      diffuse(b, b[k] - p.b, width, height, x, y);
-    }
-  }
-  return out;
-}
-
-function diffuse(
-  channel: Float64Array,
-  err: number,
-  width: number,
-  height: number,
-  x: number,
-  y: number
-): void {
-  const apply = (xx: number, yy: number, weight: number): void => {
-    if (xx < 0 || xx >= width || yy < 0 || yy >= height) {
-      return;
-    }
-    channel[yy * width + xx] += err * weight;
-  };
-  apply(x + 1, y, 7 / 16);
-  apply(x - 1, y + 1, 3 / 16);
-  apply(x, y + 1, 5 / 16);
-  apply(x + 1, y + 1, 1 / 16);
-}
-
-function nearestPalette(palette: RGBA[], r: number, g: number, b: number, a: number): number {
-  if (a === 0) {
-    for (let i = 0; i < palette.length; i++) {
-      if (palette[i].a === 0) return i;
-    }
-  }
-  let best = 0;
-  let bestD = Infinity;
-  for (let i = 0; i < palette.length; i++) {
-    const p = palette[i];
-    const dr = p.r - r;
-    const dg = p.g - g;
-    const db = p.b - b;
-    const da = p.a - a;
-    const d = dr * dr + dg * dg + db * db + da * da * 0.25;
-    if (d < bestD) {
-      bestD = d;
-      best = i;
-    }
-  }
-  return best;
-}
-
-interface EncodeData {
+export interface QuantizedResult {
   palette: RGBA[];
   indices: Uint8Array;
   width: number;
   height: number;
 }
 
-function encodePng({ palette, indices, width, height }: EncodeData): Uint8Array<ArrayBuffer> {
+/** RGBA を量子化してパレット PNG バイトへ。テスト（Node）でも利用できる純粋関数。 */
+export function encodeQuantized(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  maxColors: number
+): Uint8Array<ArrayBuffer> {
+  const result = quantizeImageData(data, width, height, maxColors);
+  return encodePng(result);
+}
+
+/**
+ * RGBA 画像データを maxColors 色以下へ量子化する。
+ * - ユニーク色 ≤ maxColors: 量子化なし（完全一致パレット）
+ * - それ以外: 5bit ヒストグラムの k-means パレット + プレマルチ空間 F–S ディザリング
+ */
+export function quantizeImageData(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  maxColors: number
+): QuantizedResult {
+  const count = width * height;
+  if (count === 0) {
+    return { palette: [], indices: new Uint8Array(), width, height };
+  }
+  const exact = collectExact(data, count, maxColors);
+  if (!exact.clustered) {
+    return exactPalette(data, count, exact, width, height);
+  }
+  const transparent = exact.hasTransparent;
+  const budget = transparent ? maxColors - 1 : maxColors;
+  const histogram = buildHistogram(data, count);
+  const centers = cluster(histogram, Math.max(1, budget));
+  const palette = centersToPalette(centers);
+  if (transparent) {
+    palette.push({ r: 0, g: 0, b: 0, a: 0 });
+  }
+  const indices = dither(data, width, height, palette);
+  return { palette, indices, width, height };
+}
+
+// ---------- ユニーク色の収集 ----------
+
+interface ExactInfo {
+  colors: number[];
+  colorsKeyed: Map<number, number>;
+  hasTransparent: boolean;
+  clustered: boolean;
+}
+
+function collectExact(
+  data: Uint8ClampedArray,
+  count: number,
+  maxColors: number
+): ExactInfo {
+  const colorsKeyed = new Map<number, number>();
+  const colors: number[] = [];
+  let hasTransparent = false;
+  let clustered = false;
+  for (let i = 0; i < count; i++) {
+    const off = i * 4;
+    const k = packColor(data[off], data[off + 1], data[off + 2], data[off + 3]);
+    if (data[off + 3] === 0) {
+      hasTransparent = true;
+    }
+    if (!colorsKeyed.has(k)) {
+      if (colors.length >= maxColors) {
+        clustered = true;
+        continue;
+      }
+      colorsKeyed.set(k, colors.length);
+      colors.push(k);
+    }
+  }
+  return { colors, colorsKeyed, hasTransparent, clustered };
+}
+
+function exactPalette(
+  data: Uint8ClampedArray,
+  count: number,
+  exact: ExactInfo,
+  width: number,
+  height: number
+): QuantizedResult {
+  const palette = exact.colors.map((k) => unpackColor(k));
+  const indices = new Uint8Array(count);
+  const keyed = exact.colorsKeyed;
+  for (let i = 0; i < count; i++) {
+    const off = i * 4;
+    indices[i] = keyed.get(
+      packColor(data[off], data[off + 1], data[off + 2], data[off + 3])
+    )!;
+  }
+  return { palette, indices, width, height };
+}
+
+function packColor(r: number, g: number, b: number, a: number): number {
+  return (r | (g << 8) | (b << 16) | (a << 24)) >>> 0;
+}
+
+function unpackColor(k: number): RGBA {
+  return { r: k & 0xff, g: (k >>> 8) & 0xff, b: (k >>> 16) & 0xff, a: k >>> 24 };
+}
+
+// ---------- ヒストグラム（5bit / チャンネル、プレマルチ線形の合算） ----------
+
+interface HistBin {
+  count: number;
+  sumPr: number;
+  sumPg: number;
+  sumPb: number;
+  sumA: number;
+}
+
+/** プレマルチ線形空間（各プレマルチ ρ∈[0,1]、α∈[0,1]）の中心。 */
+interface Center {
+  pr: number;
+  pg: number;
+  pb: number;
+  a: number;
+}
+
+function buildHistogram(data: Uint8ClampedArray, count: number): HistBin[] {
+  const map = new Map<number, HistBin>();
+  for (let i = 0; i < count; i++) {
+    const off = i * 4;
+    const r = data[off];
+    const g = data[off + 1];
+    const b = data[off + 2];
+    const a = data[off + 3];
+    const key =
+      (r >> 3) |
+      ((g >> 3) << 5) |
+      ((b >> 3) << 10) |
+      ((a >> 3) << 15) |
+      (a === 0 ? 0x80000000 : 0);
+    const av = a / 255;
+    const bin = map.get(key);
+    if (bin) {
+      bin.count++;
+      bin.sumPr += CUBE_LUT[r] * av;
+      bin.sumPg += CUBE_LUT[g] * av;
+      bin.sumPb += CUBE_LUT[b] * av;
+      bin.sumA += av;
+    } else {
+      map.set(key, {
+        count: 1,
+        sumPr: CUBE_LUT[r] * av,
+        sumPg: CUBE_LUT[g] * av,
+        sumPb: CUBE_LUT[b] * av,
+        sumA: av,
+      });
+    }
+  }
+  return [...map.values()];
+}
+
+// ---------- k-means パレット構築 ----------
+
+function cluster(bins: HistBin[], maxColors: number): Center[] {
+  if (bins.length === 0) {
+    return [];
+  }
+  const k = Math.min(maxColors, bins.length);
+  const rep: Center[] = bins.map((bin) => ({
+    pr: bin.sumPr / bin.count,
+    pg: bin.sumPg / bin.count,
+    pb: bin.sumPb / bin.count,
+    a: bin.sumA / bin.count,
+  }));
+  const assign = new Int32Array(bins.length).fill(-1);
+
+  // k-means++（決定的: count × minDist² が最大のビンをシードに追加）
+  let first = 0;
+  for (let i = 1; i < bins.length; i++) {
+    if (bins[i].count > bins[first].count) {
+      first = i;
+    }
+  }
+  const centers: Center[] = [rep[first]];
+  assign[first] = 0;
+  while (centers.length < k) {
+    let bestIdx = -1;
+    let bestScore = -1;
+    for (let i = 0; i < bins.length; i++) {
+      if (assign[i] >= 0) {
+        continue;
+      }
+      let dMin = Infinity;
+      for (let c = 0; c < centers.length; c++) {
+        const d = distRep(rep[i], centers[c]);
+        if (d < dMin) {
+          dMin = d;
+        }
+      }
+      const score = bins[i].count * dMin;
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx < 0) {
+      break;
+    }
+    centers.push(rep[bestIdx]);
+    assign[bestIdx] = centers.length - 1;
+  }
+
+  // Lloyd 収束
+  const sums = new Float64Array(centers.length * 4);
+  const counts = new Float64Array(centers.length);
+  const MAX_ITERS = 12;
+  for (let iter = 0; iter < MAX_ITERS; iter++) {
+    sums.fill(0);
+    counts.fill(0);
+    let changed = false;
+    for (let i = 0; i < bins.length; i++) {
+      let best = 0;
+      let bestD = Infinity;
+      for (let c = 0; c < centers.length; c++) {
+        const d = distRep(rep[i], centers[c]);
+        if (d < bestD) {
+          bestD = d;
+          best = c;
+        }
+      }
+      if (assign[i] !== best) {
+        assign[i] = best;
+        changed = true;
+      }
+      sums[best * 4] += bins[i].sumPr;
+      sums[best * 4 + 1] += bins[i].sumPg;
+      sums[best * 4 + 2] += bins[i].sumPb;
+      sums[best * 4 + 3] += bins[i].sumA;
+      counts[best] += bins[i].count;
+    }
+    for (let c = 0; c < centers.length; c++) {
+      const n = counts[c];
+      if (n === 0) {
+        continue;
+      }
+      centers[c] = {
+        pr: sums[c * 4] / n,
+        pg: sums[c * 4 + 1] / n,
+        pb: sums[c * 4 + 2] / n,
+        a: sums[c * 4 + 3] / n,
+      };
+    }
+    if (!changed) {
+      break;
+    }
+  }
+  return centers;
+}
+
+function distRep(c: Center, p: Center): number {
+  const dr = c.pr - p.pr;
+  const dg = c.pg - p.pg;
+  const db = c.pb - p.pb;
+  const da = c.a - p.a;
+  return dr * dr + dg * dg + db * db + ALPHA_DIST_WEIGHT * da * da;
+}
+
+/** プレマルチ立方根中心をストレート RGBA に戻す。 */
+function centersToPalette(centers: Center[]): RGBA[] {
+  const palette: RGBA[] = [];
+  for (const c of centers) {
+    const aByte = clamp8(c.a * 255);
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    if (c.a > 0) {
+      const inv = 1 / c.a;
+      r = cubeToByte(c.pr * inv);
+      g = cubeToByte(c.pg * inv);
+      b = cubeToByte(c.pb * inv);
+    }
+    palette.push({ r, g, b, a: aByte });
+  }
+  return palette;
+}
+
+// ---------- ディザリング（プレマルチ線形・蛇行スキャン・2 行バッファ） ----------
+
+function dither(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  palette: RGBA[]
+): Uint8Array {
+  const size = width * height;
+  const out = new Uint8Array(size);
+  if (size === 0) {
+    return out;
+  }
+  const n = palette.length;
+  const palPr = new Float64Array(n);
+  const palPg = new Float64Array(n);
+  const palPb = new Float64Array(n);
+  const palA = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const p = palette[i];
+    const av = p.a / 255;
+    palPr[i] = CUBE_LUT[p.r] * av;
+    palPg[i] = CUBE_LUT[p.g] * av;
+    palPb[i] = CUBE_LUT[p.b] * av;
+    palA[i] = av;
+  }
+  const transparentIdx = palette.findIndex((p) => p.a === 0);
+
+  // 2 行分のエラーバッファ。レイアウト: [R row0, R row1, G row0, G row1, B row0, B row1]
+  const w = width;
+  const err = new Float64Array(w * 2 * 3);
+
+  for (let y = 0; y < height; y++) {
+    const curRow = y & 1;
+    const nxtRow = curRow ^ 1;
+    // 次の行のバッファを毎行クリア（前の行の拡散分が残っている）
+    err.fill(0, nxtRow * w, nxtRow * w + w);
+    err.fill(0, (2 + nxtRow) * w, (2 + nxtRow) * w + w);
+    err.fill(0, (4 + nxtRow) * w, (4 + nxtRow) * w + w);
+
+    const dir = (y & 1) === 0 ? 1 : -1;
+    const startX = dir === 1 ? 0 : width - 1;
+    const rowOff = y * width;
+
+    for (let xi = 0; xi < width; xi++) {
+      const x = startX + dir * xi;
+      const k = rowOff + x;
+      const off = k * 4;
+      const a = data[off + 3];
+      if (a === 0) {
+        out[k] = transparentIdx >= 0 ? transparentIdx : 0;
+        continue;
+      }
+      const av = a / 255;
+      const curBase = curRow * w + x;
+      let vpr = CUBE_LUT[data[off]] * av + err[curBase];
+      let vpg = CUBE_LUT[data[off + 1]] * av + err[(2 + curRow) * w + x];
+      let vpb = CUBE_LUT[data[off + 2]] * av + err[(4 + curRow) * w + x];
+
+      let best = 0;
+      let bestD = Infinity;
+      for (let i = 0; i < n; i++) {
+        const dr = vpr - palPr[i];
+        const dg = vpg - palPg[i];
+        const db = vpb - palPb[i];
+        const da = av - palA[i];
+        const d = dr * dr + dg * dg + db * db + ALPHA_DIST_WEIGHT * da * da;
+        if (d < bestD) {
+          bestD = d;
+          best = i;
+        }
+      }
+      out[k] = best;
+      vpr -= palPr[best];
+      vpg -= palPg[best];
+      vpb -= palPb[best];
+
+      // 蛇行スキャン: 進行方向の同段隣 + 次段に 3-5-1-7 型で拡散
+      const sib = x + dir; // 同段の「まだ未処理」側
+      if (sib >= 0 && sib < width) {
+        err[curBase + dir] += vpr * (7 / 16);
+        err[(2 + curRow) * w + sib] += vpg * (7 / 16);
+        err[(4 + curRow) * w + sib] += vpb * (7 / 16);
+      }
+      const back = x - dir;
+      if (back >= 0 && back < width) {
+        err[nxtRow * w + back] += vpr * (3 / 16);
+        err[(2 + nxtRow) * w + back] += vpg * (3 / 16);
+        err[(4 + nxtRow) * w + back] += vpb * (3 / 16);
+      }
+      err[nxtRow * w + x] += vpr * (5 / 16);
+      err[(2 + nxtRow) * w + x] += vpg * (5 / 16);
+      err[(4 + nxtRow) * w + x] += vpb * (5 / 16);
+      const fwd = x + dir;
+      if (fwd >= 0 && fwd < width) {
+        err[nxtRow * w + fwd] += vpr * (1 / 16);
+        err[(2 + nxtRow) * w + fwd] += vpg * (1 / 16);
+        err[(4 + nxtRow) * w + fwd] += vpb * (1 / 16);
+      }
+    }
+  }
+  return out;
+}
+
+// ---------- PNG 書き出し ----------
+
+function encodePng({ palette, indices, width, height }: QuantizedResult): Uint8Array<ArrayBuffer> {
   const plte = new Uint8Array(palette.length * 3);
   for (let i = 0; i < palette.length; i++) {
     plte[i * 3] = clamp8(palette[i].r);

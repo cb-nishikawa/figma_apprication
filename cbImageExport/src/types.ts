@@ -1,4 +1,4 @@
-export type ExportFormat = "PNG" | "JPG" | "SVG" | "PDF" | "WEBP";
+export type ExportFormat = "PNG" | "JPG" | "SVG" | "PDF" | "WEBP" | "AVIF";
 
 export const EXPORT_FORMATS: ExportFormat[] = [
   "PNG",
@@ -6,6 +6,7 @@ export const EXPORT_FORMATS: ExportFormat[] = [
   "SVG",
   "PDF",
   "WEBP",
+  "AVIF",
 ];
 
 export type FrameTargetKind = "SECTION" | "FRAME" | "INSTANCE" | "GROUP";
@@ -42,7 +43,7 @@ export const DEFAULT_EXPORT_CONSTRAINT: ExportConstraint = {
   value: 1,
 };
 
-/** 圧縮率の既定値（%）。PNG / JPG / WEBP に適用。 */
+/** 圧縮率の既定値（%）。PNG / JPG / WEBP / AVIF に適用。 */
 export const DEFAULT_QUALITY = 92;
 
 export interface ExportConfig {
