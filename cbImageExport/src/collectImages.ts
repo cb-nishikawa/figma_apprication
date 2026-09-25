@@ -236,6 +236,20 @@ function dumpDiagnostics(roots: SceneNode[]): void {
  * Uses findAll (not manual child recursion) so that content inside
  * instances / slots is reliably included.
  */
+/**
+ * ページ直下に置かれた、マスク・クリップで解決されない独立した画像を
+ * 収集する。対象フレーム配下の画像は祖先にフレームを持つため含まれない。
+ */
+export function collectFloatingImageTargets(page: PageNode): SceneNode[] {
+  const result: SceneNode[] = [];
+  for (const child of page.children) {
+    if (isImageSource(child) && resolveRow(child) === child) {
+      result.push(child);
+    }
+  }
+  return result;
+}
+
 export function collectImageTargets(roots: SceneNode[]): SceneNode[] {
   const byId = new Map<string, SceneNode>();
   const rootIds = new Set(roots.map((root) => root.id));
@@ -258,10 +272,16 @@ export function collectImageTargets(roots: SceneNode[]): SceneNode[] {
     for (const node of candidates) {
       const row = resolveRow(node);
       if (rootIds.has(row.id)) {
+        // 対象フレーム自身に解決された画像は枠として 1 行にできないため、
+        // 画像ノード自身を 1 行として追加する。ここに来るのはマスクや
+        // サブクリップフレームに解決されない（隠されていない）画像のみ。
         if (DEBUG) {
           console.log(
-            `[cbImageExport][DEBUG] candidate ${node.type} "${node.name}" (${node.id}) -> row ${row.type} "${row.name}" (${row.id}) EXCLUDED (selected frame itself)`
+            `[cbImageExport][DEBUG] candidate ${node.type} "${node.name}" (${node.id}) -> row ${row.type} "${row.name}" (${row.id}) EXCLUDED (selected frame itself) -> showing the image itself as a row instead`
           );
+        }
+        if (!byId.has(node.id)) {
+          byId.set(node.id, node);
         }
         continue;
       }
