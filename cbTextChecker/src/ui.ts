@@ -26,6 +26,7 @@ import type {
   KeywordQuery,
   OcrItem,
   PinTarget,
+  RecentTarget,
   SearchMode,
   TextMatch,
   TextNodeLike,
@@ -144,6 +145,8 @@ let compareTargets: PinTarget[] = [];
 let comparePairs: ComparePairUi[] = [emptyPairUi()];
 let imageTargets: PinTarget[] = [];
 let imageTargetId: string | null = null;
+/** 過去に選択した対象フレームの履歴（最大 20 件・直近が先頭）。 */
+let recentTargets: RecentTarget[] = [];
 let imageNodeId: string | null = null;
 let imageNodeName = "";
 let imageExportScale = 1;
@@ -179,6 +182,7 @@ function matchToHoverItem(match: TextMatch): HoverHighlightItem {
           id: ocrItem.id,
           exportScale: imageExportScale,
           poly: ocrItem.poly,
+          text: ocrItem.text,
         },
       };
     }
@@ -513,7 +517,7 @@ function openPickerForSlot(slot: SelectionSlot): void {
   setIgnorePopoverOpen(false);
   closeAllRowMenus();
   const picker = findPickerBySlot(slot);
-  picker?.openPopover();
+  picker?.openHistoryPopover();
 }
 
 function ocrToHighlightItems(items: OcrItem[] = ocrItems): HoverHighlightItem[] {
@@ -1030,6 +1034,7 @@ function createCompareSidePicker(
       return side === "A" ? pair.idA : pair.idB;
     },
     getTargets: () => compareTargets,
+    getRecent: () => recentTargets,
     onApplySelection: () => {
       setIgnorePopoverOpen(false);
       closeAllRowMenus();
@@ -1040,6 +1045,9 @@ function createCompareSidePicker(
       });
     },
     onPick: (id) => {
+      commitCompareNode(index, side, id);
+    },
+    onPickRecent: (id) => {
       commitCompareNode(index, side, id);
     },
   });
@@ -1808,6 +1816,7 @@ window.onmessage = (event: MessageEvent) => {
   if (msg.type === "PIN_TARGETS") {
     pinTargets = msg.targets;
     pinnedNodeId = msg.pinnedNodeId;
+    recentTargets = msg.recent;
     syncPinnedFromTargets();
     pinPicker?.refresh();
     return;
@@ -1815,6 +1824,7 @@ window.onmessage = (event: MessageEvent) => {
 
   if (msg.type === "COMPARE_STATE") {
     compareTargets = msg.targets;
+    recentTargets = msg.recent;
     suppressCompareSync = true;
     comparePairs = (msg.pairs.length > 0 ? msg.pairs : [{ idA: null, idB: null }]).map(
       (p) => ({
@@ -1830,6 +1840,7 @@ window.onmessage = (event: MessageEvent) => {
   if (msg.type === "IMAGE_STATE") {
     imageTargets = msg.targets;
     imageTargetId = msg.targetId;
+    recentTargets = msg.recent;
     if (imageTargetId && !getImageTarget()) {
       imageTargetId = null;
     }
@@ -1880,12 +1891,16 @@ function mountPinPicker(): void {
     getLabel: () => getPinnedTarget()?.label ?? "",
     getSelectedId: () => pinnedNodeId,
     getTargets: () => pinTargets,
+    getRecent: () => recentTargets,
     onApplySelection: () => {
       setIgnorePopoverOpen(false);
       closeAllRowMenus();
       postToPlugin({ type: "SET_PINNED_FROM_SELECTION" });
     },
     onPick: (id) => {
+      commitPinnedNode(id);
+    },
+    onPickRecent: (id) => {
       commitPinnedNode(id);
     },
   });
@@ -1908,12 +1923,17 @@ function mountImagePickers(): void {
     getLabel: () => imageNodeName,
     getSelectedId: () => imageNodeId,
     getTargets: () => imageTargets,
+    getRecent: () => recentTargets,
     onApplySelection: () => {
       setIgnorePopoverOpen(false);
       closeAllRowMenus();
       postToPlugin({ type: "EXPORT_IMAGE_FROM_SELECTION" });
     },
     onPick: (id) => {
+      closeAllTargetPopovers();
+      postToPlugin({ type: "EXPORT_IMAGE_NODE", nodeId: id });
+    },
+    onPickRecent: (id) => {
       closeAllTargetPopovers();
       postToPlugin({ type: "EXPORT_IMAGE_NODE", nodeId: id });
     },
@@ -1926,12 +1946,16 @@ function mountImagePickers(): void {
     getLabel: () => getImageTarget()?.label ?? "",
     getSelectedId: () => imageTargetId,
     getTargets: () => imageTargets,
+    getRecent: () => recentTargets,
     onApplySelection: () => {
       setIgnorePopoverOpen(false);
       closeAllRowMenus();
       postToPlugin({ type: "SET_IMAGE_TARGET_FROM_SELECTION" });
     },
     onPick: (id) => {
+      commitImageTarget(id);
+    },
+    onPickRecent: (id) => {
       commitImageTarget(id);
     },
   });

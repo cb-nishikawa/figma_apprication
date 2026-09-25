@@ -234,6 +234,94 @@ body.is-resizing * {
   font-size: 11px;
 }
 
+/* 未選択時に表示する「最近選択したフレーム」履歴ポップオーバー。
+   .target-picker-popover と同形状（右上配置の小カード）。 */
+.target-picker-history {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 220px;
+  padding: 10px;
+  border: 1px solid #d8d8d8;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.target-picker-history[hidden] {
+  display: none !important;
+}
+
+.target-picker-history-title {
+  color: #333;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.target-picker-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.target-picker-history-list:not(:empty) {
+  border-top: 1px solid #eee;
+  padding-top: 6px;
+}
+
+.target-picker-history-item {
+  display: block;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #333;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.target-picker-history-item:hover {
+  background: #eaf6ff;
+}
+
+.target-picker-history-item.is-selected {
+  background: #d6eeff;
+  font-weight: 600;
+}
+
+.target-picker-history-footer {
+  display: block;
+  width: 100%;
+  padding: 4px 0 0;
+  border: 0;
+  border-top: 1px solid #eee;
+  background: transparent;
+  color: #18a0fb;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.target-picker-history-footer:hover {
+  color: #0b79c9;
+}
+
 .pair-swap-icon {
   flex-shrink: 0;
   align-self: center;

@@ -5,6 +5,7 @@ import type {
   HoverHighlightItem,
   IgnoreCategories,
   KeywordQuery,
+  RecentTarget,
   SearchMode,
   TextMatch,
   TextNodeLike,
@@ -30,6 +31,8 @@ const DEFAULT_UI_HEIGHT = 560;
 const MIN_UI_HEIGHT = 320;
 const MAX_UI_HEIGHT = 900;
 const UI_HEIGHT_STORAGE_KEY = "uiHeight";
+const RECENT_TARGETS_KEY = "cbTextChecker.recentTargets";
+const MAX_RECENT_TARGETS = 20;
 
 function clampUiHeight(height: number): number {
   return Math.min(MAX_UI_HEIGHT, Math.max(MIN_UI_HEIGHT, Math.round(height)));
@@ -64,6 +67,8 @@ let lastQueries: KeywordQuery[] = [];
 let lastIgnoreStrings: string[] = [];
 let lastIgnoreCategories: IgnoreCategories = { ...DEFAULT_IGNORE_CATEGORIES };
 let lastResults: CheckResult[] = [];
+/** 過去に選択した対象フレームの履歴（clientStorage に永続化）。 */
+let recentTargets: RecentTarget[] = [];
 /** Skip selection-driven work while creating/removing highlight overlays. */
 let ignoreSelectionForHighlight = false;
 
@@ -80,6 +85,75 @@ async function withHighlightMutation(
 
 function postToUi(message: PluginToUiMessage): void {
   figma.ui.postMessage(message);
+}
+
+// ---- 対象フレームの履歴（clientStorage 永続化） ----
+
+function isRecentTarget(value: unknown): value is RecentTarget {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const entry = value as Partial<RecentTarget>;
+  return (
+    typeof entry.id === "string" &&
+    typeof entry.name === "string" &&
+    typeof entry.kind === "string" &&
+    typeof entry.label === "string"
+  );
+}
+
+async function loadRecentTargets(): Promise<RecentTarget[]> {
+  let stored: unknown;
+  try {
+    stored = await figma.clientStorage.getAsync(RECENT_TARGETS_KEY);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(stored)) {
+    return [];
+  }
+  const targets = stored.filter(isRecentTarget).slice(0, MAX_RECENT_TARGETS);
+  // 起動時クリーンアップ: 見つからない・対象外ノードを履歴から除去
+  const kept: RecentTarget[] = [];
+  for (const entry of targets) {
+    const node = await figma.getNodeByIdAsync(entry.id);
+    if (!node || !isPinTargetNode(node)) {
+      continue;
+    }
+    kept.push(entry);
+    if (kept.length >= MAX_RECENT_TARGETS) {
+      break;
+    }
+  }
+  if (kept.length !== targets.length) {
+    void figma.clientStorage.setAsync(RECENT_TARGETS_KEY, kept);
+  }
+  return kept;
+}
+
+function pushRecentTarget(entry: RecentTarget): void {
+  recentTargets = [
+    entry,
+    ...recentTargets.filter((existing) => existing.id !== entry.id),
+  ].slice(0, MAX_RECENT_TARGETS);
+  void figma.clientStorage.setAsync(RECENT_TARGETS_KEY, recentTargets);
+}
+
+/** 対象確定時に履歴へ追加する（現在ページ内のピン対象のみ）。 */
+function recordRecentTarget(nodeId: string): void {
+  if (!nodeId) {
+    return;
+  }
+  const target = collectPinTargets().find((t) => t.id === nodeId);
+  if (!target) {
+    return;
+  }
+  pushRecentTarget({
+    id: target.id,
+    name: target.name,
+    kind: target.kind,
+    label: target.label,
+  });
 }
 
 function isPinTargetNode(
@@ -172,6 +246,7 @@ function postPinTargets(): void {
     type: "PIN_TARGETS",
     targets,
     pinnedNodeId,
+    recent: recentTargets,
   });
 }
 
@@ -199,6 +274,7 @@ function postCompareState(): void {
     type: "COMPARE_STATE",
     targets,
     pairs: comparePairs.map((p) => ({ ...p })),
+    recent: recentTargets,
   });
 }
 
@@ -211,6 +287,7 @@ function postImageState(): void {
     type: "IMAGE_STATE",
     targets,
     targetId: imageTargetId,
+    recent: recentTargets,
   });
 }
 
@@ -255,6 +332,7 @@ async function handleExportImageFromSelection(): Promise<void> {
     postToUi({ type: "SELECTION_EMPTY", slot: { kind: "image" } });
     return;
   }
+  recordRecentTarget(selection[0].id);
   await exportImageNode(selection[0]);
 }
 
@@ -267,6 +345,7 @@ async function handleExportImageNode(nodeId: string): Promise<void> {
     });
     return;
   }
+  recordRecentTarget(nodeId);
   await exportImageNode(node as SceneNode);
 }
 
@@ -683,6 +762,7 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
             type: "PIN_TARGETS",
             targets,
             pinnedNodeId,
+            recent: recentTargets,
           });
         }
 
@@ -717,6 +797,7 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
         break;
       case "SET_IMAGE_COMPARE_TARGET":
         imageTargetId = msg.targetId;
+        recordRecentTarget(msg.targetId ?? "");
         postImageState();
         break;
       case "SET_IMAGE_TARGET_FROM_SELECTION": {
@@ -738,6 +819,7 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
           break;
         }
         imageTargetId = nodeId;
+        recordRecentTarget(nodeId);
         postImageState();
         break;
       }
@@ -752,6 +834,7 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
         break;
       case "SET_PINNED_NODE":
         pinnedNodeId = msg.pinnedNodeId;
+        recordRecentTarget(msg.pinnedNodeId ?? "");
         if (mode === "pinned") {
           await rerunSearch();
         } else {
@@ -777,6 +860,7 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
           break;
         }
         pinnedNodeId = nodeId;
+        recordRecentTarget(nodeId);
         postPinTargets();
         if (mode === "pinned") {
           await rerunSearch();
@@ -803,6 +887,7 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
         } else {
           pair.idB = msg.nodeId;
         }
+        recordRecentTarget(msg.nodeId ?? "");
         postCompareState();
         if (mode === "compare") {
           await handleCompare();
@@ -843,6 +928,7 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
         } else {
           pair.idB = nodeId;
         }
+        recordRecentTarget(nodeId);
         postCompareState();
         if (mode === "compare") {
           await handleCompare();
@@ -925,3 +1011,15 @@ figma.on("close", () => {
 });
 
 postPinTargets();
+
+void (async () => {
+  const saved = await figma.clientStorage.getAsync(UI_HEIGHT_STORAGE_KEY);
+  if (typeof saved === "number") {
+    figma.ui.resize(UI_WIDTH, clampUiHeight(saved));
+  }
+  recentTargets = await loadRecentTargets();
+  // 履歴が反映された状態を UI へ再送（起動時の LIST_*_TARGETS 応答は履歴ロード前だったため）
+  postPinTargets();
+  postCompareState();
+  postImageState();
+})();

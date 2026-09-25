@@ -8,6 +8,7 @@ import type {
   IgnoreCategories,
   KeywordQuery,
   PinTarget,
+  RecentTarget,
   SearchMode,
   TextNodeLike,
 } from "./types";
@@ -88,16 +89,23 @@ export type UiToPluginMessage =
   | { type: "RESIZE_UI"; height: number };
 
 export type PluginToUiMessage =
-  | { type: "PIN_TARGETS"; targets: PinTarget[]; pinnedNodeId: string | null }
+  | {
+      type: "PIN_TARGETS";
+      targets: PinTarget[];
+      pinnedNodeId: string | null;
+      recent: RecentTarget[];
+    }
   | {
       type: "COMPARE_STATE";
       targets: PinTarget[];
       pairs: ComparePair[];
+      recent: RecentTarget[];
     }
   | {
       type: "IMAGE_STATE";
       targets: PinTarget[];
       targetId: string | null;
+      recent: RecentTarget[];
     }
   | {
       type: "IMAGE_EXPORTED";

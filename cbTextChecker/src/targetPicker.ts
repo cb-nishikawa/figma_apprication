@@ -1,4 +1,4 @@
-import type { PinTarget } from "./types";
+import type { PinTarget, RecentTarget } from "./types";
 import type { SelectionSlot } from "./messages";
 
 export interface TargetPickerOptions {
@@ -8,14 +8,20 @@ export interface TargetPickerOptions {
   getLabel: () => string;
   getSelectedId: () => string | null;
   getTargets: () => PinTarget[];
+  /** 過去に選択した対象フレームの履歴（最大 20 件・直近が先頭）。 */
+  getRecent: () => RecentTarget[];
   onApplySelection: () => void;
   onPick: (id: string) => void;
+  /** 履歴項目が選ばれたとき（候補一覧の onPick と同じ扱い）。 */
+  onPickRecent: (id: string) => void;
 }
 
 export interface TargetPickerController {
   root: HTMLDivElement;
   slot: SelectionSlot;
   openPopover: () => void;
+  /** 未選択時の「最近選択したフレーム」履歴ポップオーバーを開く。 */
+  openHistoryPopover: () => void;
   closePopover: () => void;
   refresh: () => void;
   setDisabled: (disabled: boolean) => void;
@@ -90,7 +96,26 @@ export function createTargetPicker(
   list.setAttribute("role", "listbox");
 
   popover.append(filter, list);
-  root.append(button, popover);
+
+  const history = document.createElement("div");
+  history.className = "target-picker-history";
+  history.hidden = true;
+  history.setAttribute("role", "menu");
+
+  const historyTitle = document.createElement("div");
+  historyTitle.className = "target-picker-history-title";
+  historyTitle.textContent = "最近選択したフレーム";
+
+  const historyList = document.createElement("ul");
+  historyList.className = "target-picker-history-list";
+
+  const historyFooter = document.createElement("button");
+  historyFooter.type = "button";
+  historyFooter.className = "target-picker-history-footer";
+  historyFooter.textContent = "候補一覧から選ぶ…";
+
+  history.append(historyTitle, historyList, historyFooter);
+  root.append(button, popover, history);
 
   let filterQuery = "";
   let activeIndex = -1;
@@ -164,10 +189,45 @@ export function createTargetPicker(
     });
   }
 
+  function renderRecent(): void {
+    historyList.replaceChildren();
+    const recent = options.getRecent();
+    if (recent.length === 0) {
+      const empty = document.createElement("li");
+      empty.className = "target-picker-empty";
+      empty.textContent = "履歴はまだありません";
+      historyList.append(empty);
+      return;
+    }
+    const selectedId = options.getSelectedId();
+    for (const entry of recent) {
+      const li = document.createElement("li");
+      const opt = document.createElement("button");
+      opt.type = "button";
+      opt.className = "target-picker-history-item";
+      opt.setAttribute("role", "menuitem");
+      opt.textContent = entry.label;
+      opt.title = entry.label;
+      if (entry.id === selectedId) {
+        opt.classList.add("is-selected");
+      }
+      opt.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+      });
+      opt.addEventListener("click", () => {
+        options.onPickRecent(entry.id);
+        controller.closePopover();
+      });
+      li.append(opt);
+      historyList.append(li);
+    }
+  }
+
   function openPopover(): void {
     closeAllTargetPopovers(controller);
     open = true;
     popover.hidden = false;
+    history.hidden = true;
     button.setAttribute("aria-expanded", "true");
     filterQuery = "";
     filter.value = "";
@@ -176,12 +236,22 @@ export function createTargetPicker(
     window.setTimeout(() => filter.focus(), 0);
   }
 
+  function openHistoryPopover(): void {
+    closeAllTargetPopovers(controller);
+    open = true;
+    popover.hidden = true;
+    history.hidden = false;
+    button.setAttribute("aria-expanded", "true");
+    renderRecent();
+  }
+
   function closePopover(): void {
     if (!open) {
       return;
     }
     open = false;
     popover.hidden = true;
+    history.hidden = true;
     button.setAttribute("aria-expanded", "false");
     filterQuery = "";
     filter.value = "";
@@ -192,11 +262,13 @@ export function createTargetPicker(
     root,
     slot: options.slot,
     openPopover,
+    openHistoryPopover,
     closePopover,
     refresh: () => {
       refreshLabel();
       if (open) {
         renderList();
+        renderRecent();
       }
     },
     setDisabled: (disabled: boolean) => {
@@ -259,6 +331,21 @@ export function createTargetPicker(
 
   popover.addEventListener("click", (event) => {
     event.stopPropagation();
+  });
+
+  history.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+
+  historyFooter.addEventListener("click", () => {
+    openPopover();
+  });
+
+  history.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closePopover();
+    }
   });
 
   pickers.add(controller);

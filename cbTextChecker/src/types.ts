@@ -70,6 +70,9 @@ export interface PinTarget {
   label: string;
 }
 
+/** 過去に選択した対象フレームの履歴（最大 20 件・clientStorage に永続化）。 */
+export interface RecentTarget extends PinTarget {}
+
 export interface TextNodeLike {
   id: string;
   characters: string;
