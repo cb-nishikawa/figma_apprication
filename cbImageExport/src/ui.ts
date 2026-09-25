@@ -65,6 +65,12 @@ let activeExportDir: FileSystemDirectoryHandle | null = null;
 let currentAssetPath = "";
 /** 歯車ポップオーバーの入力欄を現在の対象フレームのパスへ同期する関数。 */
 let assetUrlInputSync: (() => void) | null = null;
+/** SVG 埋め込みコード（ノード ID → SVG マークアップ）キャッシュ。 */
+const svgCodeById = new Map<string, string>();
+const svgErrorById = new Map<string, string>();
+const svgPending = new Set<string>();
+/** 開いているコピーポップオーバーの SVG ボタン描画関数（ノード ID → 描画）。 */
+const svgBtnRenderers = new Map<string, () => void>();
 
 function postToPlugin(msg: UiToPluginMessage): void {
   parent.postMessage({ pluginMessage: msg }, "*");
@@ -617,25 +623,85 @@ function createCopyMenu(id: string, config: ExportConfig): HTMLElement {
   panel.setAttribute("role", "menu");
   panel.setAttribute("aria-label", COPY_POPOVER_TITLE);
 
-  const title = document.createElement("div");
-  title.className = "exclude-title";
-  title.textContent = COPY_POPOVER_TITLE;
-
-  const preview = document.createElement("div");
-  preview.className = "copy-preview";
-  preview.textContent = assetUrlFor(id, config);
-
-  const copyBtn = document.createElement("button");
-  copyBtn.type = "button";
-  copyBtn.className = "btn-primary copy-button";
-  copyBtn.textContent = "urlをコピー";
-  copyBtn.addEventListener("click", async () => {
+  const urlBtn = document.createElement("button");
+  urlBtn.type = "button";
+  urlBtn.className = "btn-primary copy-button";
+  urlBtn.textContent = "urlをコピー";
+  urlBtn.addEventListener("click", async () => {
     const ok = await copyText(assetUrlFor(id, config));
-    copyBtn.textContent = ok ? "コピーしました" : "コピーに失敗";
+    urlBtn.textContent = ok ? "コピーしました" : "コピーに失敗";
     window.setTimeout(() => {
-      copyBtn.textContent = "urlをコピー";
+      urlBtn.textContent = "urlをコピー";
     }, 1200);
   });
+
+  panel.append(urlBtn);
+
+  let requestSvg: (() => void) | null = null;
+
+  if (config.format === "SVG") {
+    const svgBtn = document.createElement("button");
+    svgBtn.type = "button";
+    svgBtn.className = "btn-secondary copy-button";
+    svgBtn.textContent = "埋め込みコードをコピー";
+
+    requestSvg = (): void => {
+      if (
+        svgCodeById.has(id) ||
+        svgPending.has(id) ||
+        svgErrorById.has(id)
+      ) {
+        renderSvgBtn();
+        return;
+      }
+      svgPending.add(id);
+      renderSvgBtn();
+      postToPlugin({
+        type: "FETCH_SVG_CODE",
+        nodeId: id,
+        constraint: { ...config.constraint },
+        options: excludeOptionsFor(id),
+      });
+    };
+
+    const renderSvgBtn = (): void => {
+      const cached = svgCodeById.get(id);
+      const error = svgErrorById.get(id);
+      if (error) {
+        svgBtn.title = error;
+        svgBtn.textContent =
+          error.length > 32 ? `${error.slice(0, 32)}…` : error;
+      } else if (cached) {
+        svgBtn.removeAttribute("title");
+        svgBtn.textContent = "埋め込みコードをコピー";
+      } else if (svgPending.has(id)) {
+        svgBtn.removeAttribute("title");
+        svgBtn.textContent = "読み込み中…";
+      } else {
+        svgBtn.removeAttribute("title");
+        svgBtn.textContent = "埋め込みコードをコピー";
+      }
+    };
+
+    svgBtn.addEventListener("click", async () => {
+      const cached = svgCodeById.get(id);
+      if (cached) {
+        const ok = await copyText(cached);
+        svgBtn.textContent = ok ? "コピーしました" : "コピーに失敗";
+        window.setTimeout(renderSvgBtn, 1200);
+        return;
+      }
+      if (svgPending.has(id)) {
+        return;
+      }
+      svgErrorById.delete(id);
+      requestSvg?.();
+    });
+
+    svgBtnRenderers.set(id, renderSvgBtn);
+    renderSvgBtn();
+    panel.append(svgBtn);
+  }
 
   trigger.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -643,8 +709,10 @@ function createCopyMenu(id: string, config: ExportConfig): HTMLElement {
     closeAllCopyMenus(panel);
     closeAssetUrlPopover();
     const willOpen = panel.hidden;
-    preview.textContent = assetUrlFor(id, config);
-    copyBtn.textContent = "urlをコピー";
+    if (willOpen && config.format === "SVG") {
+      requestSvg?.();
+    }
+    urlBtn.textContent = "urlをコピー";
     panel.hidden = !willOpen;
     trigger.setAttribute("aria-expanded", willOpen ? "true" : "false");
   });
@@ -653,7 +721,6 @@ function createCopyMenu(id: string, config: ExportConfig): HTMLElement {
     event.stopPropagation();
   });
 
-  panel.append(title, preview, copyBtn);
   menu.append(trigger, panel);
   return menu;
 }
@@ -1097,6 +1164,18 @@ window.onmessage = (event: MessageEvent) => {
     }
     return;
   }
+  if (msg.type === "SVG_CODE") {
+    svgPending.delete(msg.nodeId);
+    if (msg.message) {
+      svgCodeById.delete(msg.nodeId);
+      svgErrorById.set(msg.nodeId, msg.message);
+    } else {
+      svgCodeById.set(msg.nodeId, msg.svg);
+      svgErrorById.delete(msg.nodeId);
+    }
+    svgBtnRenderers.get(msg.nodeId)?.();
+    return;
+  }
   if (msg.type === "IMAGE_LIST") {
     items = msg.items;
     const valid = new Set(items.map((i) => i.id));
@@ -1129,6 +1208,14 @@ window.onmessage = (event: MessageEvent) => {
     for (const id of [...nameOverridesById.keys()]) {
       if (!valid.has(id)) {
         nameOverridesById.delete(id);
+      }
+    }
+    for (const id of [...svgCodeById.keys()]) {
+      if (!valid.has(id)) {
+        svgCodeById.delete(id);
+        svgErrorById.delete(id);
+        svgPending.delete(id);
+        svgBtnRenderers.delete(id);
       }
     }
     showStatus(msg.message ?? null);

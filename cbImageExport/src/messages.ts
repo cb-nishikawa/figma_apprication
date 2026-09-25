@@ -1,5 +1,7 @@
 import type {
   ExportConfig,
+  ExportConstraint,
+  ExportOptions,
   ExportRequest,
   ExportResultItem,
   FrameTarget,
@@ -18,7 +20,13 @@ export type UiToPluginMessage =
   | { type: "HOVER_ROW"; nodeId: string | null }
   | { type: "EXPORT_NODES"; items: ExportRequest[] }
   | { type: "RESIZE_UI"; height: number }
-  | { type: "SET_ASSET_URL_CONFIG"; nodeId: string | null; path: string };
+  | { type: "SET_ASSET_URL_CONFIG"; nodeId: string | null; path: string }
+  | {
+      type: "FETCH_SVG_CODE";
+      nodeId: string;
+      constraint: ExportConstraint;
+      options: ExportOptions;
+    };
 
 export type PluginToUiMessage =
   | {
@@ -34,4 +42,11 @@ export type PluginToUiMessage =
   | { type: "SELECTION_EMPTY" }
   | { type: "EXPORT_RESULT"; results: ExportResultItem[] }
   | { type: "ERROR"; message: string }
-  | { type: "ASSET_URL_CONFIG"; nodeId: string | null; path: string };
+  | { type: "ASSET_URL_CONFIG"; nodeId: string | null; path: string }
+  | {
+      type: "SVG_CODE";
+      nodeId: string;
+      svg: string;
+      /** true のとき svg は空で、message がエラー内容。 */
+      message?: string;
+    };

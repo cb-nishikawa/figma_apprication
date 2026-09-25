@@ -617,18 +617,9 @@ body.is-resizing * {
   display: none !important;
 }
 
-.copy-preview {
-  font-size: 10px;
-  color: #666;
-  background: #f6f6f6;
-  border-radius: 4px;
-  padding: 5px 6px;
-  word-break: break-all;
-  line-height: 1.4;
-}
-
 .copy-button {
   width: 100%;
+  font-size: 11px;
 }
 
 .config-row {

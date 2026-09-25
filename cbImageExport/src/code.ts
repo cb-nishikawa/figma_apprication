@@ -606,6 +606,113 @@ async function exportSceneNode(
   }
 }
 
+/** UTF-8 バイト列を文字列へデコードする（TextDecoder に依存しない簡易実装）。 */
+function decodeUtf8(bytes: Uint8Array): string {
+  let out = "";
+  let i = 0;
+  while (i < bytes.length) {
+    const first = bytes[i++];
+    if (first < 0x80) {
+      out += String.fromCharCode(first);
+      continue;
+    }
+    let codePoint: number;
+    let extra: number;
+    if (first >= 0xc0 && first < 0xe0) {
+      codePoint = first & 0x1f;
+      extra = 1;
+    } else if (first >= 0xe0 && first < 0xf0) {
+      codePoint = first & 0x0f;
+      extra = 2;
+    } else if (first >= 0xf0 && first < 0xf8) {
+      codePoint = first & 0x07;
+      extra = 3;
+    } else {
+      out += String.fromCharCode(first);
+      continue;
+    }
+    if (i + extra > bytes.length) {
+      out += String.fromCharCode(first);
+      continue;
+    }
+    let valid = true;
+    for (let j = 0; j < extra; j++) {
+      const b = bytes[i + j];
+      if (b < 0x80 || b >= 0xc0) {
+        valid = false;
+        break;
+      }
+      codePoint = (codePoint << 6) | (b & 0x3f);
+    }
+    if (!valid) {
+      out += String.fromCharCode(first);
+      continue;
+    }
+    i += extra;
+    out +=
+      codePoint <= 0xffff
+        ? String.fromCharCode(codePoint)
+        : String.fromCharCode(
+            ((codePoint - 0x10000) >> 10) + 0xd800,
+            ((codePoint - 0x10000) & 0x3ff) + 0xdc00
+          );
+  }
+  return out;
+}
+
+async function fetchSvgCode(
+  nodeId: string,
+  constraint: ExportConstraint,
+  options: ExportOptions
+): Promise<void> {
+  const node = resolveNode(nodeId);
+  if (!node || !("exportAsync" in node)) {
+    postToUi({
+      type: "SVG_CODE",
+      nodeId,
+      svg: "",
+      message: "ノードが見つからないか書き出せません",
+    });
+    return;
+  }
+  try {
+    let bytes: Uint8Array;
+    try {
+      bytes = await exportSceneNode(
+        node as SceneNode,
+        renderSettings("SVG", constraint),
+        options
+      );
+    } catch {
+      // クローン除去・appendChild 起因の失敗に備え、除外オプション無しで
+      // 直接書き出しを一度だけ試す（SVG は除外設定の影響が小さい）。
+      bytes = await (node as SceneNode).exportAsync(
+        renderSettings("SVG", constraint)
+      );
+    }
+    let svg = decodeUtf8(bytes);
+    if (!svg.trim()) {
+      postToUi({
+        type: "SVG_CODE",
+        nodeId,
+        svg: "",
+        message: "空の SVG が返されました",
+      });
+      return;
+    }
+    svg = svg.replace(/^\s*<\?xml[^>]*\?>\s*/i, "");
+    postToUi({ type: "SVG_CODE", nodeId, svg });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    postToUi({
+      type: "SVG_CODE",
+      nodeId,
+      svg: "",
+      message: `SVG 書き出しに失敗: ${message}`,
+    });
+  }
+}
+
 async function focusNode(nodeId: string): Promise<void> {
   const node = resolveNode(nodeId);
   if (!node || !("x" in node)) {
@@ -904,6 +1011,9 @@ async function main(): Promise<void> {
           break;
         case "HOVER_ROW":
           showHoverOverlay(raw.nodeId);
+          break;
+        case "FETCH_SVG_CODE":
+          await fetchSvgCode(raw.nodeId, raw.constraint, raw.options);
           break;
         case "SET_ASSET_URL_CONFIG":
           if (!raw.nodeId) {
