@@ -1,6 +1,8 @@
 import { collectImageTargets } from "./collectImages";
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
 import type {
+  ExportConfig,
+  ExportConstraint,
   ExportFormat,
   ExportOptions,
   ExportRequest,
@@ -258,6 +260,7 @@ async function scanTarget(): Promise<void> {
       id: target.id,
       name: target.name || "(untitled)",
       thumbBytes,
+      exportConfigs: exportSettingsToConfigs(target),
     });
   }
 
@@ -273,20 +276,27 @@ async function scanTarget(): Promise<void> {
 
 function exportSettings(
   format: ExportFormat,
-  scale: number
+  constraint?: ExportConstraint
 ): ExportSettings {
-  const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  const safe: ExportConstraint = constraint
+    ? {
+        type: constraint.type,
+        value: Number.isFinite(constraint.value) && constraint.value > 0
+          ? constraint.value
+          : 1,
+      }
+    : { type: "SCALE", value: 1 };
   if (format === "JPG") {
     return {
       format: "JPG",
-      constraint: { type: "SCALE", value: safeScale },
+      constraint: { type: safe.type, value: safe.value },
       contentsOnly: true,
     };
   }
   if (format === "PNG") {
     return {
       format: "PNG",
-      constraint: { type: "SCALE", value: safeScale },
+      constraint: { type: safe.type, value: safe.value },
       contentsOnly: true,
     };
   }
@@ -300,6 +310,38 @@ function exportSettings(
     format: "PDF",
     contentsOnly: true,
   };
+}
+
+/**
+ * Convert the node's layer exportSettings into the plugin's ExportConfig[]
+ * so existing layer entries are reflected in the list. Unsupported formats
+ * (SVG_STRING / GIF / MP4 / WebM / JSON_REST_V1) are skipped.
+ */
+function exportSettingsToConfigs(scene: SceneNode): ExportConfig[] {
+  if (!("exportSettings" in scene)) {
+    return [];
+  }
+  const configs: ExportConfig[] = [];
+  for (const setting of scene.exportSettings) {
+    const format = setting.format;
+    if (format === "SVG" || format === "PDF") {
+      configs.push({ format, constraint: { type: "SCALE", value: 1 } });
+      continue;
+    }
+    if (format === "PNG" || format === "JPG") {
+      const constraint = setting.constraint;
+      configs.push({
+        format,
+        constraint:
+          constraint && constraint.type !== "SCALE"
+            ? { type: constraint.type, value: constraint.value }
+            : { type: "SCALE", value: constraint?.value ?? 1 },
+      });
+      continue;
+    }
+    // Unsupported format: skip.
+  }
+  return configs;
 }
 
 async function exportNodes(requests: ExportRequest[]): Promise<void> {
@@ -320,7 +362,7 @@ async function exportNodes(requests: ExportRequest[]): Promise<void> {
     try {
       const bytes = await exportSceneNode(
         scene,
-        exportSettings(req.format, req.scale),
+        exportSettings(req.format, req.constraint),
         req.options
       );
       results.push({
@@ -353,12 +395,22 @@ function stripExportOptions(node: SceneNode, options: ExportOptions): void {
   if (options.excludeEffects && "effects" in node) {
     (node as SceneNode & { effects: Effect[] }).effects = [];
   }
-  if (options.excludeCornerRadius && "cornerRadius" in node) {
-    const corner = (node as SceneNode & {
+  if (options.excludeCornerRadius) {
+    const shape = node as SceneNode & {
       cornerRadius: number | typeof figma.mixed;
-    }).cornerRadius;
-    if (typeof corner === "number") {
-      (node as SceneNode & { cornerRadius: number }).cornerRadius = 0;
+      topLeftRadius: number;
+      topRightRadius: number;
+      bottomLeftRadius: number;
+      bottomRightRadius: number;
+    };
+    if ("topLeftRadius" in shape) {
+      shape.topLeftRadius = 0;
+      shape.topRightRadius = 0;
+      shape.bottomLeftRadius = 0;
+      shape.bottomRightRadius = 0;
+    }
+    if (typeof shape.cornerRadius === "number" && shape.cornerRadius !== 0) {
+      shape.cornerRadius = 0;
     }
   }
   if (options.excludeStrokes && "strokes" in node) {
@@ -418,7 +470,7 @@ async function renameNode(nodeId: string, name: string): Promise<void> {
  */
 function applyExportSettings(
   nodeId: string,
-  configs: { format: ExportFormat; scale: number }[]
+  configs: ExportConfig[]
 ): void {
   const node = resolveNode(nodeId);
   if (!node || !("exportSettings" in node)) {
@@ -426,7 +478,7 @@ function applyExportSettings(
   }
   const scene = node as SceneNode;
   scene.exportSettings = configs.map((config) =>
-    exportSettings(config.format, config.scale)
+    exportSettings(config.format, config.constraint)
   );
 }
 

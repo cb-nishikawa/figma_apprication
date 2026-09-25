@@ -4,6 +4,7 @@ import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
 import { closeAllTargetPopovers, createTargetPicker, unregisterPicker } from "./targetPicker";
 import type {
   ExportConfig,
+  ExportConstraint,
   ExportFormat,
   ExportOptions,
   ExportRequest,
@@ -11,12 +12,19 @@ import type {
   FrameTarget,
   ImageListItem,
 } from "./types";
-import { DEFAULT_EXCLUDE_OPTIONS, EXPORT_FORMATS } from "./types";
+import {
+  DEFAULT_EXCLUDE_OPTIONS,
+  DEFAULT_EXPORT_CONSTRAINT,
+  EXPORT_FORMATS,
+} from "./types";
 
 const MIN_UI_HEIGHT = 320;
 const MAX_UI_HEIGHT = 900;
 
-const DEFAULT_CONFIG: ExportConfig = { format: "PNG", scale: 1 };
+const DEFAULT_CONFIG: ExportConfig = {
+  format: "PNG",
+  constraint: { ...DEFAULT_EXPORT_CONSTRAINT },
+};
 
 const targetPickerRoot = document.getElementById(
   "target-picker-root"
@@ -93,12 +101,37 @@ function showStatus(message: string | null): void {
   statusEl.textContent = message;
 }
 
-function parseScale(raw: string): number {
-  const value = Number.parseFloat(raw);
-  if (!Number.isFinite(value) || value <= 0) {
-    return 1;
+/**
+ * Parse a constraint input. Accepts "512w" / "512h" / "0.5x" and bare
+ * numbers (e.g. "2" → SCALE). Returns null when invalid.
+ */
+function parseConstraint(raw: string): ExportConstraint | null {
+  const match = raw
+    .trim()
+    .toLowerCase()
+    .match(/^(\d+(?:\.\d+)?)\s*([xwh])?$/);
+  if (!match) {
+    return null;
   }
-  return value;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  const kind = match[2] ?? "x";
+  const type = kind === "w" ? "WIDTH" : kind === "h" ? "HEIGHT" : "SCALE";
+  return { type, value };
+}
+
+/** Format a constraint for display, always with a suffix (1x / 2x / 512w). */
+function formatConstraint(constraint: ExportConstraint): string {
+  switch (constraint.type) {
+    case "WIDTH":
+      return `${constraint.value}w`;
+    case "HEIGHT":
+      return `${constraint.value}h`;
+    default:
+      return `${constraint.value}x`;
+  }
 }
 
 function configsFor(id: string): ExportConfig[] {
@@ -197,23 +230,31 @@ function createFormatSelect(
   return select;
 }
 
-function createScaleInput(
-  value: number,
-  onInput: (raw: string) => void,
+function createConstraintInput(
+  config: ExportConfig,
   onChange?: () => void
 ): HTMLInputElement {
   const input = document.createElement("input");
   input.className = "config-scale";
-  input.type = "number";
-  input.min = "0";
-  input.step = "0.1";
-  input.value = String(value);
-  input.setAttribute("aria-label", "書き出し倍率");
-  input.title = "2 なら 2 倍、0.5 なら半分、未入力なら等倍";
+  input.type = "text";
+  input.inputMode = "decimal";
+  input.value = formatConstraint(config.constraint);
+  input.setAttribute("aria-label", "書き出しサイズ");
+  input.title = "倍率・寸法: 1x / 2x / 0.5x / 512w / 512h";
   input.addEventListener("click", (event) => event.stopPropagation());
-  input.addEventListener("input", () => onInput(input.value));
+  input.addEventListener("input", () => {
+    const parsed = parseConstraint(input.value);
+    if (parsed) {
+      config.constraint = parsed;
+    }
+  });
   input.addEventListener("change", () => {
-    onInput(input.value);
+    const parsed = parseConstraint(input.value);
+    if (parsed) {
+      config.constraint = parsed;
+    } else {
+      input.value = formatConstraint(config.constraint);
+    }
     onChange?.();
   });
   return input;
@@ -369,9 +410,7 @@ function createConfigRow(id: string, config: ExportConfig, index: number): HTMLE
   const row = document.createElement("div");
   row.className = "config-row";
 
-  const scale = createScaleInput(config.scale, (raw) => {
-    config.scale = parseScale(raw);
-  }, () => {
+  const size = createConstraintInput(config, () => {
     syncExportSettings(id);
   });
 
@@ -382,7 +421,7 @@ function createConfigRow(id: string, config: ExportConfig, index: number): HTMLE
 
   const remove = createRemoveButton(id, index);
 
-  row.append(scale, format, remove);
+  row.append(size, format, remove);
   return row;
 }
 
@@ -537,7 +576,7 @@ exportAllBtn.addEventListener("click", () => {
       requests.push({
         id: item.id,
         format: config.format,
-        scale: config.scale,
+        constraint: { ...config.constraint },
         options: excludeOptionsFor(item.id),
       });
     }
@@ -589,6 +628,12 @@ window.onmessage = (event: MessageEvent) => {
       if (!valid.has(id)) {
         configsByNode.delete(id);
       }
+    }
+    for (const item of items) {
+      configsByNode.set(item.id, (item.exportConfigs ?? []).map((config) => ({
+        ...config,
+        constraint: { ...config.constraint },
+      })));
     }
     for (const id of [...excludeOptionsById.keys()]) {
       if (!valid.has(id)) {

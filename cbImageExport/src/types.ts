@@ -18,13 +18,27 @@ export interface ImageListItem {
   name: string;
   /** Small PNG preview (optional; may be omitted on error). */
   thumbBytes?: number[];
+  /** レイヤーのエクスポート設定から読み取った書き出し設定（空なら未設定）。 */
+  exportConfigs?: ExportConfig[];
 }
 
-/** 書き出し単位の設定（形式 + 倍率）。 */
+/** 書き出し単位の設定（形式 + サイズ指定）。 */
+export type ExportConstraintType = "SCALE" | "WIDTH" | "HEIGHT";
+
+/** 書き出しサイズ。SCALE = 倍率、WIDTH = 固定幅 px、HEIGHT = 固定高さ px。 */
+export interface ExportConstraint {
+  type: ExportConstraintType;
+  value: number;
+}
+
+export const DEFAULT_EXPORT_CONSTRAINT: ExportConstraint = {
+  type: "SCALE",
+  value: 1,
+};
+
 export interface ExportConfig {
   format: ExportFormat;
-  /** 書き出し倍率。1 = 等倍。ラスター形式（PNG/JPG）のみ有効。 */
-  scale: number;
+  constraint: ExportConstraint;
 }
 
 /**
@@ -50,8 +64,7 @@ export const DEFAULT_EXCLUDE_OPTIONS: ExportOptions = {
 export interface ExportRequest {
   id: string;
   format: ExportFormat;
-  /** 書き出し倍率。1 = 等倍。ラスター形式（PNG/JPG）のみ有効。 */
-  scale: number;
+  constraint: ExportConstraint;
   options: ExportOptions;
 }
 

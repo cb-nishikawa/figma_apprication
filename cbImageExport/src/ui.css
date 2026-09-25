@@ -484,7 +484,8 @@ body.is-resizing * {
 
 .config-scale {
   flex-shrink: 0;
-  width: 56px;
+  width: 72px;
+  text-align: center;
 }
 
 .config-add,
