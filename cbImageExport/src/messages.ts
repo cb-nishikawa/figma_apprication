@@ -17,7 +17,8 @@ export type UiToPluginMessage =
   | { type: "SET_EXPORT_SETTINGS"; nodeId: string; configs: ExportConfig[] }
   | { type: "HOVER_ROW"; nodeId: string | null }
   | { type: "EXPORT_NODES"; items: ExportRequest[] }
-  | { type: "RESIZE_UI"; height: number };
+  | { type: "RESIZE_UI"; height: number }
+  | { type: "SET_ASSET_URL_CONFIG"; nodeId: string | null; path: string };
 
 export type PluginToUiMessage =
   | {
@@ -26,8 +27,11 @@ export type PluginToUiMessage =
       targetId: string | null;
       /** 過去に選択した対象フレームの履歴（最大 20 件・直近が先頭）。 */
       recent: RecentFrame[];
+      /** 現在の対象フレームの書き出し先パス（未設定は空文字）。 */
+      assetUrlPath: string;
     }
   | { type: "IMAGE_LIST"; items: ImageListItem[]; message?: string }
   | { type: "SELECTION_EMPTY" }
   | { type: "EXPORT_RESULT"; results: ExportResultItem[] }
-  | { type: "ERROR"; message: string };
+  | { type: "ERROR"; message: string }
+  | { type: "ASSET_URL_CONFIG"; nodeId: string | null; path: string };

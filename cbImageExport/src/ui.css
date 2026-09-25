@@ -407,6 +407,50 @@ body.is-resizing * {
   cursor: pointer;
 }
 
+.results-actions {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.asset-url-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.asset-url-trigger:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.asset-url-popover {
+  right: 0;
+  top: calc(100% + 4px);
+  width: 200px;
+}
+
+.asset-url-popover[hidden] {
+  display: none !important;
+}
+
+.asset-url-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: #444;
+}
+
+.asset-url-field input {
+  padding: 5px 6px;
+  border: 1px solid #d0d0d0;
+  border-radius: 4px;
+  font: inherit;
+  background: #fff;
+}
+
 .results {
   list-style: none;
   margin: 0;
@@ -441,6 +485,21 @@ body.is-resizing * {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* 行ヘッダーのアイコンボタンはレイヤー名入力欄（約24px）に揃えた正方形に */
+.result-head .btn-icon {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.result-head .config-add {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  flex-shrink: 0;
 }
 
 .result-check {
@@ -485,7 +544,6 @@ body.is-resizing * {
   flex-direction: column;
   align-items: flex-start;
   gap: 4px;
-  margin-left: 56px;
 }
 
 .exclude-menu {
@@ -541,6 +599,36 @@ body.is-resizing * {
 .exclude-check input {
   margin: 0;
   cursor: pointer;
+}
+
+.copy-menu {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.copy-popover {
+  right: 0;
+  top: calc(100% + 4px);
+  width: 190px;
+}
+
+.copy-popover[hidden] {
+  display: none !important;
+}
+
+.copy-preview {
+  font-size: 10px;
+  color: #666;
+  background: #f6f6f6;
+  border-radius: 4px;
+  padding: 5px 6px;
+  word-break: break-all;
+  line-height: 1.4;
+}
+
+.copy-button {
+  width: 100%;
 }
 
 .config-row {

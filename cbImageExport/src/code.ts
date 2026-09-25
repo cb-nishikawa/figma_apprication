@@ -25,10 +25,13 @@ const EXPORT_SENTINEL_PREFIX = "__cfg__";
 const LEGACY_WEBP_SENTINEL_PREFIX = "__cb_webp__";
 const RECENT_FRAMES_KEY = "cbImageExport.recentFrames";
 const MAX_RECENT_FRAMES = 20;
+const ASSET_URL_CONFIG_KEY = "cbImageExport.frameAssetPaths";
 
 let targetNodeId: string | null = null;
 /** 過去に選択した対象フレームの履歴（最大 20 件・直近が先頭）。 */
 let recentFrames: RecentFrame[] = [];
+/** URL コピー用の書き出し先パス（対象フレーム ID → パス）。 */
+let frameAssetPaths: Record<string, string> = {};
 
 /**
  * Resolve a collected row by id. Instance-internal nodes (ids like
@@ -232,6 +235,7 @@ function postFrameTargets(): void {
     targets: collectFrameTargets(),
     targetId: targetNodeId,
     recent: recentFrames,
+    assetUrlPath: currentAssetUrlPath(),
   });
 }
 
@@ -277,6 +281,44 @@ async function loadRecentFrames(): Promise<RecentFrame[]> {
     void figma.clientStorage.setAsync(RECENT_FRAMES_KEY, kept);
   }
   return kept;
+}
+
+async function loadAssetUrlConfig(): Promise<Record<string, string>> {
+  let stored: unknown;
+  try {
+    stored = await figma.clientStorage.getAsync(ASSET_URL_CONFIG_KEY);
+  } catch {
+    return {};
+  }
+  if (!stored || typeof stored !== "object") {
+    return {};
+  }
+  const entries = stored as Record<string, unknown>;
+  const result: Record<string, string> = {};
+  for (const [nodeId, path] of Object.entries(entries)) {
+    if (typeof path === "string" && path.trim()) {
+      result[nodeId] = path;
+    }
+  }
+  // 起動時掃除: 存在しない・対象外フレームのパスを除去
+  const kept: Record<string, string> = {};
+  let changed = false;
+  for (const [nodeId, path] of Object.entries(result)) {
+    const node = await figma.getNodeByIdAsync(nodeId);
+    if (node && isFrameTargetNode(node)) {
+      kept[nodeId] = path;
+    } else {
+      changed = true;
+    }
+  }
+  if (changed) {
+    void figma.clientStorage.setAsync(ASSET_URL_CONFIG_KEY, kept);
+  }
+  return kept;
+}
+
+function currentAssetUrlPath(): string {
+  return targetNodeId ? (frameAssetPaths[targetNodeId] ?? "") : "";
 }
 
 function pushRecentFrame(entry: RecentFrame): void {
@@ -802,11 +844,17 @@ async function initUiHeight(): Promise<number> {
 async function main(): Promise<void> {
   figma.skipInvisibleInstanceChildren = false;
   recentFrames = await loadRecentFrames();
+  frameAssetPaths = await loadAssetUrlConfig();
   const uiHeight = await initUiHeight();
   figma.showUI(__html__, {
     width: UI_WIDTH,
     height: uiHeight,
     themeColors: true,
+  });
+  postToUi({
+    type: "ASSET_URL_CONFIG",
+    nodeId: targetNodeId,
+    path: currentAssetUrlPath(),
   });
 
   figma.ui.onmessage = async (raw: UiToPluginMessage) => {
@@ -856,6 +904,29 @@ async function main(): Promise<void> {
           break;
         case "HOVER_ROW":
           showHoverOverlay(raw.nodeId);
+          break;
+        case "SET_ASSET_URL_CONFIG":
+          if (!raw.nodeId) {
+            postToUi({
+              type: "ASSET_URL_CONFIG",
+              nodeId: null,
+              path: "",
+            });
+            break;
+          }
+          if (raw.path.trim()) {
+            frameAssetPaths = { ...frameAssetPaths, [raw.nodeId]: raw.path };
+          } else {
+            const next = { ...frameAssetPaths };
+            delete next[raw.nodeId];
+            frameAssetPaths = next;
+          }
+          void figma.clientStorage.setAsync(ASSET_URL_CONFIG_KEY, frameAssetPaths);
+          postToUi({
+            type: "ASSET_URL_CONFIG",
+            nodeId: raw.nodeId,
+            path: currentAssetUrlPath(),
+          });
           break;
         case "EXPORT_NODES":
           await exportNodes(raw.items);

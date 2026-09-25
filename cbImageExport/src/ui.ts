@@ -1,6 +1,7 @@
 import "./ui.css";
 import excludeIcon from "./assets/exclude.svg?raw";
 import exportIcon from "./assets/export.svg?raw";
+import hamburgerIcon from "./assets/hamburger.svg?raw";
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
 import { closeAllTargetPopovers, createTargetPicker, unregisterPicker } from "./targetPicker";
 import type {
@@ -40,6 +41,9 @@ const exportAllBtn = document.getElementById(
   "export-all"
 ) as HTMLButtonElement;
 const selectAllEl = document.getElementById("select-all") as HTMLInputElement;
+const assetUrlTriggerEl = document.getElementById(
+  "asset-url-trigger"
+) as HTMLButtonElement;
 const resultsEl = document.getElementById("results") as HTMLUListElement;
 const errorEl = document.getElementById("error") as HTMLParagraphElement;
 const statusEl = document.getElementById("status") as HTMLParagraphElement;
@@ -57,6 +61,10 @@ const excludeOptionsById = new Map<string, ExportOptions>();
 const nameOverridesById = new Map<string, string>();
 const rowErrorById = new Map<string, string>();
 let activeExportDir: FileSystemDirectoryHandle | null = null;
+/** 現在の対象フレームの書き出し先パス（未設定は空文字）。 */
+let currentAssetPath = "";
+/** 歯車ポップオーバーの入力欄を現在の対象フレームのパスへ同期する関数。 */
+let assetUrlInputSync: (() => void) | null = null;
 
 function postToPlugin(msg: UiToPluginMessage): void {
   parent.postMessage({ pluginMessage: msg }, "*");
@@ -207,6 +215,21 @@ function constraintSuffix(
     return "";
   }
   return `_${formatConstraint(constraint)}`;
+}
+
+/** 設定した書き出し先パスにファイル名を結合した URL。 */
+function assetUrlFor(id: string, config: ExportConfig): string {
+  const item = items.find((entry) => entry.id === id);
+  const name = nameFor(item ?? { id, name: "export", thumbBytes: [] });
+  const fileName = `${sanitizeFilename(name)}${constraintSuffix(
+    config.constraint,
+    config.format
+  )}.${extFor(config.format)}`;
+  const path = currentAssetPath.trim();
+  if (!path) {
+    return fileName;
+  }
+  return `${path.replace(/\/+$/, "")}/${fileName}`;
 }
 
 function downloadUint8(data: Uint8Array, fileName: string, mime: string): void {
@@ -426,7 +449,7 @@ function createRemoveButton(id: string, index: number): HTMLButtonElement {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "config-remove";
-  btn.textContent = "✕";
+  btn.textContent = "-";
   btn.title = "この書き出し形式を削除";
   btn.setAttribute("aria-label", "この書き出し形式を削除");
   btn.addEventListener("click", (event) => {
@@ -512,6 +535,8 @@ function createExcludeMenu(id: string): HTMLElement {
     event.stopPropagation();
     closeAllExcludeMenus();
     closeAllTargetPopovers();
+    closeAllCopyMenus();
+    closeAssetUrlPopover();
     const willOpen = panel.hidden;
     panel.hidden = !willOpen;
     trigger.setAttribute("aria-expanded", willOpen ? "true" : "false");
@@ -524,6 +549,188 @@ function createExcludeMenu(id: string): HTMLElement {
   panel.append(title, checks);
   menu.append(trigger, panel);
   return menu;
+}
+
+const COPY_POPOVER_TITLE = "urlをコピー";
+
+function closeAllCopyMenus(except?: HTMLElement): void {
+  document.querySelectorAll<HTMLElement>(".copy-popover").forEach((panel) => {
+    if (except && panel === except) {
+      return;
+    }
+    panel.hidden = true;
+    const trigger = panel
+      .closest(".copy-menu")
+      ?.querySelector<HTMLButtonElement>(".copy-trigger");
+    trigger?.setAttribute("aria-expanded", "false");
+  });
+}
+
+function closeAssetUrlPopover(): void {
+  const panel =
+    document.querySelector<HTMLElement>(".asset-url-popover");
+  if (panel) {
+    panel.hidden = true;
+  }
+  assetUrlTriggerEl.setAttribute("aria-expanded", "false");
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      ok = false;
+    }
+    area.remove();
+    return ok;
+  }
+}
+
+/** 設定行の品質の横に置く URL コピーメニュー（除外メニューと同形状）。 */
+function createCopyMenu(id: string, config: ExportConfig): HTMLElement {
+  const menu = document.createElement("div");
+  menu.className = "copy-menu";
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "btn-icon copy-trigger";
+  trigger.title = COPY_POPOVER_TITLE;
+  trigger.setAttribute("aria-label", COPY_POPOVER_TITLE);
+  trigger.setAttribute("aria-haspopup", "true");
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.innerHTML = hamburgerIcon;
+
+  const panel = document.createElement("div");
+  panel.className = "exclude-popover copy-popover";
+  panel.hidden = true;
+  panel.setAttribute("role", "menu");
+  panel.setAttribute("aria-label", COPY_POPOVER_TITLE);
+
+  const title = document.createElement("div");
+  title.className = "exclude-title";
+  title.textContent = COPY_POPOVER_TITLE;
+
+  const preview = document.createElement("div");
+  preview.className = "copy-preview";
+  preview.textContent = assetUrlFor(id, config);
+
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "btn-primary copy-button";
+  copyBtn.textContent = "urlをコピー";
+  copyBtn.addEventListener("click", async () => {
+    const ok = await copyText(assetUrlFor(id, config));
+    copyBtn.textContent = ok ? "コピーしました" : "コピーに失敗";
+    window.setTimeout(() => {
+      copyBtn.textContent = "urlをコピー";
+    }, 1200);
+  });
+
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeAllExcludeMenus();
+    closeAllCopyMenus(panel);
+    closeAssetUrlPopover();
+    const willOpen = panel.hidden;
+    preview.textContent = assetUrlFor(id, config);
+    copyBtn.textContent = "urlをコピー";
+    panel.hidden = !willOpen;
+    trigger.setAttribute("aria-expanded", willOpen ? "true" : "false");
+  });
+
+  panel.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+
+  panel.append(title, preview, copyBtn);
+  menu.append(trigger, panel);
+  return menu;
+}
+
+/** 画像一覧ヘッダーの歯車から開く、書き出し先パス設定ポップオーバー。 */
+function setupAssetUrlMenu(): void {
+  const wrapper = assetUrlTriggerEl.parentElement;
+  if (!wrapper) {
+    return;
+  }
+
+  const panel = document.createElement("div");
+  panel.className = "exclude-popover asset-url-popover";
+  panel.hidden = true;
+  panel.setAttribute("role", "group");
+  panel.setAttribute("aria-label", "URL コピー設定");
+
+  const title = document.createElement("div");
+  title.className = "exclude-title";
+  title.textContent = "URL コピー設定";
+
+  const field = document.createElement("label");
+  field.className = "asset-url-field";
+  field.textContent = "書き出し先パス";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "/assets/images/";
+  input.value = currentAssetPath;
+  input.spellcheck = false;
+  input.addEventListener("input", () => {
+    input.setAttribute("data-dirty", "1");
+    postToPlugin({
+      type: "SET_ASSET_URL_CONFIG",
+      nodeId: targetId,
+      path: input.value,
+    });
+  });
+
+  const syncInput = (): void => {
+    assetUrlTriggerEl.disabled = !targetId;
+    if (!targetId) {
+      closeAssetUrlPopover();
+      return;
+    }
+    const dirty = input.getAttribute("data-dirty") === "1";
+    if (!dirty || document.activeElement !== input) {
+      input.value = currentAssetPath;
+    }
+    if (!currentAssetPath) {
+      input.removeAttribute("data-dirty");
+    }
+  };
+
+  field.append(input);
+  panel.append(title, field);
+
+  assetUrlTriggerEl.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (!targetId) {
+      return;
+    }
+    closeAllExcludeMenus();
+    closeAllCopyMenus();
+    closeAssetUrlPopover();
+    const willOpen = panel.hidden;
+    syncInput();
+    panel.hidden = !willOpen;
+    assetUrlTriggerEl.setAttribute("aria-expanded", willOpen ? "true" : "false");
+  });
+  panel.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+
+  wrapper.appendChild(panel);
+  syncInput();
+  assetUrlInputSync = syncInput;
 }
 
 function createQualityInput(
@@ -602,8 +809,9 @@ function createConfigRow(id: string, config: ExportConfig, index: number): HTMLE
   updateQualityVisibility(quality, config.format);
 
   const remove = createRemoveButton(id, index);
+  const copy = createCopyMenu(id, config);
 
-  row.append(size, format, quality, remove);
+  row.append(remove, size, format, quality, copy);
   return row;
 }
 
@@ -800,7 +1008,18 @@ document.addEventListener(
     if (target && target.closest?.(".exclude-menu")) {
       return;
     }
+    if (target && target.closest?.(".copy-menu")) {
+      return;
+    }
+    if (target && target.closest?.(".asset-url-popover")) {
+      return;
+    }
+    if (target === assetUrlTriggerEl) {
+      return;
+    }
     closeAllExcludeMenus();
+    closeAllCopyMenus();
+    closeAssetUrlPopover();
   },
   true
 );
@@ -862,11 +1081,20 @@ window.onmessage = (event: MessageEvent) => {
     frameTargets = msg.targets;
     recentFrames = msg.recent;
     targetId = msg.targetId;
+    currentAssetPath = msg.assetUrlPath;
     targetPicker?.refresh();
+    assetUrlInputSync?.();
     return;
   }
   if (msg.type === "SELECTION_EMPTY") {
     targetPicker?.openHistoryPopover();
+    return;
+  }
+  if (msg.type === "ASSET_URL_CONFIG") {
+    if (msg.nodeId === targetId) {
+      currentAssetPath = msg.path;
+      assetUrlInputSync?.();
+    }
     return;
   }
   if (msg.type === "IMAGE_LIST") {
@@ -955,5 +1183,6 @@ function setupResize(): void {
 
 setupResize();
 mountTargetPicker();
+setupAssetUrlMenu();
 postToPlugin({ type: "LIST_FRAME_TARGETS" });
 renderList();

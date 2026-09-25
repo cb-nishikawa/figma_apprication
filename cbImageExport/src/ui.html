@@ -67,10 +67,24 @@
       <section class="section results-section" aria-labelledby="results-label">
         <div class="results-head">
           <h2 id="results-label">画像一覧</h2>
-          <label class="select-all">
-            <input id="select-all" type="checkbox" />
-            <span>すべて</span>
-          </label>
+          <div class="results-actions">
+            <label class="select-all">
+              <input id="select-all" type="checkbox" />
+              <span>すべて</span>
+            </label>
+            <button id="asset-url-trigger" class="btn-icon asset-url-trigger" type="button" title="URL コピー設定" aria-label="URL コピー設定" aria-haspopup="true" aria-expanded="false">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 16 16"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                aria-hidden="true"
+              >
+                <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+            </button>
+          </div>
         </div>
         <p id="error" class="error" hidden></p>
         <p id="status" class="status" hidden></p>
