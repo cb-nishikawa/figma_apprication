@@ -277,6 +277,7 @@ async function initUiHeight(): Promise<number> {
 }
 
 async function main(): Promise<void> {
+  figma.skipInvisibleInstanceChildren = false;
   const uiHeight = await initUiHeight();
   figma.showUI(__html__, {
     width: UI_WIDTH,

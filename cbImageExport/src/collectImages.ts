@@ -1,3 +1,5 @@
+export const DEBUG = true;
+
 function isVisible(node: SceneNode): boolean {
   return node.visible !== false;
 }
@@ -65,29 +67,15 @@ function findClipFrame(
   return null;
 }
 
-/** Count visible image source nodes under a container (mask containers excluded). */
-function countImageSourcesIn(root: SceneNode): number {
-  let count = 0;
-  walkVisible(root, (node) => {
-    if (isMaskNode(node)) {
-      return;
-    }
-    if (hasImageFill(node) && "exportAsync" in node) {
-      count += 1;
-    }
-  });
-  return count;
-}
-
 /**
  * Resolve what an image node should be shown as:
- * - a mask container holding exactly one image → the container
+ * - a mask container → the container (regardless of image count)
  * - any clipsContent ancestor → that frame (regardless of image count)
  * - otherwise → the image node itself
  */
 function resolveRow(node: SceneNode): SceneNode {
   const mask = findMaskContainer(node);
-  if (mask && countImageSourcesIn(mask) === 1) {
+  if (mask) {
     return mask;
   }
   const clip = findClipFrame(node);
@@ -97,26 +85,19 @@ function resolveRow(node: SceneNode): SceneNode {
   return node;
 }
 
-function walkVisible(
-  node: SceneNode,
-  visit: (n: SceneNode) => void
-): void {
-  if (!isVisible(node)) {
-    return;
-  }
-  visit(node);
-  if ("children" in node) {
-    for (const child of (node as ChildrenMixin).children) {
-      walkVisible(child as SceneNode, visit);
-    }
-  }
+/** Is the node a collectible image source (has a visible IMAGE fill). */
+function isImageSource(node: SceneNode): boolean {
+  return !isMaskNode(node) && hasImageFill(node) && "exportAsync" in node;
 }
 
 /**
  * Collect the rows shown in the list. Each row is either:
- * - a clipsContent ancestor frame (masked by image-count rule above)
- * - a mask container holding exactly one visible image
+ * - a mask container (any image inside it → the container)
+ * - a clipsContent ancestor frame (any image inside it → that frame)
  * - or an individual image source node
+ *
+ * Uses findAll (not manual child recursion) so that content inside
+ * instances / slots is reliably included.
  */
 export function collectImageTargets(roots: SceneNode[]): SceneNode[] {
   const byId = new Map<string, SceneNode>();
@@ -125,19 +106,31 @@ export function collectImageTargets(roots: SceneNode[]): SceneNode[] {
     if (!isVisible(root)) {
       continue;
     }
-    walkVisible(root, (node) => {
-      if (isMaskNode(node)) {
-        return;
+
+    const candidates: SceneNode[] = [];
+    if (isImageSource(root)) {
+      candidates.push(root);
+    }
+    if ("findAll" in root) {
+      for (const node of (root as ChildrenMixin).findAll(isImageSource)) {
+        candidates.push(node);
       }
-      if (!hasImageFill(node) || !("exportAsync" in node)) {
-        return;
-      }
+    }
+
+    for (const node of candidates) {
       const row = resolveRow(node);
       if (!byId.has(row.id)) {
         byId.set(row.id, row);
       }
-    });
+    }
   }
 
-  return [...byId.values()];
+  const collected = [...byId.values()];
+  if (DEBUG) {
+    console.log(
+      "[cbImageExport] collected rows:",
+      collected.map((n) => `${n.type} ${n.name} (${n.id})`)
+    );
+  }
+  return collected;
 }
