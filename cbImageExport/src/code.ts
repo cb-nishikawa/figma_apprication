@@ -10,6 +10,7 @@ import type {
   FrameTarget,
   FrameTargetKind,
   ImageListItem,
+  RecentFrame,
 } from "./types";
 import { DEFAULT_QUALITY } from "./types";
 
@@ -22,8 +23,12 @@ const THUMB_WIDTH = 80;
 const EXPORT_SENTINEL_CONTAINER = "__cb_export__";
 const EXPORT_SENTINEL_PREFIX = "__cfg__";
 const LEGACY_WEBP_SENTINEL_PREFIX = "__cb_webp__";
+const RECENT_FRAMES_KEY = "cbImageExport.recentFrames";
+const MAX_RECENT_FRAMES = 20;
 
 let targetNodeId: string | null = null;
+/** 過去に選択した対象フレームの履歴（最大 20 件・直近が先頭）。 */
+let recentFrames: RecentFrame[] = [];
 
 /**
  * Resolve a collected row by id. Instance-internal nodes (ids like
@@ -226,7 +231,78 @@ function postFrameTargets(): void {
     type: "FRAME_TARGETS",
     targets: collectFrameTargets(),
     targetId: targetNodeId,
+    recent: recentFrames,
   });
+}
+
+// ---- 対象フレームの履歴（clientStorage 永続化） ----
+
+function isRecentFrame(value: unknown): value is RecentFrame {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const entry = value as Partial<RecentFrame>;
+  return (
+    typeof entry.id === "string" &&
+    typeof entry.name === "string" &&
+    typeof entry.kind === "string" &&
+    typeof entry.label === "string"
+  );
+}
+
+async function loadRecentFrames(): Promise<RecentFrame[]> {
+  let stored: unknown;
+  try {
+    stored = await figma.clientStorage.getAsync(RECENT_FRAMES_KEY);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(stored)) {
+    return [];
+  }
+  const frames = stored.filter(isRecentFrame).slice(0, MAX_RECENT_FRAMES);
+  // 起動時クリーンアップ: 見つからない・対象外フレームを履歴から除去
+  const kept: RecentFrame[] = [];
+  for (const entry of frames) {
+    const node = await figma.getNodeByIdAsync(entry.id);
+    if (!node || !isFrameTargetNode(node)) {
+      continue;
+    }
+    kept.push(entry);
+    if (kept.length >= MAX_RECENT_FRAMES) {
+      break;
+    }
+  }
+  if (kept.length !== frames.length) {
+    void figma.clientStorage.setAsync(RECENT_FRAMES_KEY, kept);
+  }
+  return kept;
+}
+
+function pushRecentFrame(entry: RecentFrame): void {
+  recentFrames = [
+    entry,
+    ...recentFrames.filter((existing) => existing.id !== entry.id),
+  ].slice(0, MAX_RECENT_FRAMES);
+  void figma.clientStorage.setAsync(RECENT_FRAMES_KEY, recentFrames);
+}
+
+/** 対象フレーム確定時に履歴へ追加する（現在ページ内のフレームのみ）。 */
+function recordRecentFrame(nodeId: string): void {
+  if (!nodeId) {
+    return;
+  }
+  const target = collectFrameTargets().find((frame) => frame.id === nodeId);
+  if (!target) {
+    return;
+  }
+  pushRecentFrame({
+    id: target.id,
+    name: target.name,
+    kind: target.kind,
+    label: target.label,
+  });
+  postFrameTargets();
 }
 
 async function scanTarget(): Promise<void> {
@@ -725,6 +801,7 @@ async function initUiHeight(): Promise<number> {
 
 async function main(): Promise<void> {
   figma.skipInvisibleInstanceChildren = false;
+  recentFrames = await loadRecentFrames();
   const uiHeight = await initUiHeight();
   figma.showUI(__html__, {
     width: UI_WIDTH,
@@ -752,12 +829,16 @@ async function main(): Promise<void> {
             break;
           }
           targetNodeId = fromSelection;
+          recordRecentFrame(fromSelection);
           postFrameTargets();
           await scanTarget();
           break;
         }
         case "SET_FRAME_NODE":
           targetNodeId = raw.nodeId;
+          if (raw.nodeId) {
+            recordRecentFrame(raw.nodeId);
+          }
           postFrameTargets();
           await scanTarget();
           break;

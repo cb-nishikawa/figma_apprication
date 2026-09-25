@@ -4,6 +4,7 @@ import type {
   ExportResultItem,
   FrameTarget,
   ImageListItem,
+  RecentFrame,
 } from "./types";
 
 export type UiToPluginMessage =
@@ -23,6 +24,8 @@ export type PluginToUiMessage =
       type: "FRAME_TARGETS";
       targets: FrameTarget[];
       targetId: string | null;
+      /** 過去に選択した対象フレームの履歴（最大 20 件・直近が先頭）。 */
+      recent: RecentFrame[];
     }
   | { type: "IMAGE_LIST"; items: ImageListItem[]; message?: string }
   | { type: "SELECTION_EMPTY" }

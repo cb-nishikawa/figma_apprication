@@ -12,6 +12,7 @@ import type {
   ExportResultItem,
   FrameTarget,
   ImageListItem,
+  RecentFrame,
 } from "./types";
 import {
   DEFAULT_EXCLUDE_OPTIONS,
@@ -48,6 +49,7 @@ const resizeHandle = document.getElementById(
 
 let items: ImageListItem[] = [];
 let frameTargets: FrameTarget[] = [];
+let recentFrames: RecentFrame[] = [];
 let targetId: string | null = null;
 const checkedIds = new Set<string>();
 const configsByNode = new Map<string, ExportConfig[]>();
@@ -77,10 +79,14 @@ function mountTargetPicker(): void {
     getLabel: () => getSelectedTarget()?.label ?? "",
     getSelectedId: () => targetId,
     getTargets: () => frameTargets,
+    getRecent: () => recentFrames,
     onApplySelection: () => {
       postToPlugin({ type: "SET_FRAME_FROM_SELECTION" });
     },
     onPick: (id) => {
+      postToPlugin({ type: "SET_FRAME_NODE", nodeId: id });
+    },
+    onPickRecent: (id) => {
       postToPlugin({ type: "SET_FRAME_NODE", nodeId: id });
     },
   });
@@ -854,12 +860,13 @@ window.onmessage = (event: MessageEvent) => {
   }
   if (msg.type === "FRAME_TARGETS") {
     frameTargets = msg.targets;
+    recentFrames = msg.recent;
     targetId = msg.targetId;
     targetPicker?.refresh();
     return;
   }
   if (msg.type === "SELECTION_EMPTY") {
-    targetPicker?.openPopover();
+    targetPicker?.openHistoryPopover();
     return;
   }
   if (msg.type === "IMAGE_LIST") {

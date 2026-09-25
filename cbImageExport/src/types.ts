@@ -19,6 +19,9 @@ export interface FrameTarget {
   label: string;
 }
 
+/** 過去に選択した対象フレームの履歴（最大 20 件・clientStorage に永続化）。 */
+export interface RecentFrame extends FrameTarget {}
+
 /** One list row: a visible image source node. */
 export interface ImageListItem {
   id: string;
