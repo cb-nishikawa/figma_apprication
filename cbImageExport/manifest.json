@@ -1,6 +1,6 @@
 {
   "name": "画像一括書き出しくん",
-  "id": "cb-image-export",
+  "id": "1685150965482188427",
   "api": "1.0.0",
   "main": "dist/code.js",
   "ui": "dist/ui.html",

@@ -18,6 +18,25 @@ const THUMB_WIDTH = 80;
 
 let targetNodeId: string | null = null;
 
+/**
+ * Resolve a collected row by id. Instance-internal nodes (ids like
+ * "I…;…;…") cannot be re-resolved via figma.getNodeByIdAsync, so the most
+ * recent scan also keeps the SceneNode reference itself as a fallback.
+ */
+const nodeCache = new Map<string, SceneNode>();
+
+function resolveNode(nodeId: string): SceneNode | null {
+  const cached = nodeCache.get(nodeId) ?? null;
+  if (cached && !cached.removed) {
+    return cached;
+  }
+  const fromId = figma.getNodeById(nodeId) ?? null;
+  if (fromId && "exportAsync" in fromId) {
+    return fromId as SceneNode;
+  }
+  return cached;
+}
+
 function clampUiHeight(height: number): number {
   return Math.min(MAX_UI_HEIGHT, Math.max(MIN_UI_HEIGHT, Math.round(height)));
 }
@@ -159,6 +178,10 @@ async function scanTarget(): Promise<void> {
   }
 
   const collected = collectImageTargets([node as SceneNode]);
+  nodeCache.clear();
+  for (const target of collected) {
+    nodeCache.set(target.id, target);
+  }
   const items: ImageListItem[] = [];
   for (const target of collected) {
     const thumbBytes = await makeThumb(target);
@@ -213,7 +236,7 @@ function exportSettings(
 async function exportNodes(requests: ExportRequest[]): Promise<void> {
   const results: ExportResultItem[] = [];
   for (const req of requests) {
-    const node = await figma.getNodeByIdAsync(req.id);
+    const node = resolveNode(req.id);
     if (!node || !("exportAsync" in node)) {
       results.push({
         id: req.id,
@@ -251,7 +274,7 @@ async function exportNodes(requests: ExportRequest[]): Promise<void> {
 }
 
 async function focusNode(nodeId: string): Promise<void> {
-  const node = await figma.getNodeByIdAsync(nodeId);
+  const node = resolveNode(nodeId);
   if (!node || !("x" in node)) {
     return;
   }
@@ -261,7 +284,7 @@ async function focusNode(nodeId: string): Promise<void> {
 }
 
 async function renameNode(nodeId: string, name: string): Promise<void> {
-  const node = await figma.getNodeByIdAsync(nodeId);
+  const node = resolveNode(nodeId);
   if (!node || !("name" in node)) {
     return;
   }
