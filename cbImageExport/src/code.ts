@@ -11,6 +11,7 @@ import type {
   FrameTargetKind,
   ImageListItem,
 } from "./types";
+import { DEFAULT_QUALITY } from "./types";
 
 const UI_WIDTH = 360;
 const MIN_UI_HEIGHT = 320;
@@ -18,7 +19,9 @@ const MAX_UI_HEIGHT = 900;
 const DEFAULT_UI_HEIGHT = 480;
 const UI_HEIGHT_STORAGE_KEY = "cbImageExport.uiHeight";
 const THUMB_WIDTH = 80;
-const WEBP_SENTINEL_PREFIX = "__cb_webp__";
+const EXPORT_SENTINEL_CONTAINER = "__cb_export__";
+const EXPORT_SENTINEL_PREFIX = "__cfg__";
+const LEGACY_WEBP_SENTINEL_PREFIX = "__cb_webp__";
 
 let targetNodeId: string | null = null;
 
@@ -254,7 +257,7 @@ async function scanTarget(): Promise<void> {
   for (const target of collected) {
     nodeCache.set(target.id, target);
   }
-  const webpConfigsByNode = syncWebPSentinelRestore(
+  const sentinelConfigs = restoreSentinelConfigs(
     node as SceneNode,
     new Set(collected.map((target) => target.id))
   );
@@ -262,10 +265,17 @@ async function scanTarget(): Promise<void> {
   for (const target of collected) {
     const thumbBytes = await makeThumb(target);
     const exportConfigs = exportSettingsToConfigs(target);
-    const webpConfigs = webpConfigsByNode.get(target.id);
-    if (webpConfigs) {
-      for (const config of webpConfigs) {
-        exportConfigs.push(config);
+    const rowSentinels = sentinelConfigs.get(target.id);
+    if (rowSentinels) {
+      for (const config of rowSentinels) {
+        const index = exportConfigs.findIndex(
+          (existing) => existing.format === config.format
+        );
+        if (index >= 0) {
+          exportConfigs[index] = config;
+        } else {
+          exportConfigs.push(config);
+        }
       }
     }
     items.push({
@@ -327,6 +337,20 @@ function exportSettings(
 }
 
 /**
+ * Settings actually used to render a row in the plugin. Raster formats whose
+ * final encoding happens in the UI (JPG quality / WebP / PNG quantization)
+ * are rendered as PNG here; SVG and PDF use their own settings.
+ */
+function renderSettings(
+  format: ExportFormat,
+  constraint?: ExportConstraint
+): ExportSettings {
+  const rasterToPng =
+    format === "PNG" || format === "JPG" || format === "WEBP";
+  return exportSettings(rasterToPng ? "PNG" : format, constraint);
+}
+
+/**
  * Convert the node's layer exportSettings into the plugin's ExportConfig[]
  * so existing layer entries are reflected in the list. Unsupported formats
  * (SVG_STRING / GIF / MP4 / WebM / JSON_REST_V1) are skipped.
@@ -367,6 +391,7 @@ async function exportNodes(requests: ExportRequest[]): Promise<void> {
         id: req.id,
         name: "(missing)",
         format: req.format,
+        constraint: req.constraint,
         ok: false,
         message: "ノードが見つからないか書き出せません",
       });
@@ -376,13 +401,14 @@ async function exportNodes(requests: ExportRequest[]): Promise<void> {
     try {
       const bytes = await exportSceneNode(
         scene,
-        exportSettings(req.format, req.constraint),
+        renderSettings(req.format, req.constraint),
         req.options
       );
       results.push({
         id: req.id,
         name: scene.name || "(untitled)",
         format: req.format,
+        constraint: req.constraint,
         ok: true,
         bytes: Array.from(bytes),
       });
@@ -392,6 +418,7 @@ async function exportNodes(requests: ExportRequest[]): Promise<void> {
         id: req.id,
         name: scene.name || "(untitled)",
         format: req.format,
+        constraint: req.constraint,
         ok: false,
         message: `${req.format} 書き出しに失敗: ${message}`,
       });
@@ -478,14 +505,7 @@ async function renameNode(nodeId: string, name: string): Promise<void> {
   node.name = name;
 }
 
-/**
- * WEBP is not representable in Figma's exportSettings, so each WEBP config is
- * carried by a 0x0 sentinel rectangle inside the scanned target frame whose
- * layer name encodes the row node id and the size: "__cb_webp__|<id>|<size>".
- * Sentinels are invisible, locked and fill-less so they never surface as rows.
- */
-
-function webpConstraintText(constraint: ExportConstraint): string {
+function constraintToText(constraint: ExportConstraint): string {
   if (constraint.type === "WIDTH") {
     return `${constraint.value}w`;
   }
@@ -508,11 +528,66 @@ function parseConstraintText(text: string): ExportConstraint {
   return { type: "SCALE", value: safe };
 }
 
+function clampQuality(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_QUALITY;
+  }
+  return Math.min(100, Math.max(1, Math.round(value)));
+}
+
+function makeSentinel(
+  format: ExportFormat,
+  nodeId: string,
+  config: ExportConfig
+): SceneNode {
+  const rect = figma.createRectangle();
+  rect.name = [
+    EXPORT_SENTINEL_PREFIX,
+    format,
+    nodeId,
+    constraintToText(config.constraint),
+    clampQuality(config.quality ?? DEFAULT_QUALITY),
+  ].join("|");
+  rect.resize(0, 0);
+  rect.x = 0;
+  rect.y = 0;
+  rect.fills = [];
+  rect.visible = false;
+  rect.locked = true;
+  return rect;
+}
+
+interface SentinelInfo {
+  format: ExportFormat;
+  nodeId: string;
+  constraintText: string;
+  quality: number;
+}
+
+function parseSentinelName(name: string): SentinelInfo | null {
+  const match = name.match(
+    /^__cfg__\|(PNG|JPG|WEBP)\|(.+)\|([0-9.]+[whx])\|([0-9]{1,3})$/
+  );
+  if (!match) {
+    return null;
+  }
+  return {
+    format: match[1] as ExportFormat,
+    nodeId: match[2],
+    constraintText: match[3],
+    quality: clampQuality(Number(match[4])),
+  };
+}
+
 /**
- * On every rescan: rebuild the WEBP configs read from the sentinel layers of
- * the target frame, and remove sentinels whose row no longer exists.
+ * Sentinel layers live inside a single hidden+locked container frame
+ * ("__cb_export__") under the scanned target frame so the Layers panel stays
+ * clean. Each 0x0 rectangle encodes one config that Figma's exportSettings
+ * cannot carry (WEBP is not a format; PNG/JPG never carry a quality value).
+ * On rescan the configs are restored (a sentinel overrides the same-format
+ * layer entry, e.g. to keep its quality) and orphans/legacy layers are swept.
  */
-function syncWebPSentinelRestore(
+function restoreSentinelConfigs(
   frame: SceneNode,
   validIds: Set<string>
 ): Map<string, ExportConfig[]> {
@@ -522,38 +597,47 @@ function syncWebPSentinelRestore(
   }
   const children = [...frame.children];
   for (const child of children) {
-    if (!child.name.startsWith(`${WEBP_SENTINEL_PREFIX}|`)) {
-      continue;
-    }
-    const match = child.name.match(
-      /^__cb_webp__\|(.+)\|([0-9.]+[whx])$/
-    );
-    if (!match) {
-      continue;
-    }
-    const rowId = match[1];
-    if (!validIds.has(rowId)) {
+    if (child.name.startsWith(LEGACY_WEBP_SENTINEL_PREFIX)) {
       child.remove();
+    }
+  }
+  const container = children.find(
+    (child) => child.name === EXPORT_SENTINEL_CONTAINER
+  );
+  if (!container || !("children" in container)) {
+    return map;
+  }
+  for (const sentinel of [...container.children]) {
+    const info = parseSentinelName(sentinel.name);
+    if (!info) {
+      continue;
+    }
+    if (!validIds.has(info.nodeId)) {
+      sentinel.remove();
       continue;
     }
     const config: ExportConfig = {
-      format: "WEBP",
-      constraint: parseConstraintText(match[2]),
+      format: info.format,
+      constraint: parseConstraintText(info.constraintText),
+      quality: info.quality,
     };
-    const list = map.get(rowId);
+    const list = map.get(info.nodeId);
     if (list) {
       list.push(config);
     } else {
-      map.set(rowId, [config]);
+      map.set(info.nodeId, [config]);
     }
+  }
+  if (container.children.length === 0) {
+    container.remove();
   }
   return map;
 }
 
-/** Upsert / remove the sentinel layers of one row based on its WEBP configs. */
-async function syncWebPSentinels(
+/** Upsert / remove the sentinel entries of one row inside the container. */
+async function syncExportSentinels(
   nodeId: string,
-  webpConfigs: ExportConfig[]
+  configs: ExportConfig[]
 ): Promise<void> {
   if (!targetNodeId) {
     return;
@@ -562,31 +646,55 @@ async function syncWebPSentinels(
   if (!frame || !("children" in frame)) {
     return;
   }
-  const prefix = `${WEBP_SENTINEL_PREFIX}|${nodeId}|`;
-  const children = [...frame.children];
-  for (const child of children) {
-    if (child.name.startsWith(prefix)) {
-      child.remove();
+  const frameChildren = [...frame.children];
+  const container = frameChildren.find(
+    (child) =>
+      child.name === EXPORT_SENTINEL_CONTAINER && "children" in child
+  ) as (SceneNode & ChildrenMixin) | undefined;
+  if (container) {
+    for (const sentinel of [...container.children]) {
+      const info = parseSentinelName(sentinel.name);
+      if (info && info.nodeId === nodeId) {
+        sentinel.remove();
+      }
     }
   }
-  for (const config of webpConfigs) {
-    const rect = figma.createRectangle();
-    rect.name = `${prefix}${webpConstraintText(config.constraint)}`;
-    rect.resize(0, 0);
-    rect.x = 0;
-    rect.y = 0;
-    rect.fills = [];
-    rect.visible = false;
-    rect.locked = true;
-    (frame as ChildrenMixin).appendChild(rect);
+  const toPersist = configs.filter(
+    (config) =>
+      config.format === "WEBP" ||
+      config.format === "JPG" ||
+      config.format === "PNG"
+  );
+  if (toPersist.length === 0) {
+    if (container && container.children.length === 0) {
+      container.remove();
+    }
+    return;
+  }
+  let target = container;
+  if (!target) {
+    const created = figma.createFrame();
+    created.name = EXPORT_SENTINEL_CONTAINER;
+    created.resize(0, 0);
+    created.x = 0;
+    created.y = 0;
+    created.fills = [];
+    created.clipsContent = false;
+    created.visible = false;
+    created.locked = true;
+    (frame as ChildrenMixin).appendChild(created);
+    target = created as SceneNode & ChildrenMixin;
+  }
+  for (const config of toPersist) {
+    target.appendChild(makeSentinel(config.format, nodeId, config));
   }
 }
 
 /**
  * Reflect the plugin's export configs to the actual Figma layer
  * (node.exportSettings). Empty configs clear the layer's export settings.
- * WEBP configs are excluded (not representable in Figma) and instead
- * persisted as sentinel layers inside the scanned target frame.
+ * WEBP cannot be written to the layer, and PNG/JPG quality cannot either;
+ * these are persisted as sentinel layers instead.
  */
 async function applyExportSettings(
   nodeId: string,
@@ -597,11 +705,10 @@ async function applyExportSettings(
     return;
   }
   const scene = node as SceneNode;
-  const webpConfigs = configs.filter((config) => config.format === "WEBP");
   scene.exportSettings = configs
     .filter((config) => config.format !== "WEBP")
     .map((config) => exportSettings(config.format, config.constraint));
-  await syncWebPSentinels(nodeId, webpConfigs);
+  await syncExportSentinels(nodeId, configs);
 }
 
 async function initUiHeight(): Promise<number> {

@@ -16,8 +16,10 @@ import type {
 import {
   DEFAULT_EXCLUDE_OPTIONS,
   DEFAULT_EXPORT_CONSTRAINT,
+  DEFAULT_QUALITY,
   EXPORT_FORMATS,
 } from "./types";
+import { colorsForQuality, quantizePng } from "./png";
 import { zipEntries, type ZipEntry } from "./zip";
 
 const MIN_UI_HEIGHT = 320;
@@ -26,6 +28,7 @@ const MAX_UI_HEIGHT = 900;
 const DEFAULT_CONFIG: ExportConfig = {
   format: "PNG",
   constraint: { ...DEFAULT_EXPORT_CONSTRAINT },
+  quality: DEFAULT_QUALITY,
 };
 
 const targetPickerRoot = document.getElementById(
@@ -184,6 +187,20 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, "_").trim() || "export";
 }
 
+/** ファイル名のサイズサフィックス。1x はなし、SVG / PDF はサイズ指定が効かないためなし。 */
+function constraintSuffix(
+  constraint: ExportConstraint,
+  format: ExportFormat
+): string {
+  if (format === "SVG" || format === "PDF") {
+    return "";
+  }
+  if (constraint.type === "SCALE" && constraint.value === 1) {
+    return "";
+  }
+  return `_${formatConstraint(constraint)}`;
+}
+
 function downloadUint8(data: Uint8Array, fileName: string, mime: string): void {
   const blob = new Blob([new Uint8Array(data)], { type: mime });
   const url = URL.createObjectURL(blob);
@@ -202,11 +219,38 @@ function timestampForName(): string {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
+/** Final bytes for a result: raster formats are re-encoded at quality here. */
+async function bytesForResult(
+  result: ExportResultItem
+): Promise<Uint8Array<ArrayBuffer>> {
+  const quality = qualityFor(result.id, result.format);
+  if (result.format === "JPG") {
+    return canvasEncode(result.bytes!, "image/jpeg", quality / 100);
+  }
+  if (result.format === "WEBP") {
+    return canvasEncode(result.bytes!, "image/webp", quality / 100);
+  }
+  if (result.format === "PNG" && quality < 100) {
+    return quantizePng(result.bytes!, colorsForQuality(quality));
+  }
+  return new Uint8Array(result.bytes!);
+}
+
+/** 圧縮率（%）を設定から取得。未設定は既定値。 */
+function qualityFor(id: string, format: ExportFormat): number {
+  const config = configsFor(id).find((c) => c.format === format);
+  return config?.quality ?? DEFAULT_QUALITY;
+}
+
 /**
- * WebP is rendered as PNG by the plugin (Figma has no WebP export), so the
- * bytes are transcoded here in the UI (Chromium canvas) before saving.
+ * Decode PNG bytes drawn from Figma and re-encode with the requested raster
+ * codec / quality (JPEG and WebP; Figma has no quality knob for either).
  */
-async function bytesToWebP(pngBytes: number[]): Promise<Uint8Array<ArrayBuffer>> {
+async function canvasEncode(
+  pngBytes: number[],
+  mime: string,
+  quality: number
+): Promise<Uint8Array<ArrayBuffer>> {
   const blob = new Blob([new Uint8Array(pngBytes)], { type: "image/png" });
   const bitmap = await createImageBitmap(blob);
   const canvas = document.createElement("canvas");
@@ -224,22 +268,13 @@ async function bytesToWebP(pngBytes: number[]): Promise<Uint8Array<ArrayBuffer>>
   }
   const out = await new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error("WebP 変換に失敗しました"))),
-      "image/webp",
-      0.92
+      (b) =>
+        b ? resolve(b) : reject(new Error("画像変換に失敗しました")),
+      mime,
+      quality
     );
   });
   return new Uint8Array(await out.arrayBuffer());
-}
-
-/** Final bytes for a result: WebP for WEBP results, otherwise the bytes as-is. */
-async function bytesForResult(
-  result: ExportResultItem
-): Promise<Uint8Array<ArrayBuffer>> {
-  if (result.format === "WEBP") {
-    return bytesToWebP(result.bytes!);
-  }
-  return new Uint8Array(result.bytes!);
 }
 
 function createFormatSelect(
@@ -455,6 +490,52 @@ function createExcludeMenu(id: string): HTMLElement {
   return menu;
 }
 
+function createQualityInput(
+  config: ExportConfig,
+  onChange?: () => void
+): HTMLDivElement {
+  const wrap = document.createElement("div");
+  wrap.className = "config-quality";
+
+  const input = document.createElement("input");
+  input.type = "number";
+  input.min = "1";
+  input.max = "100";
+  input.step = "1";
+  input.value = String(config.quality ?? DEFAULT_QUALITY);
+  input.setAttribute("aria-label", "圧縮率");
+  input.title = "圧縮率（%）";
+  input.addEventListener("click", (event) => event.stopPropagation());
+  input.addEventListener("change", () => {
+    const parsed = Math.round(Number(input.value));
+    const next = Number.isFinite(parsed)
+      ? Math.min(100, Math.max(1, parsed))
+      : DEFAULT_QUALITY;
+    config.quality = next;
+    input.value = String(next);
+    onChange?.();
+  });
+
+  const unit = document.createElement("span");
+  unit.textContent = "%";
+
+  wrap.append(input, unit);
+  return wrap;
+}
+
+function updateQualityVisibility(qualityWrap: HTMLDivElement, format: ExportFormat): void {
+  const visible = format === "PNG" || format === "JPG" || format === "WEBP";
+  qualityWrap.style.display = visible ? "inline-flex" : "none";
+}
+
+/** SVG / PDF はサイズ指定が効かないため、サイズ入力を非活性にする。 */
+function updateConstraintDisabled(
+  sizeInput: HTMLInputElement,
+  format: ExportFormat
+): void {
+  sizeInput.disabled = format === "SVG" || format === "PDF";
+}
+
 function createConfigRow(id: string, config: ExportConfig, index: number): HTMLElement {
   const row = document.createElement("div");
   row.className = "config-row";
@@ -463,14 +544,22 @@ function createConfigRow(id: string, config: ExportConfig, index: number): HTMLE
     syncExportSettings(id);
   });
 
-  const format = createFormatSelect(config.format, (next) => {
-    config.format = next;
+  const quality = createQualityInput(config, () => {
     syncExportSettings(id);
   });
 
+  const format = createFormatSelect(config.format, (next) => {
+    config.format = next;
+    updateConstraintDisabled(size, next);
+    updateQualityVisibility(quality, next);
+    syncExportSettings(id);
+  });
+  updateConstraintDisabled(size, config.format);
+  updateQualityVisibility(quality, config.format);
+
   const remove = createRemoveButton(id, index);
 
-  row.append(size, format, remove);
+  row.append(size, format, quality, remove);
   return row;
 }
 
@@ -583,7 +672,10 @@ async function handleExportResults(results: ExportResultItem[]): Promise<void> {
         continue;
       }
       const name = nameOverridesById.get(result.id)?.trim() || result.name;
-      const fileName = `${sanitizeFilename(name)}.${extFor(result.format)}`;
+      const fileName = `${sanitizeFilename(name)}${constraintSuffix(
+        result.constraint,
+        result.format
+      )}.${extFor(result.format)}`;
       try {
         const data = await bytesForResult(result);
         const handle = await dir.getFileHandle(fileName, { create: true });
@@ -604,7 +696,10 @@ async function handleExportResults(results: ExportResultItem[]): Promise<void> {
       if (result.ok && result.bytes) {
         const name = nameOverridesById.get(result.id)?.trim() || result.name;
         const ext = extFor(result.format);
-        const base = sanitizeFilename(name);
+        const base = sanitizeFilename(name) + constraintSuffix(
+          result.constraint,
+          result.format
+        );
         let fileName = `${base}.${ext}`;
         let i = 2;
         while (usedNames.has(fileName)) {

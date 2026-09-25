@@ -469,7 +469,8 @@ body.is-resizing * {
 }
 
 .config-format,
-.config-scale {
+.config-scale,
+.config-quality input {
   padding: 3px 4px;
   border: 1px solid #d0d0d0;
   border-radius: 4px;
@@ -486,6 +487,36 @@ body.is-resizing * {
   flex-shrink: 0;
   width: 72px;
   text-align: center;
+}
+
+.config-scale:disabled {
+  background: #f0f0f0;
+  color: #bbb;
+  cursor: not-allowed;
+  border-color: #e5e5e5;
+}
+
+.config-quality {
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+}
+
+.config-quality input {
+  width: 44px;
+  text-align: center;
+  -moz-appearance: textfield;
+}
+
+.config-quality input::-webkit-outer-spin-button,
+.config-quality input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.config-quality span {
+  font-size: 11px;
+  color: #777;
 }
 
 .config-add,

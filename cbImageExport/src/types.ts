@@ -42,9 +42,14 @@ export const DEFAULT_EXPORT_CONSTRAINT: ExportConstraint = {
   value: 1,
 };
 
+/** 圧縮率の既定値（%）。PNG / JPG / WEBP に適用。 */
+export const DEFAULT_QUALITY = 92;
+
 export interface ExportConfig {
   format: ExportFormat;
   constraint: ExportConstraint;
+  /** 圧縮率（%・1〜100）。SVG / PDF では使用しない。 */
+  quality?: number;
 }
 
 /**
@@ -78,6 +83,8 @@ export interface ExportResultItem {
   id: string;
   name: string;
   format: ExportFormat;
+  /** この結果を書き出したサイズ指定（ファイル名のサフィックスに利用）。 */
+  constraint: ExportConstraint;
   ok: boolean;
   message?: string;
   bytes?: number[];
