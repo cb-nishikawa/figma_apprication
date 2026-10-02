@@ -81,6 +81,8 @@ export type UiToPluginMessage =
   | { type: "BUILD_HIGHLIGHT_POOL"; items: HoverHighlightItem[] }
   | { type: "HOVER_HIGHLIGHT"; items: HoverHighlightItem[] }
   | { type: "CLEAR_HIGHLIGHT" }
+  | { type: "SHOW_TARGET_OVERLAY"; nodeId: string }
+  | { type: "HIDE_TARGET_OVERLAY" }
   | {
       type: "SET_HIGHLIGHT_COLOR";
       color: HighlightColor;

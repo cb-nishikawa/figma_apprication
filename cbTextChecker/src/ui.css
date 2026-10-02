@@ -334,6 +334,16 @@ body.is-resizing * {
   pointer-events: none;
 }
 
+.is-row-hidden .pair-swap-icon {
+  color: #ccc;
+}
+
+.is-row-hidden textarea,
+.is-row-hidden .target-picker-btn {
+  opacity: 0.45;
+  background: #f5f5f5;
+}
+
 .compare-inline {
   display: flex;
   flex-direction: column;

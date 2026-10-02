@@ -52,7 +52,9 @@ function resolveNode(nodeId: string): SceneNode | null {
   return cached;
 }
 
-const HOVER_NAME = "hoverEffect";
+/** Random per launch so concurrent users never touch each other's overlay. */
+const SESSION_ID = Math.random().toString(36).slice(2, 10);
+const HOVER_NAME = `hoverEffect@${SESSION_ID}`;
 let hoverOverlay: RectangleNode | null = null;
 
 const HIGHLIGHT_RGB: RGB = { r: 0, g: 1, b: 64 / 255 };

@@ -39,6 +39,8 @@ export interface OcrItem {
 export interface ComparePair {
   idA: string | null;
   idB: string | null;
+  /** Excluded from comparison while hidden in the UI. */
+  hidden?: boolean;
 }
 
 export type HoverHighlightStyle = "component" | "instance";

@@ -129,12 +129,14 @@ const resizeHandle = document.getElementById("resize-handle") as HTMLDivElement;
 interface ComparePairUi {
   idA: string | null;
   idB: string | null;
+  hidden: boolean;
 }
 
 function emptyPairUi(): ComparePairUi {
   return {
     idA: null,
     idB: null,
+    hidden: false,
   };
 }
 
@@ -152,6 +154,8 @@ let imageNodeName = "";
 let imageExportScale = 1;
 let ocrItems: OcrItem[] = [];
 let ocrBusy = false;
+/** Hidden via the row menu: excluded from OCR display, comparison and highlights. */
+let imageRowHidden = false;
 let ocrModelUrls: { detUrl: string; recUrl: string } | null = null;
 /** When true, compare results are showing (OCR image highlights paused). */
 let imageCompareActive = false;
@@ -434,6 +438,9 @@ function collectQueries(): KeywordQuery[] {
   const ignoreNewlines = collectIgnoreCategories().newlines;
   const queries: KeywordQuery[] = [];
   keywordRowsEl.querySelectorAll(".keyword-row").forEach((row) => {
+    if (row.classList.contains("is-row-hidden")) {
+      return;
+    }
     const area = row.querySelector("textarea");
     if (!area) {
       return;
@@ -494,8 +501,8 @@ function comparePickerKey(index: number, side: CompareSide): string {
 }
 
 function setImageControlsDisabled(disabled: boolean): void {
-  imagePicker?.setDisabled(disabled);
-  imageTargetPicker?.setDisabled(disabled);
+  imagePicker?.setDisabled(disabled || imageRowHidden);
+  imageTargetPicker?.setDisabled(disabled || imageRowHidden);
   const menuTrigger = imageRowActionsEl.querySelector(
     ".row-menu-trigger"
   ) as HTMLButtonElement | null;
@@ -510,6 +517,14 @@ function refreshAllTargetPickers(): void {
   imageTargetPicker?.refresh();
   for (const picker of comparePickers.values()) {
     picker.refresh();
+  }
+}
+
+function hoverTargetOverlay(nodeId: string | null): void {
+  if (nodeId) {
+    postToPlugin({ type: "SHOW_TARGET_OVERLAY", nodeId });
+  } else {
+    postToPlugin({ type: "HIDE_TARGET_OVERLAY" });
   }
 }
 
@@ -554,7 +569,7 @@ function collectPinnedOcrItems(): HoverHighlightItem[] {
 }
 
 function publishOcrHighlights(extraItems: HoverHighlightItem[] = []): void {
-  if (imageCompareActive) {
+  if (imageCompareActive || imageRowHidden) {
     return;
   }
   const byKey = new Map<string, HoverHighlightItem>();
@@ -570,6 +585,10 @@ function publishOcrHighlights(extraItems: HoverHighlightItem[] = []): void {
 }
 
 function buildAndShowOcrHighlights(): void {
+  if (imageRowHidden) {
+    postToPlugin({ type: "CLEAR_HIGHLIGHT" });
+    return;
+  }
   if (imageCompareActive || !imageNodeId || ocrItems.length === 0) {
     return;
   }
@@ -673,6 +692,13 @@ function renderOcrList(): void {
     const li = document.createElement("li");
     li.className = "empty is-loading";
     li.textContent = "読み込み中…";
+    resultsEl.appendChild(li);
+    return;
+  }
+  if (imageRowHidden) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "画像の行は非表示です";
     resultsEl.appendChild(li);
     return;
   }
@@ -846,6 +872,12 @@ async function processExportedImage(
 }
 
 function runImageCompare(): void {
+  if (imageRowHidden) {
+    imageCompareActive = false;
+    renderOcrList();
+    postToPlugin({ type: "CLEAR_HIGHLIGHT" });
+    return;
+  }
   if (!imageTargetId || ocrItems.length === 0) {
     imageCompareActive = false;
     renderOcrList();
@@ -905,7 +937,7 @@ function runSearch(): void {
     return;
   }
   if (mode === "image") {
-    if (imageTargetId && ocrItems.length > 0) {
+    if (imageRowHidden || (imageTargetId && ocrItems.length > 0)) {
       runImageCompare();
     } else if (imageNodeId) {
       renderOcrList();
@@ -963,7 +995,11 @@ function commitPinnedNode(nextId: string | null): void {
 }
 
 function pairsToPayload(): ComparePair[] {
-  return comparePairs.map((p) => ({ idA: p.idA, idB: p.idB }));
+  return comparePairs.map((p) => ({
+    idA: p.idA,
+    idB: p.idB,
+    hidden: p.hidden,
+  }));
 }
 
 function syncComparePairsToPlugin(): void {
@@ -1035,6 +1071,7 @@ function createCompareSidePicker(
     },
     getTargets: () => compareTargets,
     getRecent: () => recentTargets,
+    onHoverTarget: hoverTargetOverlay,
     onApplySelection: () => {
       setIgnorePopoverOpen(false);
       closeAllRowMenus();
@@ -1064,11 +1101,14 @@ function renderComparePairs(): void {
   comparePairs.forEach((pair, index) => {
     const row = document.createElement("div");
     row.className = "compare-pair-row";
+    row.classList.toggle("is-row-hidden", pair.hidden);
 
     const sides = document.createElement("div");
     sides.className = "compare-pair-sides";
     const pickerA = createCompareSidePicker(index, "A");
     const pickerB = createCompareSidePicker(index, "B");
+    pickerA.setDisabled(pair.hidden);
+    pickerB.setDisabled(pair.hidden);
     sides.append(pickerA.root, createPairSwapIcon(), pickerB.root);
 
     const actions = document.createElement("div");
@@ -1090,6 +1130,12 @@ function renderComparePairs(): void {
           syncComparePairsToPlugin();
         },
         canRemove: () => comparePairs.length > 1,
+        isHidden: () => pair.hidden,
+        onToggleHidden: () => {
+          pair.hidden = !pair.hidden;
+          renderComparePairs();
+          syncComparePairsToPlugin();
+        },
       })
     );
     row.append(sides, actions);
@@ -1144,6 +1190,8 @@ function createRowMenu(options: {
   onClear: () => void;
   onRemove: () => void;
   canRemove: () => boolean;
+  isHidden: () => boolean;
+  onToggleHidden: () => void;
 }): HTMLDivElement {
   const menu = document.createElement("div");
   menu.className = "row-menu";
@@ -1173,6 +1221,20 @@ function createRowMenu(options: {
     options.onClear();
   });
 
+  const hideItem = document.createElement("button");
+  hideItem.type = "button";
+  hideItem.className = "row-menu-item row-menu-hide";
+  hideItem.setAttribute("role", "menuitem");
+  const syncHideLabel = () => {
+    hideItem.textContent = options.isHidden() ? "表示" : "非表示";
+  };
+  syncHideLabel();
+  hideItem.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeAllRowMenus();
+    options.onToggleHidden();
+  });
+
   const removeItem = document.createElement("button");
   removeItem.type = "button";
   removeItem.className = "row-menu-item row-menu-remove";
@@ -1196,12 +1258,14 @@ function createRowMenu(options: {
     setIgnorePopoverOpen(false);
     if (willOpen) {
       removeItem.disabled = !options.canRemove();
+      clearItem.disabled = options.isHidden();
+      syncHideLabel();
       panel.hidden = false;
       trigger.setAttribute("aria-expanded", "true");
     }
   });
 
-  panel.append(clearItem, removeItem);
+  panel.append(clearItem, hideItem, removeItem);
   menu.append(trigger, panel);
   return menu;
 }
@@ -1249,11 +1313,21 @@ function addKeywordRow(initialValue = ""): void {
       },
       canRemove: () =>
         keywordRowsEl.querySelectorAll(".keyword-row").length > 1,
+      isHidden: () => row.classList.contains("is-row-hidden"),
+      onToggleHidden: () => {
+        const hidden = !row.classList.contains("is-row-hidden");
+        row.classList.toggle("is-row-hidden", hidden);
+        textarea.disabled = hidden;
+        debounceSearch();
+      },
     })
   );
   row.append(textarea, actions);
 
   row.addEventListener("mouseenter", () => {
+    if (row.classList.contains("is-row-hidden")) {
+      return;
+    }
     const keyword = textarea.value.trim();
     if (!keyword) {
       return;
@@ -1805,7 +1879,7 @@ window.onmessage = (event: MessageEvent) => {
     showError(msg.message);
     pinnedKeywords.clear();
     postToPlugin({ type: "CLEAR_HIGHLIGHT" });
-    if (mode === "image" && !imageTargetId) {
+    if (mode === "image" && (!imageTargetId || imageRowHidden)) {
       renderOcrList();
     } else {
       renderResults([]);
@@ -1830,6 +1904,7 @@ window.onmessage = (event: MessageEvent) => {
       (p) => ({
         idA: p.idA,
         idB: p.idB,
+        hidden: Boolean(p.hidden),
       })
     );
     refreshComparePairsFromState();
@@ -1873,6 +1948,9 @@ window.onmessage = (event: MessageEvent) => {
   }
 
   if (msg.type === "SEARCH_RESULT") {
+    if (mode === "image" && imageRowHidden) {
+      return;
+    }
     showError(null);
     renderResults(msg.results);
     syncHighlightPrefsAfterSearch();
@@ -1892,6 +1970,7 @@ function mountPinPicker(): void {
     getSelectedId: () => pinnedNodeId,
     getTargets: () => pinTargets,
     getRecent: () => recentTargets,
+    onHoverTarget: hoverTargetOverlay,
     onApplySelection: () => {
       setIgnorePopoverOpen(false);
       closeAllRowMenus();
@@ -1924,6 +2003,7 @@ function mountImagePickers(): void {
     getSelectedId: () => imageNodeId,
     getTargets: () => imageTargets,
     getRecent: () => recentTargets,
+    onHoverTarget: hoverTargetOverlay,
     onApplySelection: () => {
       setIgnorePopoverOpen(false);
       closeAllRowMenus();
@@ -1947,6 +2027,7 @@ function mountImagePickers(): void {
     getSelectedId: () => imageTargetId,
     getTargets: () => imageTargets,
     getRecent: () => recentTargets,
+    onHoverTarget: hoverTargetOverlay,
     onApplySelection: () => {
       setIgnorePopoverOpen(false);
       closeAllRowMenus();
@@ -1967,6 +2048,24 @@ function mountImagePickers(): void {
   );
 }
 
+function setImageRowHidden(hidden: boolean): void {
+  imageRowHidden = hidden;
+  imageRowActionsEl
+    .closest(".compare-pair-row")
+    ?.classList.toggle("is-row-hidden", hidden);
+  setImageControlsDisabled(ocrBusy);
+  if (mode !== "image") {
+    return;
+  }
+  if (hidden || (imageTargetId && ocrItems.length > 0)) {
+    runImageCompare();
+  } else {
+    imageCompareActive = false;
+    renderOcrList();
+    buildAndShowOcrHighlights();
+  }
+}
+
 imageRowActionsEl.append(
   createRowMenu({
     onClear: () => {
@@ -1976,6 +2075,10 @@ imageRowActionsEl.append(
       /* image mode has a single row */
     },
     canRemove: () => false,
+    isHidden: () => imageRowHidden,
+    onToggleHidden: () => {
+      setImageRowHidden(!imageRowHidden);
+    },
   })
 );
 

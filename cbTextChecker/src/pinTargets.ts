@@ -1,3 +1,4 @@
+import { OVERLAY_NAME_PREFIX } from "./highlight";
 import type { PinTarget } from "./types";
 
 type PinKind = "SECTION" | "FRAME" | "INSTANCE" | "GROUP";
@@ -38,9 +39,11 @@ function buildLabel(
 }
 
 export function collectPinTargets(): PinTarget[] {
-  const nodes = figma.currentPage.findAllWithCriteria({
-    types: ["SECTION", "FRAME", "INSTANCE", "GROUP"],
-  }) as Array<SceneNode & { type: PinKind }>;
+  const nodes = (
+    figma.currentPage.findAllWithCriteria({
+      types: ["SECTION", "FRAME", "INSTANCE", "GROUP"],
+    }) as Array<SceneNode & { type: PinKind }>
+  ).filter((node) => !node.name.startsWith(OVERLAY_NAME_PREFIX));
 
   const nameCounts = new Map<string, number>();
   for (const node of nodes) {

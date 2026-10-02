@@ -14,6 +14,8 @@ export interface TargetPickerOptions {
   onPick: (id: string) => void;
   /** 履歴項目が選ばれたとき（候補一覧の onPick と同じ扱い）。 */
   onPickRecent: (id: string) => void;
+  /** 選択済みボタンへのホバー開始で nodeId、終了で null。 */
+  onHoverTarget?: (nodeId: string | null) => void;
 }
 
 export interface TargetPickerController {
@@ -275,13 +277,38 @@ export function createTargetPicker(
       button.disabled = disabled;
       if (disabled) {
         closePopover();
+        endHover();
       }
     },
     isOpen: () => open,
   };
 
+  let hovering = false;
+
+  function endHover(): void {
+    if (!hovering) {
+      return;
+    }
+    hovering = false;
+    options.onHoverTarget?.(null);
+  }
+
+  button.addEventListener("mouseenter", () => {
+    const selectedId = options.getSelectedId();
+    if (button.disabled || !selectedId || !options.onHoverTarget) {
+      return;
+    }
+    hovering = true;
+    options.onHoverTarget(selectedId);
+  });
+
+  button.addEventListener("mouseleave", () => {
+    endHover();
+  });
+
   button.addEventListener("click", (event) => {
     event.stopPropagation();
+    endHover();
     if (button.disabled) {
       return;
     }

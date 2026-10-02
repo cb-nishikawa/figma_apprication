@@ -12,9 +12,36 @@ import {
 export type { HighlightColor, HoverHighlightItem, HoverHighlightStyle };
 export { splitRangeByHeightBreaks, splitRangeByNewlines };
 
-export const HOVER_HIGHLIGHT_NAME = "__CB_TC_HIGHLIGHT__";
-export const HIGHLIGHT_POOL_NAME = "__CB_TC_HIGHLIGHT_POOL__";
-export const OCR_LABEL_NAME = "__CB_TC_OCR_LABEL__";
+/** Random per launch so concurrent users never remove each other's overlays. */
+export const SESSION_ID = Math.random().toString(36).slice(2, 10);
+
+export const OVERLAY_NAME_PREFIX = "__CB_TC_";
+
+const LEGACY_HOVER_HIGHLIGHT_NAME = "__CB_TC_HIGHLIGHT__";
+const LEGACY_HIGHLIGHT_POOL_NAME = "__CB_TC_HIGHLIGHT_POOL__";
+const LEGACY_OCR_LABEL_NAME = "__CB_TC_OCR_LABEL__";
+const LEGACY_TARGET_OVERLAY_NAME = "__CB_TC_TARGET__";
+
+export const HOVER_HIGHLIGHT_NAME = `${LEGACY_HOVER_HIGHLIGHT_NAME}@${SESSION_ID}`;
+export const HIGHLIGHT_POOL_NAME = `${LEGACY_HIGHLIGHT_POOL_NAME}@${SESSION_ID}`;
+export const OCR_LABEL_NAME = `${LEGACY_OCR_LABEL_NAME}@${SESSION_ID}`;
+const TARGET_OVERLAY_NAME = `${LEGACY_TARGET_OVERLAY_NAME}@${SESSION_ID}`;
+
+function isOwnedOverlayName(name: string): boolean {
+  return (
+    name === HOVER_HIGHLIGHT_NAME ||
+    name === HIGHLIGHT_POOL_NAME ||
+    name === TARGET_OVERLAY_NAME ||
+    name === LEGACY_TARGET_OVERLAY_NAME ||
+    name.startsWith(`${HOVER_HIGHLIGHT_NAME}:`) ||
+    name.startsWith(`${OCR_LABEL_NAME}:`) ||
+    // Unscoped layers left by versions before session IDs.
+    name === LEGACY_HOVER_HIGHLIGHT_NAME ||
+    name === LEGACY_HIGHLIGHT_POOL_NAME ||
+    name.startsWith(`${LEGACY_HOVER_HIGHLIGHT_NAME}:`) ||
+    name.startsWith(`${LEGACY_OCR_LABEL_NAME}:`)
+  );
+}
 
 const HIGHLIGHT_COLORS: Record<HighlightColor, RGB> = {
   red: { r: 1, g: 59 / 255, b: 48 / 255 },
@@ -29,6 +56,7 @@ const OCR_LABEL_FONT_SIZE = 8;
 const HEIGHT_EPS = 0.5;
 
 let poolRoot: SceneNode | null = null;
+let targetOverlay: RectangleNode | null = null;
 const poolEntries = new Map<string, SceneNode>();
 const ocrLabelEntries = new Map<string, TextNode>();
 
@@ -51,6 +79,7 @@ export function highlightItemKey(item: HoverHighlightItem): string {
 export function clearHoverHighlight(): void {
   poolEntries.clear();
   poolRoot = null;
+  targetOverlay = null;
   measureScaleCache.clear();
   ocrLabelEntries.clear();
 
@@ -61,10 +90,7 @@ export function clearHoverHighlight(): void {
         child.type === "FRAME" ||
         child.type === "GROUP" ||
         child.type === "TEXT") &&
-      (child.name === HOVER_HIGHLIGHT_NAME ||
-        child.name === HIGHLIGHT_POOL_NAME ||
-        child.name.startsWith(`${HOVER_HIGHLIGHT_NAME}:`) ||
-        child.name.startsWith(`${OCR_LABEL_NAME}:`))
+      isOwnedOverlayName(child.name)
     ) {
       child.remove();
     }
@@ -919,4 +945,43 @@ export function showHoverHighlight(items: HoverHighlightItem[]): void {
 /** Hide all pool entries without destroying the pool. */
 export function hideAllHighlights(): void {
   setHighlightVisibility(null);
+}
+
+function ensureTargetOverlay(): RectangleNode {
+  if (targetOverlay && !targetOverlay.removed) {
+    return targetOverlay;
+  }
+  const rect = figma.createRectangle();
+  rect.name = TARGET_OVERLAY_NAME;
+  rect.fills = [];
+  rect.strokes = [{ type: "SOLID", color: HIGHLIGHT_COLORS.green }];
+  rect.strokeWeight = 10;
+  rect.strokeAlign = "OUTSIDE";
+  rect.dashPattern = [10, 10];
+  rect.locked = true;
+  rect.visible = false;
+  figma.currentPage.appendChild(rect);
+  targetOverlay = rect;
+  return rect;
+}
+
+/** Outline the selected target's bounding box with a dashed frame. */
+export function showTargetOverlay(node: SceneNode): void {
+  const box = isOnCurrentPage(node) ? node.absoluteBoundingBox : null;
+  if (!box || box.width <= 0 || box.height <= 0) {
+    hideTargetOverlay();
+    return;
+  }
+  const rect = ensureTargetOverlay();
+  rect.resize(box.width, box.height);
+  rect.x = box.x;
+  rect.y = box.y;
+  figma.currentPage.appendChild(rect);
+  rect.visible = true;
+}
+
+export function hideTargetOverlay(): void {
+  if (targetOverlay && !targetOverlay.removed) {
+    targetOverlay.visible = false;
+  }
 }

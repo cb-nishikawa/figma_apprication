@@ -20,8 +20,10 @@ import {
   buildHighlightPool,
   clearHoverHighlight,
   hideAllHighlights,
+  hideTargetOverlay,
   recolorHighlightItems,
   showHoverHighlight,
+  showTargetOverlay,
 } from "./highlight";
 import { collectPinTargets } from "./pinTargets";
 import { checkKeywords, dedupeTextNodes } from "./search";
@@ -619,11 +621,15 @@ async function handleCompare(
   const targets = collectPinTargets();
   sanitizeComparePairs(targets);
 
-  const activePairs = comparePairs.filter((p) => p.idA && p.idB);
+  const activePairs = comparePairs.filter((p) => p.idA && p.idB && !p.hidden);
   if (activePairs.length === 0) {
     lastResults = [];
     postCompareState();
-    postToUi({ type: "ERROR", message: "比較ペアが未選択です" });
+    const allHidden = comparePairs.some((p) => p.idA && p.idB && p.hidden);
+    postToUi({
+      type: "ERROR",
+      message: allHidden ? "表示中の比較ペアがありません" : "比較ペアが未選択です",
+    });
     return;
   }
 
@@ -733,6 +739,17 @@ async function handleFocusNode(nodeId: string): Promise<void> {
   const sceneNode = node as SceneNode;
   figma.currentPage.selection = [sceneNode];
   figma.viewport.scrollAndZoomIntoView([sceneNode]);
+}
+
+async function handleShowTargetOverlay(nodeId: string): Promise<void> {
+  const node = await figma.getNodeByIdAsync(nodeId);
+  await withHighlightMutation(() => {
+    if (node && "absoluteBoundingBox" in node) {
+      showTargetOverlay(node as SceneNode);
+    } else {
+      hideTargetOverlay();
+    }
+  });
 }
 
 figma.ui.onmessage = async (msg: UiToPluginMessage) => {
@@ -968,6 +985,14 @@ figma.ui.onmessage = async (msg: UiToPluginMessage) => {
       case "CLEAR_HIGHLIGHT":
         await withHighlightMutation(() => {
           hideAllHighlights();
+        });
+        break;
+      case "SHOW_TARGET_OVERLAY":
+        await handleShowTargetOverlay(msg.nodeId);
+        break;
+      case "HIDE_TARGET_OVERLAY":
+        await withHighlightMutation(() => {
+          hideTargetOverlay();
         });
         break;
       case "SET_HIGHLIGHT_COLOR":
