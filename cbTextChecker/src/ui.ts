@@ -10,6 +10,7 @@ import {
   COMPARE_ONLY_B,
   COMPARE_PARTIAL,
 } from "./compare";
+import { HIGHLIGHT_COLOR_HEX } from "./highlightPalette";
 import { parseIgnoreInput } from "./search";
 import type {
   PluginToUiMessage,
@@ -46,12 +47,6 @@ const MIN_UI_HEIGHT = 320;
 const MAX_UI_HEIGHT = 900;
 const DEFAULT_HIGHLIGHT_COLOR: HighlightColor = "green";
 const OCR_RESULT_KEY = "ocr:all";
-const HIGHLIGHT_COLOR_SWATCHES: Record<HighlightColor, string> = {
-  red: "#ff3b30",
-  yellow: "#ffcc00",
-  green: "#00c853",
-  purple: "#a154f2",
-};
 const HIGHLIGHT_COLOR_OPTIONS: HighlightColor[] = [
   "red",
   "yellow",
@@ -1422,7 +1417,7 @@ function setColorTriggerSwatch(
 ): void {
   const swatch = trigger.querySelector(".result-color-swatch") as HTMLElement | null;
   if (swatch) {
-    swatch.style.background = HIGHLIGHT_COLOR_SWATCHES[color];
+    swatch.style.background = HIGHLIGHT_COLOR_HEX[color];
   }
   trigger.dataset.color = color;
 }
@@ -1476,7 +1471,7 @@ function createColorSelect(
     );
     const swatch = document.createElement("span");
     swatch.className = "result-color-swatch";
-    swatch.style.background = HIGHLIGHT_COLOR_SWATCHES[color];
+    swatch.style.background = HIGHLIGHT_COLOR_HEX[color];
     option.appendChild(swatch);
     if (color === current) {
       option.classList.add("is-selected");

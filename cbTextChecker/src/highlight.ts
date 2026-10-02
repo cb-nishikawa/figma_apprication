@@ -8,6 +8,7 @@ import {
   splitRangeByHeightBreaks,
   splitRangeByNewlines,
 } from "./highlightRanges";
+import { HIGHLIGHT_COLOR_HEX, hexToRgb } from "./highlightPalette";
 
 export type { HighlightColor, HoverHighlightItem, HoverHighlightStyle };
 export { splitRangeByHeightBreaks, splitRangeByNewlines };
@@ -44,10 +45,10 @@ function isOwnedOverlayName(name: string): boolean {
 }
 
 const HIGHLIGHT_COLORS: Record<HighlightColor, RGB> = {
-  red: { r: 1, g: 59 / 255, b: 48 / 255 },
-  yellow: { r: 1, g: 204 / 255, b: 0 },
-  green: { r: 0, g: 1, b: 64 / 255 },
-  purple: { r: 161 / 255, g: 84 / 255, b: 242 / 255 },
+  red: hexToRgb(HIGHLIGHT_COLOR_HEX.red),
+  yellow: hexToRgb(HIGHLIGHT_COLOR_HEX.yellow),
+  green: hexToRgb(HIGHLIGHT_COLOR_HEX.green),
+  purple: hexToRgb(HIGHLIGHT_COLOR_HEX.purple),
 };
 
 const DEFAULT_HIGHLIGHT_COLOR: HighlightColor = "green";
