@@ -23,6 +23,7 @@ let selectedId: string | null = null;
 let renamingId: string | null = null;
 let busyMessage: string | null = null;
 let savableCount = 0;
+let canvasSelectionCount = 0;
 let usage = { used: 0, quota: 0 };
 
 function postToPlugin(message: UiToPluginMessage): void {
@@ -104,6 +105,30 @@ function place(id: string): void {
   }
   showError(null);
   postToPlugin({ type: "PLACE", id });
+}
+
+/**
+ * 一覧の要素を選ぶ。キャンバス側の選択とは排他なので、Figma 側の選択も解除する。
+ * `canvasSelectionCount` を先に 0 へ更新し、連打しても解除要求を二重に送らないようにする。
+ */
+function selectTemplate(id: string): void {
+  selectedId = id;
+  if (canvasSelectionCount > 0) {
+    canvasSelectionCount = 0;
+    postToPlugin({ type: "CLEAR_CANVAS_SELECTION" });
+  }
+  renderList();
+}
+
+/** クリック位置が選択を保持する領域（一覧の行・フッター・絞り込み）にあるか。 */
+function isInsideKeptArea(target: EventTarget | null): boolean {
+  const el = target as Element | null;
+  if (!el?.closest) {
+    return false;
+  }
+  return Boolean(
+    el.closest(".template-item") || el.closest(".footer-actions") || el.closest(".filter-menu")
+  );
 }
 
 function startRename(id: string): void {
@@ -255,13 +280,11 @@ function createItem(meta: TemplateMeta): HTMLLIElement {
   li.append(thumb, info, createRowMenu(meta));
 
   li.addEventListener("click", () => {
-    selectedId = meta.id;
     closeAllRowMenus();
-    renderList();
+    selectTemplate(meta.id);
   });
   li.addEventListener("dblclick", () => {
-    selectedId = meta.id;
-    renderList();
+    selectTemplate(meta.id);
     place(meta.id);
   });
   return li;
@@ -352,6 +375,11 @@ document.addEventListener("click", (event) => {
   if (target && !filterRoot?.contains(target)) {
     setFilterPopoverOpen(false);
   }
+  // 一覧の行以外（余白やヘッダーなども含む）をクリックしたら選択を解除する。
+  if (selectedId && !isInsideKeptArea(event.target)) {
+    selectedId = null;
+    renderList();
+  }
 });
 
 function setupResize(): void {
@@ -400,6 +428,12 @@ window.onmessage = (event: MessageEvent) => {
       break;
     case "SELECTION_STATE":
       renderSelectionHint(msg.savableCount, msg.isComponent);
+      canvasSelectionCount = msg.selectionCount;
+      // ユーザーがキャンバスで選択を変えたときだけ、一覧の選択を解除する。
+      if (msg.origin === "user" && selectedId) {
+        selectedId = null;
+        renderList();
+      }
       break;
     case "BUSY":
       busyMessage = msg.message;

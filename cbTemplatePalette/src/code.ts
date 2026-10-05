@@ -53,12 +53,19 @@ function savableSelection(): SceneNode[] {
   return figma.currentPage.selection.filter(isSavableRoot);
 }
 
+/** Set while the plugin changes the selection itself, so the next selectionchange is not a user action. */
+let pluginInitiatedSelection = false;
+
 function postSelectionState(): void {
+  const origin = pluginInitiatedSelection ? "plugin" : "user";
+  pluginInitiatedSelection = false;
   const roots = savableSelection();
   postToUi({
     type: "SELECTION_STATE",
     savableCount: roots.length,
     isComponent: componentSelection(roots) !== null,
+    selectionCount: figma.currentPage.selection.length,
+    origin,
   });
 }
 
@@ -268,6 +275,7 @@ async function handlePlace(id: string): Promise<void> {
     const source = await findSourceComponent(meta);
     if (source) {
       const { node, replacedImages } = cloneSourceComponent(source, topLeft);
+      pluginInitiatedSelection = true;
       figma.currentPage.selection = [node];
       figma.notify(
         replacedImages > 0
@@ -284,6 +292,7 @@ async function handlePlace(id: string): Promise<void> {
       postToUi({ type: "ERROR", message: "複製できる要素がありませんでした" });
       return;
     }
+    pluginInitiatedSelection = true;
     figma.currentPage.selection = nodes;
     const notes = placementNotes(report);
     const label = isComponent ? "新しいコンポーネントとして複製しました" : "複製しました";
@@ -512,6 +521,15 @@ async function main(): Promise<void> {
         case "IMPORT":
           await handleImport(msg.files);
           break;
+        case "CLEAR_CANVAS_SELECTION": {
+          // Assigning an already empty selection fires no selectionchange, which would
+          // leave the flag set and mislabel the next user selection as the plugin's.
+          if (figma.currentPage.selection.length > 0) {
+            pluginInitiatedSelection = true;
+            figma.currentPage.selection = [];
+          }
+          break;
+        }
         case "RESIZE_UI": {
           const height = clampUiHeight(msg.height);
           figma.ui.resize(UI_WIDTH, height);
