@@ -7,15 +7,6 @@
   </head>
   <body>
     <div class="app">
-      <section class="section save-section">
-        <button id="save" class="btn-add-full" type="button">
-          ＋ 選択中の要素を保存
-        </button>
-        <p id="selection-hint" class="hint"></p>
-      </section>
-
-      <hr class="divider" />
-
       <section class="section list-section" aria-labelledby="list-label">
         <div class="list-head">
           <div class="list-title">
@@ -59,9 +50,12 @@
       </section>
     </div>
     <footer class="footer">
-      <div id="status" class="status">
-        <span id="status-spinner" class="spinner" hidden aria-hidden="true"></span>
-        <span id="status-text" class="status-text"></span>
+      <div class="footer-info">
+        <div id="status" class="status">
+          <span id="status-spinner" class="spinner" hidden aria-hidden="true"></span>
+          <span id="status-text" class="status-text"></span>
+        </div>
+        <p id="selection-hint" class="hint"></p>
       </div>
       <div class="footer-actions">
         <button
@@ -112,8 +106,11 @@
             />
           </svg>
         </button>
-        <button id="place" class="btn-primary" type="button" disabled>
-          Figma に複製
+        <button id="save" class="btn-primary" type="button" hidden>
+          追加
+        </button>
+        <button id="place" class="btn-primary" type="button" hidden>
+          複製
         </button>
       </div>
       <input id="import-file" type="file" accept=".json,application/json" multiple hidden />

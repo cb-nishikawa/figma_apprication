@@ -49,8 +49,10 @@ function renderStatus(): void {
   statusText.textContent =
     busyMessage ??
     (usage.quota > 0 ? `使用量 ${formatBytes(usage.used)} / ${formatBytes(usage.quota)}` : "");
-  saveBtn.disabled = Boolean(busyMessage) || savableCount === 0;
-  placeBtn.disabled = Boolean(busyMessage) || !selectedId;
+  saveBtn.hidden = savableCount === 0;
+  saveBtn.disabled = Boolean(busyMessage);
+  placeBtn.hidden = !selectedId;
+  placeBtn.disabled = Boolean(busyMessage);
   importBtn.disabled = Boolean(busyMessage);
   exportAllBtn.disabled = Boolean(busyMessage) || templates.length === 0;
 }
@@ -291,11 +293,7 @@ function renderSelectionHint(count: number, isComponent: boolean): void {
   savableCount = count;
   selectionHint.classList.toggle("is-ready", count > 0);
   selectionHint.textContent =
-    count === 0
-      ? ""
-      : isComponent
-        ? "選択中のコンポーネントを、コンポーネントとして保存します"
-        : `選択中の ${count} 件を 1 つのテンプレートとして保存します`;
+    count === 0 ? "" : isComponent ? "コンポーネントを選択中" : `${count} 件を選択中`;
   renderStatus();
 }
 
