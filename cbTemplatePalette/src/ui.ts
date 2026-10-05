@@ -6,6 +6,8 @@ const saveBtn = document.getElementById("save") as HTMLButtonElement;
 const selectionHint = document.getElementById("selection-hint") as HTMLParagraphElement;
 const countEl = document.getElementById("count") as HTMLSpanElement;
 const filterInput = document.getElementById("filter") as HTMLInputElement;
+const filterToggleBtn = document.getElementById("filter-toggle") as HTMLButtonElement;
+const filterPopover = document.getElementById("filter-popover") as HTMLDivElement;
 const errorEl = document.getElementById("error") as HTMLParagraphElement;
 const listEl = document.getElementById("list") as HTMLUListElement;
 const statusSpinner = document.getElementById("status-spinner") as HTMLSpanElement;
@@ -79,6 +81,19 @@ function closeAllRowMenus(): void {
   listEl.querySelectorAll<HTMLDivElement>(".row-menu-panel").forEach((panel) => {
     panel.hidden = true;
   });
+}
+
+function syncFilterActiveState(): void {
+  filterToggleBtn.classList.toggle("is-active", filterInput.value.trim() !== "");
+}
+
+function setFilterPopoverOpen(open: boolean): void {
+  filterPopover.hidden = !open;
+  filterToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
+  syncFilterActiveState();
+  if (open) {
+    window.setTimeout(() => filterInput.focus(), 0);
+  }
 }
 
 function place(id: string): void {
@@ -161,6 +176,7 @@ function createRowMenu(meta: TemplateMeta): HTMLDivElement {
     event.stopPropagation();
     const willOpen = panel.hidden;
     closeAllRowMenus();
+    setFilterPopoverOpen(false);
     panel.hidden = !willOpen;
   });
   trigger.addEventListener("dblclick", (event) => event.stopPropagation());
@@ -294,7 +310,26 @@ placeBtn.addEventListener("click", () => {
   }
 });
 
-filterInput.addEventListener("input", () => renderList());
+filterInput.addEventListener("input", () => {
+  syncFilterActiveState();
+  renderList();
+});
+
+filterToggleBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  closeAllRowMenus();
+  setFilterPopoverOpen(filterPopover.hidden);
+});
+
+filterPopover.addEventListener("click", (event) => event.stopPropagation());
+
+filterPopover.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    setFilterPopoverOpen(false);
+    filterToggleBtn.focus();
+  }
+});
 
 importBtn.addEventListener("click", () => importFileInput.click());
 
@@ -312,7 +347,14 @@ exportAllBtn.addEventListener("click", () => {
   postToPlugin({ type: "EXPORT", ids: null });
 });
 
-document.addEventListener("click", () => closeAllRowMenus());
+document.addEventListener("click", (event) => {
+  closeAllRowMenus();
+  const filterRoot = filterToggleBtn.closest(".filter-menu");
+  const target = event.target as Node | null;
+  if (target && !filterRoot?.contains(target)) {
+    setFilterPopoverOpen(false);
+  }
+});
 
 function setupResize(): void {
   let dragging = false;
@@ -368,6 +410,7 @@ window.onmessage = (event: MessageEvent) => {
     case "SAVED":
       selectedId = msg.id;
       filterInput.value = "";
+      syncFilterActiveState();
       renderList();
       break;
     case "EXPORT_DATA":

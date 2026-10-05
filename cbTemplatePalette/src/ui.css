@@ -102,6 +102,28 @@ body {
   min-width: 0;
 }
 
+.filter-menu {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.filter-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  width: 220px;
+  padding: 8px;
+  border: 1px solid #d8d8d8;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.filter-popover[hidden] {
+  display: none !important;
+}
+
 .list-count {
   color: #555;
   font-variant-numeric: tabular-nums;
@@ -342,6 +364,11 @@ body {
 .btn-icon:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+.btn-icon.is-active {
+  border-color: #18a0fb;
+  color: #18a0fb;
 }
 
 .status {

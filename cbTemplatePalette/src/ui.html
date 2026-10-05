@@ -22,15 +22,38 @@
             <h2 id="list-label">保存した要素</h2>
             <span id="count" class="list-count"></span>
           </div>
+          <div class="filter-menu">
+            <button
+              id="filter-toggle"
+              class="btn-icon"
+              type="button"
+              title="名前で絞り込み"
+              aria-label="名前で絞り込み"
+              aria-expanded="false"
+              aria-controls="filter-popover"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path
+                  d="M2.5 3.5h11L10 9v4h-4V9z"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+            <div id="filter-popover" class="filter-popover" hidden>
+              <input
+                id="filter"
+                class="text-input"
+                type="text"
+                placeholder="名前で絞り込み"
+                aria-label="名前で絞り込み"
+                spellcheck="false"
+                autocomplete="off"
+              />
+            </div>
+          </div>
         </div>
-        <input
-          id="filter"
-          class="text-input"
-          type="text"
-          placeholder="名前で絞り込み"
-          spellcheck="false"
-          autocomplete="off"
-        />
         <p id="error" class="error" hidden></p>
         <ul id="list" class="template-list" role="listbox" aria-label="保存した要素"></ul>
       </section>
