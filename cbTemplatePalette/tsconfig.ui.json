@@ -15,6 +15,7 @@
   "include": [
     "src/ui.ts",
     "src/messages.ts",
+    "src/tree.ts",
     "src/global.d.ts",
     "src/env.d.ts"
   ]

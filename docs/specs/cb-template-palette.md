@@ -13,7 +13,17 @@ Figma で選択した frame / section / group のまとまりを保存し、別�
 3. 一覧の行をクリックで選択し、「Figma に複製」かダブルクリックで、今見ている画面の中央に複製する
    - 複製した要素は選択状態になる
 4. 行の「⋯」メニューから「名前を変更」「ファイルに書き出す」「削除」ができる。上部の入力欄で名前の絞り込みができる
-5. 一覧の見出しの「読み込む」「すべて書き出す」で、パソコンのファイルとやり取りできる（後述）
+5. 一覧の見出しの「⋯」（絞り込みの右）→「グループを追加」でグループを作れる。グループにも「⋯」メニューがあり、「名前を変更」「削除」ができる
+   - 作った直後のグループは空。絞り込み中でなければ空のまま一覧に出る（入れられる状態にならないとグループを作れないため）。一覧の末尾に追加されるので、見える位置までスクロールする
+   - 絞り込み中は、一致するテンプレートが 1 件もないグループを隠す
+   - グループ名の左にあるシェブロンを押すと、たためる／開く。状態は保存されるので、次にプラグインを開いても同じ
+   - シェブロンを押してもグループは選択されない。押しただけではドラッグも始まらない
+   - 絞り込み中は、たたんでいても開いた状態で描く。一致したテンプレートが隠れると検索結果を誰も読めないため。絞り込みを消すと元の状態に戻る
+6. 並べ替えは 2 通り。行またはグループをドラッグして前後に動かす／グループ本体にドロップして中に入れる。あるいは行の「⋯」→「← 移動」→ グループを選ぶ（現在いる場所は選べない）
+   - ドラッグは 4px 以上動いた時点で始まる。`Escape` で取り消し
+   - タッチではドラッグしない（行の「⋯」→「← 移動」を使う）
+   - たためたグループにドロップすると、自動で開いて中に入れる。中身が見えないと移動できたかどうか分からないため
+7. 一覧の見出しの「読み込む」「すべて書き出す」で、パソコンのファイルとやり取りできる（後述）
 
 ## 保存先
 
@@ -25,7 +35,27 @@ Figma で選択した frame / section / group のまとまりを保存し、別�
 | --- | --- |
 | `cbTemplatePalette.index` | `TemplateMeta[]`（新しいものが先頭） |
 | `cbTemplatePalette.item.<id>` | `TemplateItem` |
+| `cbTemplatePalette.tree` | `ListNode[]`（一覧の並び順とグループ。下記） |
 | `cbTemplatePalette.uiHeight` | UI の高さ |
+
+## 一覧の並び順とグループ（[ADR-005](../ai/decisions/ADR-005-template-palette-groups.md)）
+
+- 一覧の並び順とグループは `cbTemplatePalette.tree` に保存する。`cbTemplatePalette.index` は `TemplateMeta[]` のまま（何を保存したかだけ）
+- 並び替えの処理は `src/tree.ts` の純関数。Figma API に依存しない
+
+| 型 | 内容 |
+| --- | --- |
+| `TemplateListEntry` | `{ type: "item", id }`。ルートに置いたテンプレート 1 件 |
+| `TemplateGroup` | `{ type: "group", id, name, items, collapsed? }`。`items` は中のテンプレート id（表示順）。`collapsed` は省略または `false` が開、`true` がたためる |
+| `ListNode` | `TemplateGroup \| TemplateListEntry` の和集合。`ListNode[]` がルートの一覧 |
+
+- **グループは 1 階層だけ**。グループの中にグループは置かない。ルートにはグループとテンプレートが混在する
+- 保存・削除のたびに `tree` を index に照合する（`reconcileTree`）
+  - index に無い id を落とし、`tree` が知らない id をルート先頭に足す。同じ id は最初の 1 箇所だけ残す
+  - グループ機能より前に保存したテンプレートも、自動でルート先頭に出る
+- グループの作成・名前変更・削除・並べ替え・開閉は、`MOVE` / `ADD_GROUP` / `RENAME_GROUP` / `DELETE_GROUP` / `TOGGLE_GROUP` メッセージでプラグインに送り、`TEMPLATES` で一覧とツリーごと受け直す
+- **開閉状態（`collapsed`）は `cbTemplatePalette.tree` にだけ保存し、ファイルには書かない**。読み込んだグループは全部開いた状態で出る（書き出しは構成と並び順を持つファイル）
+- 一覧の選択はテンプレートとグループのどちらでも保持する。Figma 側で選択を変えたとき（プラグイン自身が複製で選択を変えたときを除く）は両方解除する
 
 ## スキーマ（[`../../cbTemplatePalette/src/types.ts`](../../cbTemplatePalette/src/types.ts)）
 
@@ -106,16 +136,25 @@ Figma で選択した frame / section / group のまとまりを保存し、別�
 - 形式（人が読める素の JSON。画像のバイト列は含めない）
 
 ```json
-{ "format": "cbTemplatePalette", "version": 2, "templates": [{ "meta": { "…": "TemplateMeta" }, "roots": [], "components": {} }] }
+{
+  "format": "cbTemplatePalette",
+  "version": 3,
+  "tree": [{ "type": "item", "id": "…" }, { "type": "group", "id": "…", "name": "ヘッダー", "items": ["…"] }],
+  "templates": [{ "meta": { "…": "TemplateMeta" }, "roots": [], "components": {} }]
+}
 ```
 
+- version 3 で `tree` を書き出す。`tree` の id は `templates[].meta.id` を指す
+- 1 件だけ書き出すときは `tree` を平坦にする（グループを作らない）
+- version 2 のファイルには `tree` が無い。読み込んだテンプレートはすべてルートに置かれる
 - `components` はコンポーネントのテンプレートだけ。`meta` の `kind` と `source` もそのまま書き出し・読み込みする
+- 読み込み時、テンプレートの id とグループの id はどちらも振り直す。`tree` が所述の id を網羅していない分はルート末尾に足す
 
 - 読み込み
   - 複数ファイルを選べる。`format` と `templates` が正しくないファイルは「テンプレートのファイルではありません: ファイル名」と出す
-  - テンプレートごとに新しい `id` を振って一覧の先頭に追加する（同じファイルを 2 回読み込むと別のテンプレートになる）
+  - テンプレートごとに新しい `id` を振って一覧の先頭に追加する（同じファイルを 2 回読み込むと別のテンプレートになる）。並び順とグループはファイルの `tree` に従い、全体として先頭に寄せる
   - 5MB を超える分は保存せず「容量の上限のため N 件は読み込めませんでした」と出す
 
 ## 関連
 
-- 判断の記録: [`../ai/decisions/ADR-003-template-palette-serialization.md`](../ai/decisions/ADR-003-template-palette-serialization.md)、[`../ai/decisions/ADR-004-component-templates.md`](../ai/decisions/ADR-004-component-templates.md)
+- 判断の記録: [`../ai/decisions/ADR-003-template-palette-serialization.md`](../ai/decisions/ADR-003-template-palette-serialization.md)、[`../ai/decisions/ADR-004-component-templates.md`](../ai/decisions/ADR-004-component-templates.md)、[`../ai/decisions/ADR-005-template-palette-groups.md`](../ai/decisions/ADR-005-template-palette-groups.md)

@@ -15,15 +15,31 @@ import {
   estimateBytes,
   loadIndex,
   loadItem,
+  loadTree,
   renameTemplate,
   saveTemplate,
+  saveTree,
   updateTemplate,
   usedBytes,
 } from "./storage";
 import {
+  addGroup,
+  appendMissingItems,
+  insertFragment,
+  isGroup,
+  moveNode,
+  remapTree,
+  removeGroup,
+  removeItems,
+  renameGroup,
+  setGroupCollapsed,
+} from "./tree";
+import {
   TEMPLATE_FILE_FORMAT,
+  type ListNode,
   type RestoreReport,
   type SerializedNode,
+  type StoredTemplateV2,
   type TemplateContent,
   type TemplateFile,
   type TemplateMeta,
@@ -69,13 +85,26 @@ function postSelectionState(): void {
   });
 }
 
-function postTemplates(index: TemplateMeta[]): void {
+function postTemplates(index: TemplateMeta[]): Promise<void> {
+  return postTemplatesWithTree(index, loadTree(index));
+}
+
+async function postTemplatesWithTree(index: TemplateMeta[], tree: Promise<ListNode[]>): Promise<void> {
   postToUi({
     type: "TEMPLATES",
     templates: index,
+    tree: await tree,
     usedBytes: usedBytes(index),
     quotaBytes: QUOTA_BYTES,
   });
+}
+
+/** Applies a list change to the tree, saves it, and sends the whole list back. */
+async function commitTree(
+  index: TemplateMeta[],
+  change: (tree: ListNode[]) => ListNode[]
+): Promise<void> {
+  await postTemplatesWithTree(index, saveTree(change(await loadTree(index))));
 }
 
 function newId(): string {
@@ -184,7 +213,7 @@ async function handleSave(): Promise<void> {
       meta.source = { nodeId: component.id, stamp: ensureStamp(component) };
     }
     const index = await saveTemplate(meta, item);
-    postTemplates(index);
+    await postTemplates(index);
     postToUi({ type: "SAVED", id: meta.id });
     const label = component ? "コンポーネントとして保存しました" : "保存しました";
     figma.notify(
@@ -260,7 +289,7 @@ async function handlePlace(id: string): Promise<void> {
   const item = await loadItem(id);
   if (!meta || !item) {
     postToUi({ type: "ERROR", message: "テンプレートが見つかりません" });
-    postTemplates(index);
+    await postTemplates(index);
     return;
   }
   postToUi({ type: "BUSY", message: "複製しています…" });
@@ -314,6 +343,25 @@ function safeFileName(name: string): string {
   return name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").trim() || "template";
 }
 
+/** The tree of a file export, without the templates whose body could not be read. */
+function exportTree(tree: ListNode[], exported: Set<string>): ListNode[] {
+  const nodes: ListNode[] = [];
+  for (const node of tree) {
+    if (isGroup(node)) {
+      const items = node.items.filter((id) => exported.has(id));
+      if (items.length > 0) {
+        // Rebuilt instead of spread so `collapsed` stays out of the file.
+        nodes.push({ type: "group", id: node.id, name: node.name, items });
+      }
+      continue;
+    }
+    if (exported.has(node.id)) {
+      nodes.push(node);
+    }
+  }
+  return nodes;
+}
+
 async function handleExport(ids: string[] | null): Promise<void> {
   const index = await loadIndex();
   const targets = ids ? index.filter((meta) => ids.includes(meta.id)) : index;
@@ -323,7 +371,7 @@ async function handleExport(ids: string[] | null): Promise<void> {
   }
   postToUi({ type: "BUSY", message: "書き出しています…" });
   try {
-    const file: TemplateFile = { format: TEMPLATE_FILE_FORMAT, version: 2, templates: [] };
+    const file: TemplateFile = { format: TEMPLATE_FILE_FORMAT, version: 3, tree: [], templates: [] };
     for (const meta of targets) {
       const item = await loadItem(meta.id);
       if (item) {
@@ -335,6 +383,11 @@ async function handleExport(ids: string[] | null): Promise<void> {
         );
       }
     }
+    const exported = new Set(file.templates.map((entry) => entry.meta.id));
+    // A single template is exported flat; its group is not worth recreating on import.
+    file.tree = ids
+      ? file.templates.map((entry) => ({ type: "item" as const, id: entry.meta.id }))
+      : exportTree(await loadTree(index), exported);
     const now = new Date();
     const stamp = `${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-${pad2(now.getHours())}${pad2(now.getMinutes())}`;
     const fileName =
@@ -347,7 +400,40 @@ async function handleExport(ids: string[] | null): Promise<void> {
   }
 }
 
-function parseTemplateFile(text: string): TemplateFile["templates"] | null {
+interface ParsedTemplateFile {
+  templates: TemplateFile["templates"];
+  /** Version 2 files have no tree, so every template lands at the root. */
+  tree: ListNode[];
+}
+
+function parsedFileTree(raw: TemplateFile["tree"]): ListNode[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const nodes: ListNode[] = [];
+  for (const node of raw) {
+    if (!node || typeof node.id !== "string") {
+      continue;
+    }
+    if (node.type === "group" && Array.isArray(node.items)) {
+      const name = typeof node.name === "string" ? node.name.trim() : "";
+      // Rebuilt, so a `collapsed` in the file is ignored and the group opens.
+      nodes.push({
+        type: "group",
+        id: node.id,
+        name: name || "グループ",
+        items: node.items.filter((id): id is string => typeof id === "string"),
+      });
+      continue;
+    }
+    if (node.type === "item") {
+      nodes.push({ type: "item", id: node.id });
+    }
+  }
+  return nodes;
+}
+
+function parseTemplateFile(text: string): ParsedTemplateFile | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -358,14 +444,17 @@ function parseTemplateFile(text: string): TemplateFile["templates"] | null {
   if (!file || file.format !== TEMPLATE_FILE_FORMAT || !Array.isArray(file.templates)) {
     return null;
   }
-  return file.templates.filter(
-    (entry) =>
-      entry &&
-      typeof entry.meta === "object" &&
-      entry.meta !== null &&
-      Array.isArray(entry.roots) &&
-      entry.roots.every((root: SerializedNode) => root && typeof root.type === "string")
-  );
+  return {
+    templates: file.templates.filter(
+      (entry) =>
+        entry &&
+        typeof entry.meta === "object" &&
+        entry.meta !== null &&
+        Array.isArray(entry.roots) &&
+        entry.roots.every((root: SerializedNode) => root && typeof root.type === "string")
+    ),
+    tree: parsedFileTree(file.tree),
+  };
 }
 
 function importedMeta(meta: Partial<TemplateMeta>, roots: SerializedNode[], thumbnail: string): TemplateMeta {
@@ -399,18 +488,32 @@ async function handleImport(files: Array<{ name: string; text: string }>): Promi
     let imported = 0;
     let overQuota = 0;
     let index = await loadIndex();
+    let tree = await loadTree(index);
     for (const file of files) {
-      const templates = parseTemplateFile(file.text);
-      if (!templates) {
+      const parsed = parseTemplateFile(file.text);
+      if (!parsed) {
         invalidFiles.push(file.name);
         continue;
       }
-      for (const entry of templates) {
+      // Render everything first so the tree fragment knows every new id before writing.
+      const prepared: Array<{ meta: TemplateMeta; item: StoredTemplateV2; oldId: string }> = [];
+      for (const entry of parsed.templates) {
         const item = encodeItem(entry.roots, importedComponents(entry.components));
         const meta = importedMeta(entry.meta, entry.roots, await renderThumbnail(entry.roots));
         meta.byteSize = estimateBytes(item, meta.thumbnail);
+        prepared.push({ meta, item, oldId: entry.meta.id });
+      }
+      const groupIds = new Map<string, string>();
+      for (const node of parsed.tree) {
+        if (isGroup(node) && !groupIds.has(node.id)) {
+          groupIds.set(node.id, newId());
+        }
+      }
+      const itemIds = new Map<string, string>();
+      for (const { meta, item, oldId } of prepared) {
         try {
           index = await saveTemplate(meta, item);
+          itemIds.set(oldId, meta.id);
           imported += 1;
         } catch (err) {
           if (!(err instanceof QuotaExceededError)) {
@@ -419,8 +522,16 @@ async function handleImport(files: Array<{ name: string; text: string }>): Promi
           overQuota += 1;
         }
       }
+      // saveTemplate put each one at the head of the root; restore the file's own order.
+      const attempted = prepared.map(({ meta }) => meta.id);
+      const fragment = appendMissingItems(
+        remapTree(parsed.tree, itemIds, groupIds),
+        [...itemIds.values()]
+      );
+      tree = insertFragment(removeItems(tree, ...attempted), fragment);
+      await saveTree(tree);
     }
-    postTemplates(index);
+    await postTemplatesWithTree(index, Promise.resolve(tree));
 
     const problems: string[] = [];
     if (invalidFiles.length > 0) {
@@ -467,7 +578,7 @@ async function refreshThumbnails(): Promise<void> {
       );
     }
     if (index) {
-      postTemplates(index);
+      await postTemplates(index);
     }
   } finally {
     postToUi({ type: "BUSY", message: null });
@@ -492,7 +603,7 @@ async function main(): Promise<void> {
     try {
       switch (msg.type) {
         case "LIST":
-          postTemplates(await loadIndex());
+          await postTemplates(await loadIndex());
           postSelectionState();
           if (!thumbnailsRefreshed) {
             thumbnailsRefreshed = true;
@@ -508,12 +619,12 @@ async function main(): Promise<void> {
         case "RENAME": {
           const name = msg.name.trim();
           if (name) {
-            postTemplates(await renameTemplate(msg.id, name));
+            await postTemplates(await renameTemplate(msg.id, name));
           }
           break;
         }
         case "DELETE":
-          postTemplates(await deleteTemplate(msg.id));
+          await postTemplates(await deleteTemplate(msg.id));
           break;
         case "EXPORT":
           await handleExport(msg.ids);
@@ -528,6 +639,38 @@ async function main(): Promise<void> {
             pluginInitiatedSelection = true;
             figma.currentPage.selection = [];
           }
+          break;
+        }
+        case "ADD_GROUP": {
+          const group = {
+            type: "group" as const,
+            id: msg.id,
+            name: msg.name.trim() || "グループ",
+            items: [],
+          };
+          await commitTree(await loadIndex(), (tree) => addGroup(tree, group));
+          break;
+        }
+        case "RENAME_GROUP": {
+          const name = msg.name.trim();
+          if (name) {
+            await commitTree(await loadIndex(), (tree) => renameGroup(tree, msg.id, name));
+          }
+          break;
+        }
+        case "DELETE_GROUP": {
+          await commitTree(await loadIndex(), (tree) => removeGroup(tree, msg.id));
+          break;
+        }
+        case "TOGGLE_GROUP": {
+          await commitTree(await loadIndex(), (tree) =>
+            setGroupCollapsed(tree, msg.id, msg.collapsed)
+          );
+          break;
+        }
+        case "MOVE": {
+          const { nodeId, groupId, index: slot } = msg;
+          await commitTree(await loadIndex(), (tree) => moveNode(tree, nodeId, groupId, slot));
           break;
         }
         case "RESIZE_UI": {

@@ -13,40 +13,64 @@
             <h2 id="list-label">保存した要素</h2>
             <span id="count" class="list-count"></span>
           </div>
-          <div class="filter-menu">
-            <button
-              id="filter-toggle"
-              class="btn-icon"
-              type="button"
-              title="名前で絞り込み"
-              aria-label="名前で絞り込み"
-              aria-expanded="false"
-              aria-controls="filter-popover"
-            >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path
-                  d="M2.5 3.5h11L10 9v4h-4V9z"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            </button>
-            <div id="filter-popover" class="filter-popover" hidden>
-              <input
-                id="filter"
-                class="text-input"
-                type="text"
-                placeholder="名前で絞り込み"
+          <div class="list-head-actions">
+            <div class="filter-menu">
+              <button
+                id="filter-toggle"
+                class="btn-icon"
+                type="button"
+                title="名前で絞り込み"
                 aria-label="名前で絞り込み"
-                spellcheck="false"
-                autocomplete="off"
-              />
+                aria-expanded="false"
+                aria-controls="filter-popover"
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path
+                    d="M2.5 3.5h11L10 9v4h-4V9z"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </button>
+              <div id="filter-popover" class="filter-popover" hidden>
+                <input
+                  id="filter"
+                  class="text-input"
+                  type="text"
+                  placeholder="名前で絞り込み"
+                  aria-label="名前で絞り込み"
+                  spellcheck="false"
+                  autocomplete="off"
+                />
+              </div>
+            </div>
+            <div class="list-menu">
+              <button
+                id="list-menu-toggle"
+                class="btn-icon"
+                type="button"
+                title="一覧のメニュー"
+                aria-label="一覧のメニュー"
+                aria-expanded="false"
+                aria-controls="list-menu-popover"
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <circle cx="8" cy="3.5" r="1.4" fill="currentColor" />
+                  <circle cx="8" cy="8" r="1.4" fill="currentColor" />
+                  <circle cx="8" cy="12.5" r="1.4" fill="currentColor" />
+                </svg>
+              </button>
+              <div id="list-menu-popover" class="list-menu-popover" hidden role="menu">
+                <button id="add-group" class="row-menu-item" type="button" role="menuitem">
+                  グループを追加
+                </button>
+              </div>
             </div>
           </div>
         </div>
         <p id="error" class="error" hidden></p>
-        <ul id="list" class="template-list" role="listbox" aria-label="保存した要素"></ul>
+        <ul id="list" class="template-list" role="tree" aria-label="保存した要素"></ul>
       </section>
     </div>
     <footer class="footer">

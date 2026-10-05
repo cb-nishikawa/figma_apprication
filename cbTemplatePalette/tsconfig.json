@@ -19,6 +19,7 @@
     "src/deserialize.ts",
     "src/storage.ts",
     "src/types.ts",
+    "src/tree.ts",
     "src/messages.ts",
     "src/global.d.ts"
   ]

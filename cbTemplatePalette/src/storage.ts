@@ -1,5 +1,7 @@
 import { gunzipSync, gzipSync, strFromU8, strToU8 } from "fflate";
+import { prependItem, reconcileTree, removeItems } from "./tree";
 import type {
+  ListNode,
   SerializedNode,
   StoredTemplateV2,
   TemplateContent,
@@ -9,6 +11,7 @@ import type {
 
 const INDEX_KEY = "cbTemplatePalette.index";
 const ITEM_PREFIX = "cbTemplatePalette.item.";
+const TREE_KEY = "cbTemplatePalette.tree";
 
 /** clientStorage allows roughly 5MB per plugin. */
 export const QUOTA_BYTES = 5 * 1024 * 1024;
@@ -24,6 +27,36 @@ export async function loadIndex(): Promise<TemplateMeta[]> {
 
 async function saveIndex(index: TemplateMeta[]): Promise<void> {
   await figma.clientStorage.setAsync(INDEX_KEY, index);
+}
+
+/**
+ * List order and group membership, keyed separately from the index because the
+ * index only knows about templates. Read through `reconcileTree` so a tree that
+ * is older than the index (templates saved before groups existed, or saved by
+ * another window at the same time) still lists every template.
+ */
+export async function loadTree(index: TemplateMeta[]): Promise<ListNode[]> {
+  const stored = await figma.clientStorage.getAsync(TREE_KEY);
+  return reconcileTree(isListNodeArray(stored) ? stored : [], index.map((meta) => meta.id));
+}
+
+export async function saveTree(tree: ListNode[]): Promise<ListNode[]> {
+  await figma.clientStorage.setAsync(TREE_KEY, tree);
+  return tree;
+}
+
+function isListNodeArray(value: unknown): value is ListNode[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (node) =>
+        node &&
+        typeof node === "object" &&
+        typeof node.id === "string" &&
+        (node.type === "item" ||
+          (node.type === "group" && typeof node.name === "string" && Array.isArray(node.items)))
+    )
+  );
 }
 
 export async function loadItem(id: string): Promise<TemplateItem | null> {
@@ -83,6 +116,8 @@ export async function saveTemplate(meta: TemplateMeta, item: TemplateItem): Prom
     await figma.clientStorage.deleteAsync(itemKey(meta.id));
     throw err;
   }
+  // After the index, so a rejected save cannot leave an entry that points at nothing.
+  await saveTree(prependItem(await loadTree(next), meta.id));
   return next;
 }
 
@@ -90,6 +125,7 @@ export async function deleteTemplate(id: string): Promise<TemplateMeta[]> {
   const next = (await loadIndex()).filter((meta) => meta.id !== id);
   await saveIndex(next);
   await figma.clientStorage.deleteAsync(itemKey(id));
+  await saveTree(removeItems(await loadTree(next), id));
   return next;
 }
 

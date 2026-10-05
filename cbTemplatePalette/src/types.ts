@@ -144,11 +144,37 @@ export interface StoredTemplateV2 {
 
 export type TemplateItem = StoredTemplateV1 | StoredTemplateV2;
 
+/** A folder in the list. Groups hold templates only, so they never nest. */
+export interface TemplateGroup {
+  type: "group";
+  id: string;
+  name: string;
+  /** Template ids inside, in display order. */
+  items: string[];
+  /**
+   * Whether the group is folded. Absent means open, so trees written before
+   * groups could collapse keep working. Never exported: the file carries the
+   * contents and the order, not how the sender had their list folded.
+   */
+  collapsed?: boolean;
+}
+
+/** A template placed at the root of the list. */
+export interface TemplateListEntry {
+  type: "item";
+  id: string;
+}
+
+export type ListNode = TemplateGroup | TemplateListEntry;
+
 export const TEMPLATE_FILE_FORMAT = "cbTemplatePalette";
 
 export interface TemplateFile {
   format: typeof TEMPLATE_FILE_FORMAT;
-  version: 2;
+  /** 3 adds `tree`; version 2 files are read as a flat list at the root. */
+  version: 2 | 3;
+  /** Only in version 3. Ids refer to `templates[].meta.id`. */
+  tree?: ListNode[];
   templates: Array<{
     meta: TemplateMeta;
     roots: SerializedNode[];
