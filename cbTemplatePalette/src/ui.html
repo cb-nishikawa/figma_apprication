@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>テンプレパレットくん</title>
+  </head>
+  <body>
+    <div class="app">
+      <section class="section save-section">
+        <button id="save" class="btn-add-full" type="button">
+          ＋ 選択中の要素を保存
+        </button>
+        <p id="selection-hint" class="hint"></p>
+      </section>
+
+      <hr class="divider" />
+
+      <section class="section list-section" aria-labelledby="list-label">
+        <div class="list-head">
+          <div class="list-title">
+            <h2 id="list-label">保存した要素</h2>
+            <span id="count" class="list-count"></span>
+          </div>
+        </div>
+        <input
+          id="filter"
+          class="text-input"
+          type="text"
+          placeholder="名前で絞り込み"
+          spellcheck="false"
+          autocomplete="off"
+        />
+        <p id="error" class="error" hidden></p>
+        <ul id="list" class="template-list" role="listbox" aria-label="保存した要素"></ul>
+      </section>
+    </div>
+    <footer class="footer">
+      <div id="status" class="status">
+        <span id="status-spinner" class="spinner" hidden aria-hidden="true"></span>
+        <span id="status-text" class="status-text"></span>
+      </div>
+      <div class="footer-actions">
+        <button
+          id="import"
+          class="btn-icon"
+          type="button"
+          title="書き出したファイルからテンプレートを読み込みます"
+          aria-label="読み込む"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path
+              d="M8 10.5V2.5M8 2.5 4.5 6M8 2.5 11.5 6"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+            <path
+              d="M2 10.5v1.5A1.5 1.5 0 0 0 3.5 13.5h9a1.5 1.5 0 0 0 1.5-1.5v-1.5"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+        <button
+          id="export-all"
+          class="btn-icon"
+          type="button"
+          title="すべてのテンプレートを 1 つのファイルに書き出します"
+          aria-label="すべて書き出す"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path
+              d="M8 2.5v8M8 10.5 4.5 7M8 10.5 11.5 7"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+            <path
+              d="M2 10.5v1.5A1.5 1.5 0 0 0 3.5 13.5h9a1.5 1.5 0 0 0 1.5-1.5v-1.5"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </button>
+        <button id="place" class="btn-primary" type="button" disabled>
+          Figma に複製
+        </button>
+      </div>
+      <input id="import-file" type="file" accept=".json,application/json" multiple hidden />
+    </footer>
+    <div
+      id="resize-handle"
+      class="resize-handle"
+      title="高さをドラッグで調整"
+      aria-label="高さをドラッグで調整"
+      role="separator"
+      aria-orientation="horizontal"
+    ></div>
+    <script type="module" src="./ui.ts"></script>
+  </body>
+</html>
