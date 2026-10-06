@@ -125,6 +125,11 @@ export interface TemplateMeta {
    * template is placed again. Absent means "placeholder".
    */
   imageMode?: ImageMode;
+  /**
+   * カテゴリの名前。無い（または空文字）は「未設定」。
+   * グループは一覧の並びの容器なので、カテゴリはそれとは別物のラベル。
+   */
+  category?: string;
 }
 
 /**
@@ -203,6 +208,26 @@ export const VIEW_MODES: ViewMode[] = ["detail", "list", "grid"];
 export function isViewMode(value: unknown): value is ViewMode {
   return typeof value === "string" && (VIEW_MODES as string[]).includes(value);
 }
+
+/**
+ * 読み込み方の 3 択。
+ * - `replace`: 既存のテンプレートとグループをすべて消して、ファイルの並び通りにする
+ * - `append`: そのまま残し、末尾に並べる
+ * - `category`: `append` と同じで、全件を「追加されたカテゴリ」に入れる
+ */
+export type ImportMode = "replace" | "append" | "category";
+
+export const IMPORT_MODES: ImportMode[] = ["replace", "append", "category"];
+
+export function isImportMode(value: unknown): value is ImportMode {
+  return typeof value === "string" && (IMPORT_MODES as string[]).includes(value);
+}
+
+/** 「カテゴリにして追加」で作るカテゴリの名前。もうあれば同じものとして扱う。 */
+export const IMPORT_CATEGORY_NAME = "追加されたカテゴリ";
+
+/** 一覧に出すカテゴリ。`category` が無いテンプレートはこれに入る。 */
+export const NO_CATEGORY = "未設定";
 
 export const TEMPLATE_FILE_FORMAT = "cbTemplatePalette";
 

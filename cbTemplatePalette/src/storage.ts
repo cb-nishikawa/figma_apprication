@@ -13,6 +13,8 @@ import type {
 const INDEX_KEY = "cbTemplatePalette.index";
 const ITEM_PREFIX = "cbTemplatePalette.item.";
 const TREE_KEY = "cbTemplatePalette.tree";
+/** まだ誰も使っていないカテゴリも残すため、index とは別に名前だけで持つ。 */
+const CATEGORIES_KEY = "cbTemplatePalette.categories";
 
 /** clientStorage allows roughly 5MB per plugin. */
 export const QUOTA_BYTES = 5 * 1024 * 1024;
@@ -181,6 +183,54 @@ export async function updateTemplate(
     await figma.clientStorage.setAsync(itemKey(id), item);
   }
   const next = index.map((meta) => (meta.id === id ? { ...meta, ...patch } : meta));
+  await saveIndex(next);
+  return next;
+}
+
+/* ------------------------------ カテゴリ ------------------------------ */
+
+/** レジストリにあるカテゴリ。まだ誰も使っていないものもここで残る。 */
+export async function loadCategories(): Promise<string[]> {
+  const stored = await figma.clientStorage.getAsync(CATEGORIES_KEY);
+  if (!Array.isArray(stored)) {
+    return [];
+  }
+  return stored.filter((name): name is string => typeof name === "string" && name.trim() !== "");
+}
+
+async function saveCategories(names: string[]): Promise<string[]> {
+  const unique = [...new Set(names.map((name) => name.trim()).filter((name) => name !== ""))];
+  await figma.clientStorage.setAsync(CATEGORIES_KEY, unique);
+  return unique;
+}
+
+/**
+ * 一覧に並べるカテゴリ。レジストリと、テンプレートが実際に持つ `category` を
+ * 合わせて返す。ファイルから持ってきたカテゴリはテンプレート側にしかないので
+ * こちらから見えるようにしてある。
+ */
+export async function listCategories(index: TemplateMeta[]): Promise<string[]> {
+  const registered = await loadCategories();
+  const used = index
+    .map((meta) => meta.category)
+    .filter((name): name is string => typeof name === "string" && name !== "");
+  return [...new Set([...registered, ...used])];
+}
+
+/** まだ誰も使っていないカテゴリを 1 つ足す。同じ名前があればそのまま。 */
+export async function addCategory(name: string): Promise<string[]> {
+  return saveCategories([...(await loadCategories()), name]);
+}
+
+/** レジストリの名前を付け替え、テンプレートの `category` もまとめて付け替える。 */
+export async function renameCategory(from: string, to: string): Promise<TemplateMeta[]> {
+  const registered = await loadCategories();
+  await saveCategories([...registered.map((name) => (name === from ? to : name)), to]);
+  const index = await loadIndex();
+  if (!index.some((meta) => meta.category === from)) {
+    return index;
+  }
+  const next = index.map((meta) => (meta.category === from ? { ...meta, category: to } : meta));
   await saveIndex(next);
   return next;
 }

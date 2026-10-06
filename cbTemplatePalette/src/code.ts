@@ -16,13 +16,16 @@ import {
 import {
   QUOTA_BYTES,
   QuotaExceededError,
+  addCategory,
   decodeItem,
   deleteTemplates,
   encodeItem,
   estimateBytes,
+  listCategories,
   loadIndex,
   loadItem,
   loadTree,
+  renameCategory,
   saveTemplate,
   saveTree,
   updateTemplate,
@@ -32,7 +35,6 @@ import {
   addGroup,
   appendMissingItems,
   dropGroup,
-  insertFragment,
   isGroup,
   listGroups,
   moveNode,
@@ -42,9 +44,12 @@ import {
   setGroupCollapsed,
 } from "./tree";
 import {
+  IMPORT_CATEGORY_NAME,
+  isImportMode,
   isViewMode,
   TEMPLATE_FILE_FORMAT,
   type ImageMode,
+  type ImportMode,
   type ListNode,
   type RestoreReport,
   type SerializedNode,
@@ -125,6 +130,7 @@ async function postTemplatesWithTree(index: TemplateMeta[], tree: Promise<ListNo
     templates: index,
     tree: await tree,
     viewMode: await loadViewMode(),
+    categories: await listCategories(index),
     usedBytes: usedBytes(index),
     quotaBytes: QUOTA_BYTES,
   });
@@ -274,7 +280,7 @@ function totalBytes(images: Record<string, Uint8Array>): number {
   return Object.values(images).reduce((sum, bytes) => sum + bytes.byteLength, 0);
 }
 
-async function handleSave(includeImages?: boolean): Promise<void> {
+async function handleSave(includeImages?: boolean, category?: string): Promise<void> {
   const { savable: roots, unsupported } = selectionCounts();
   if (unsupported > 0) {
     postToUi({
@@ -306,7 +312,7 @@ async function handleSave(includeImages?: boolean): Promise<void> {
       ...Object.values(serialized.components ?? {}),
     ]);
     if (hashes.length > 0 && includeImages === undefined) {
-      // 画像发展中国家はたくんだめ。選ぶまで保存しない。
+      // 画像を含めるか聞くまで保存しない。
       const bytes = await collectImageBytes(hashes);
       const remaining = Math.max(QUOTA_BYTES - usedBytes(await loadIndex()), 0);
       const size = totalBytes(bytes);
@@ -337,6 +343,11 @@ async function handleSave(includeImages?: boolean): Promise<void> {
       thumbnail,
       thumbnailVersion: THUMBNAIL_VERSION,
     };
+    // ヘッダーのカテゴリメニュー。未設定なら何も入れない（`category` 無し＝未設定）。
+    const trimmedCategory = category?.trim();
+    if (trimmedCategory) {
+      meta.category = trimmedCategory;
+    }
     if (component) {
       meta.kind = "component";
       meta.source = { nodeId: component.id, stamp: ensureStamp(component) };
@@ -752,6 +763,9 @@ function importedMeta(meta: Partial<TemplateMeta>, roots: SerializedNode[], thum
     ...(meta.imageMode === "keep" || meta.imageMode === "placeholder"
       ? { imageMode: meta.imageMode }
       : {}),
+    ...(typeof meta.category === "string" && meta.category !== ""
+      ? { category: meta.category }
+      : {}),
   };
 }
 
@@ -761,12 +775,28 @@ function importedComponents(value: unknown): TemplateContent["components"] {
     : undefined;
 }
 
-async function handleImport(files: Array<{ name: string; text: string }>): Promise<void> {
+async function handleImport(
+  files: Array<{ name: string; text: string }>,
+  mode: ImportMode
+): Promise<void> {
   postToUi({ type: "BUSY", message: "読み込んでいます…" });
   try {
+    if (mode === "replace") {
+      // 入れ替えは中身ごと捨てる。グループも同時に落とす（新しいファイルの分は
+      // 下で作り直す）。
+      const existing = await loadIndex();
+      if (existing.length > 0) {
+        const groups = listGroups(await loadTree(existing)).map((group) => group.id);
+        await deleteTemplates(
+          existing.map((meta) => meta.id),
+          groups
+        );
+      }
+    }
     const invalidFiles: string[] = [];
     let imported = 0;
     let overQuota = 0;
+    let usedImportCategory = false;
     let index = await loadIndex();
     let tree = await loadTree(index);
     for (const file of files) {
@@ -782,6 +812,9 @@ async function handleImport(files: Array<{ name: string; text: string }>): Promi
         const item = encodeItem(entry.roots, importedComponents(entry.components), images);
         const meta = importedMeta(entry.meta, entry.roots, await renderThumbnail(entry.roots, images));
         meta.byteSize = estimateBytes(item, meta.thumbnail);
+        if (mode === "category") {
+          meta.category = IMPORT_CATEGORY_NAME;
+        }
         prepared.push({ meta, item, oldId: entry.meta.id });
       }
       const groupIds = new Map<string, string>();
@@ -796,6 +829,9 @@ async function handleImport(files: Array<{ name: string; text: string }>): Promi
           index = await saveTemplate(meta, item);
           itemIds.set(oldId, meta.id);
           imported += 1;
+          if (meta.category === IMPORT_CATEGORY_NAME) {
+            usedImportCategory = true;
+          }
         } catch (err) {
           if (!(err instanceof QuotaExceededError)) {
             throw err;
@@ -803,14 +839,19 @@ async function handleImport(files: Array<{ name: string; text: string }>): Promi
           overQuota += 1;
         }
       }
-      // saveTemplate put each one at the head of the root; restore the file's own order.
+      // saveTemplate put each one at the head of the root; the mode decides where
+      // the file's own order sits relative to what was already there.
       const attempted = prepared.map(({ meta }) => meta.id);
       const fragment = appendMissingItems(
         remapTree(parsed.tree, itemIds, groupIds),
         [...itemIds.values()]
       );
-      tree = insertFragment(removeItems(tree, ...attempted), fragment);
+      tree = [...removeItems(tree, ...attempted), ...fragment];
       await saveTree(tree);
+    }
+    if (usedImportCategory) {
+      // 2 回読み込んでも 1 つのカテゴリに集まるように、レジストリにも残す。
+      await addCategory(IMPORT_CATEGORY_NAME);
     }
     await postTemplatesWithTree(index, Promise.resolve(tree));
 
@@ -825,7 +866,11 @@ async function handleImport(files: Array<{ name: string; text: string }>): Promi
       postToUi({ type: "ERROR", message: problems.join("。") });
     }
     if (imported > 0) {
-      figma.notify(`${imported} 件を読み込みました`);
+      figma.notify(
+        mode === "category"
+          ? `${imported} 件を「${IMPORT_CATEGORY_NAME}」に読み込みました`
+          : `${imported} 件を読み込みました`
+      );
     }
   } finally {
     postToUi({ type: "BUSY", message: null });
@@ -898,7 +943,7 @@ async function main(): Promise<void> {
           }
           break;
         case "SAVE_SELECTION":
-          await handleSave(msg.includeImages);
+          await handleSave(msg.includeImages, msg.category);
           break;
         case "PLACE":
           await handlePlace(msg.id);
@@ -916,7 +961,7 @@ async function main(): Promise<void> {
           await handleExportGroup(msg.id);
           break;
         case "IMPORT":
-          await handleImport(msg.files);
+          await handleImport(msg.files, isImportMode(msg.mode) ? msg.mode : "append");
           break;
         case "CLEAR_CANVAS_SELECTION": {
           // Assigning an already empty selection fires no selectionchange, which would
@@ -947,6 +992,29 @@ async function main(): Promise<void> {
         case "DELETE_GROUP":
           await handleDeleteGroup(msg.id);
           break;
+        case "ADD_CATEGORY": {
+          const name = msg.name.trim();
+          if (name) {
+            await addCategory(name);
+            await postTemplates(await loadIndex());
+          }
+          break;
+        }
+        case "RENAME_CATEGORY": {
+          const from = msg.from.trim();
+          const to = msg.to.trim();
+          if (from && to && from !== to) {
+            await postTemplates(await renameCategory(from, to));
+          }
+          break;
+        }
+        case "SET_CATEGORY": {
+          // 未設定はキーごと落とすと `category: undefined` になるが、表示も
+          // 書き出しも「無し」と同じ扱いになる。
+          const category = msg.category?.trim() || undefined;
+          await postTemplates(await updateTemplate(msg.id, { category }));
+          break;
+        }
         case "TOGGLE_GROUP": {
           await commitTree(await loadIndex(), (tree) =>
             setGroupCollapsed(tree, msg.id, msg.collapsed)

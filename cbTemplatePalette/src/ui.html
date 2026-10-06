@@ -14,6 +14,29 @@
             <span id="count" class="list-count"></span>
           </div>
           <div class="list-head-actions">
+            <div class="category-menu">
+              <button
+                id="category-toggle"
+                class="btn-icon"
+                type="button"
+                title="カテゴリ: 未設定"
+                aria-label="保存するカテゴリを選ぶ"
+                aria-haspopup="true"
+                aria-expanded="false"
+                aria-controls="category-popover"
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path
+                    d="M13.5 8.5 8.5 13.5 2.5 7.5v-4a1 1 0 0 1 1-1h4z"
+                    stroke="currentColor"
+                    stroke-width="1.3"
+                    stroke-linejoin="round"
+                  />
+                  <circle cx="5.6" cy="5.6" r="1.1" fill="currentColor" />
+                </svg>
+              </button>
+              <div id="category-popover" class="view-menu-popover" hidden role="menu" aria-label="カテゴリ"></div>
+            </div>
             <div class="view-menu">
               <button
                 id="view-mode-toggle"
@@ -80,6 +103,9 @@
                 </svg>
               </button>
               <div id="list-menu-popover" class="list-menu-popover" hidden role="menu">
+                <button id="add-category" class="row-menu-item" type="button" role="menuitem">
+                  カテゴリを追加
+                </button>
                 <button id="add-group" class="row-menu-item" type="button" role="menuitem">
                   グループを追加
                 </button>
@@ -175,6 +201,37 @@
           <button id="image-cancel" class="btn-secondary" type="button">キャンセル</button>
           <button id="image-skip" class="btn-secondary" type="button">画像を含めない</button>
           <button id="image-keep" class="btn-primary" type="button">画像を含める</button>
+        </div>
+      </div>
+    </div>
+    <div id="import-dialog" class="image-dialog" hidden>
+      <div
+        class="image-dialog-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="import-dialog-title"
+        aria-describedby="import-dialog-body"
+      >
+        <p id="import-dialog-title" class="image-dialog-title">読み込み方を選んでください</p>
+        <p id="import-dialog-body" class="image-dialog-body"></p>
+        <p id="import-dialog-note" class="image-dialog-note" hidden></p>
+        <div id="import-actions" class="import-dialog-actions">
+          <button id="import-replace" class="btn-secondary is-danger" type="button">
+            全て入れ替える
+          </button>
+          <button id="import-append" class="btn-primary" type="button">末尾に追加</button>
+          <button id="import-category" class="btn-secondary" type="button">
+            カテゴリにして追加
+          </button>
+          <button id="import-cancel" class="btn-secondary is-quiet" type="button">
+            キャンセル
+          </button>
+        </div>
+        <div id="import-confirm-actions" class="import-dialog-actions" hidden>
+          <button id="import-back" class="btn-secondary" type="button">戻る</button>
+          <button id="import-confirm-replace" class="btn-secondary is-danger" type="button">
+            全て入れ替える
+          </button>
         </div>
       </div>
     </div>

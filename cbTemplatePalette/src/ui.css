@@ -127,6 +127,51 @@ body {
   transform: translateY(-1px) rotate(-45deg);
 }
 
+/* The category menu sits with the other header buttons and opens the same way. */
+.category-menu {
+  position: relative;
+  flex-shrink: 0;
+}
+
+/* Width on the input is fixed here because the popover itself is `width: auto`. */
+.view-menu-popover.is-input {
+  width: 180px;
+  padding: 6px;
+}
+
+.view-menu-popover.is-input .text-input {
+  height: 26px;
+  font-size: 12px;
+}
+
+/* The rename action sits apart from the categories it acts on. */
+.category-popover-separator {
+  height: 1px;
+  margin: 4px 2px;
+  background: #e6e6e6;
+}
+
+.btn-secondary.is-danger {
+  border-color: #e0b4b0;
+  color: #b3261e;
+}
+
+.btn-secondary.is-danger:hover {
+  border-color: #b3261e;
+  background: #fdf3f2;
+}
+
+.btn-secondary.is-quiet {
+  border-color: transparent;
+  background: transparent;
+  color: #666;
+}
+
+.btn-secondary.is-quiet:hover {
+  border-color: transparent;
+  background: #f2f2f2;
+}
+
 .list-menu-popover {
   width: auto;
   /* An absolute box with `width: auto` shrinks to its content, and the percentage
@@ -863,6 +908,20 @@ body.is-resizing * {
   gap: 8px;
   justify-content: flex-end;
   margin-top: 14px;
+}
+
+/* 3 つの読み込み方を縦に並べる。360px だと横並びに収まらない。 */
+.import-dialog-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.import-dialog-actions .btn-primary,
+.import-dialog-actions .btn-secondary {
+  width: 100%;
+  height: 30px;
 }
 
 .btn-secondary {

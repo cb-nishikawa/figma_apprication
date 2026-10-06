@@ -1,4 +1,4 @@
-import type { ListNode, TemplateMeta, ViewMode } from "./types";
+import type { ImportMode, ListNode, TemplateMeta, ViewMode } from "./types";
 
 export type UiToPluginMessage =
   | { type: "LIST" }
@@ -6,19 +6,26 @@ export type UiToPluginMessage =
    * `includeImages` は保存時に「画像を含める」を選んだときだけ true。
    * 画像が選択に含まれる場合は必ず UI が確認してから送るので、
    * ここが undefined かつ画像ありなら保存は始まらない。
+   * `category` はヘッダーのカテゴリメニューの値。空・undefined は「未設定」。
    */
-  | { type: "SAVE_SELECTION"; includeImages?: boolean }
+  | { type: "SAVE_SELECTION"; includeImages?: boolean; category?: string }
   | { type: "PLACE"; id: string }
   | { type: "RENAME"; id: string; name: string }
   | { type: "DELETE"; id: string }
   /** `ids: null` exports every template. */
   | { type: "EXPORT"; ids: string[] | null }
-  | { type: "IMPORT"; files: Array<{ name: string; text: string }> }
+  | { type: "IMPORT"; files: Array<{ name: string; text: string }>; mode: ImportMode }
   /** 一覧の要素を選んだときに、Figma 側の選択を解除する。 */
   | { type: "CLEAR_CANVAS_SELECTION" }
   /** The UI generates the id so it can open the name field right after. */
   | { type: "ADD_GROUP"; id: string; name: string }
   | { type: "RENAME_GROUP"; id: string; name: string }
+  /** カテゴリは名前そのものが目印。まだ誰も使っていないカテゴリを 1 つ登録する。 */
+  | { type: "ADD_CATEGORY"; name: string }
+  /** `to` が既存と重なると 1 つにまとまる。 */
+  | { type: "RENAME_CATEGORY"; from: string; to: string }
+  /** `category: null` で「未設定」に戻す。 */
+  | { type: "SET_CATEGORY"; id: string; category: string | null }
   /** Deletes the group and the templates inside it. */
   | { type: "DELETE_GROUP"; id: string }
   /** Writes one group, with its templates, as one file. */
@@ -39,6 +46,8 @@ export type PluginToUiMessage =
       tree: ListNode[];
       /** 一覧の見た目。UI ごとの好みなので、読み込み時に返す。 */
       viewMode: ViewMode;
+      /** 登録済みのカテゴリ（まだ誰も使っていないものも含む）。表示順。 */
+      categories: string[];
       usedBytes: number;
       quotaBytes: number;
     }

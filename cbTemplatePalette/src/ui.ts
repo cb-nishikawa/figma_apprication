@@ -10,8 +10,11 @@ import {
   setGroupCollapsed,
 } from "./tree";
 import {
+  IMPORT_CATEGORY_NAME,
+  NO_CATEGORY,
   isViewMode,
   VIEW_MODES,
+  type ImportMode,
   type ListNode,
   type TemplateGroup,
   type TemplateMeta,
@@ -26,8 +29,11 @@ const filterToggleBtn = document.getElementById("filter-toggle") as HTMLButtonEl
 const filterPopover = document.getElementById("filter-popover") as HTMLDivElement;
 const viewModeToggleBtn = document.getElementById("view-mode-toggle") as HTMLButtonElement;
 const viewModePopover = document.getElementById("view-mode-popover") as HTMLDivElement;
+const categoryToggleBtn = document.getElementById("category-toggle") as HTMLButtonElement;
+const categoryPopover = document.getElementById("category-popover") as HTMLDivElement;
 const listMenuToggleBtn = document.getElementById("list-menu-toggle") as HTMLButtonElement;
 const listMenuPopover = document.getElementById("list-menu-popover") as HTMLDivElement;
+const addCategoryBtn = document.getElementById("add-category") as HTMLButtonElement;
 const addGroupBtn = document.getElementById("add-group") as HTMLButtonElement;
 const errorEl = document.getElementById("error") as HTMLParagraphElement;
 const listEl = document.getElementById("list") as HTMLUListElement;
@@ -46,6 +52,20 @@ const imageDialogNote = document.getElementById("image-dialog-note") as HTMLPara
 const imageCancelBtn = document.getElementById("image-cancel") as HTMLButtonElement;
 const imageSkipBtn = document.getElementById("image-skip") as HTMLButtonElement;
 const imageKeepBtn = document.getElementById("image-keep") as HTMLButtonElement;
+const importDialog = document.getElementById("import-dialog") as HTMLDivElement;
+const importDialogTitle = document.getElementById("import-dialog-title") as HTMLParagraphElement;
+const importDialogBody = document.getElementById("import-dialog-body") as HTMLParagraphElement;
+const importDialogNote = document.getElementById("import-dialog-note") as HTMLParagraphElement;
+const importActions = document.getElementById("import-actions") as HTMLDivElement;
+const importConfirmActions = document.getElementById("import-confirm-actions") as HTMLDivElement;
+const importReplaceBtn = document.getElementById("import-replace") as HTMLButtonElement;
+const importAppendBtn = document.getElementById("import-append") as HTMLButtonElement;
+const importCategoryBtn = document.getElementById("import-category") as HTMLButtonElement;
+const importCancelBtn = document.getElementById("import-cancel") as HTMLButtonElement;
+const importBackBtn = document.getElementById("import-back") as HTMLButtonElement;
+const importConfirmReplaceBtn = document.getElementById(
+  "import-confirm-replace"
+) as HTMLButtonElement;
 
 const DRAG_THRESHOLD = 4;
 /** この割合以上なら容量のバーを危険色にする。保存が拒まれる手前。 */
@@ -59,6 +79,17 @@ let renamingId: string | null = null;
 let renamingGroupId: string | null = null;
 let busyMessage: string | null = null;
 let viewMode: ViewMode = "detail";
+/** 登録済みのカテゴリ。まだ誰も使っていないものも含む（TEMPLATES で受け取る）。 */
+let categories: string[] = [];
+/** 保存先のカテゴリ。空文字が「未設定」。起動時は必ず未設定（この画面でのみ保持）。 */
+let saveCategory = "";
+/** カテゴリメニューの入力モード。null は一覧を出している。 */
+let categoryInput:
+  | { mode: "add"; value: string }
+  | { mode: "rename"; from: string }
+  | null = null;
+/** 読み込み方を選んでいる間だけ持つ。「全て入れ替える」の確認画面もここで持つ。 */
+let pendingImport: { files: Array<{ name: string; text: string }>; confirm: boolean } | null = null;
 let savableCount = 0;
 let canvasSelectionCount = 0;
 let usage = { used: 0, quota: 0 };
@@ -147,8 +178,65 @@ async function importFiles(fileList: FileList): Promise<void> {
     Array.from(fileList).map(async (f) => ({ name: f.name, text: await f.text() }))
   );
   if (files.length > 0) {
-    showError(null);
-    postToPlugin({ type: "IMPORT", files });
+    openImportDialog({ files, confirm: false });
+  }
+}
+
+/** 読み込み方の選択画面。「入れ替える」は2段階目の確認に進むだけ。 */
+function openImportDialog(state: { files: Array<{ name: string; text: string }>; confirm: boolean }): void {
+  pendingImport = state;
+  importActions.hidden = state.confirm;
+  importConfirmActions.hidden = !state.confirm;
+  if (state.confirm) {
+    importDialogTitle.textContent = "本当に全て入れ替えますか？";
+    importDialogBody.textContent =
+      `いまの ${templates.length} 件とグループ ${listGroups(tree).length} 件を消して、` +
+      `${state.files.length} 件のファイルに差し替えます。`;
+    importDialogNote.hidden = false;
+    importDialogNote.textContent = "元に戻せません。";
+    importBackBtn.focus();
+  } else {
+    importDialogTitle.textContent = "読み込み方を選んでください";
+    importDialogBody.textContent = `${state.files.length} 件のファイル（${summarizeNames(state.files)}）を読み込みます。`;
+    importDialogNote.hidden = true;
+    importAppendBtn.focus();
+  }
+  importDialog.hidden = false;
+}
+
+function summarizeNames(files: Array<{ name: string }>): string {
+  const names = files.slice(0, 2).map((entry) => entry.name);
+  const rest = files.length - names.length;
+  return rest > 0 ? `${names.join("、")} ほか ${rest} 件` : names.join("、");
+}
+
+function closeImportDialog(): void {
+  pendingImport = null;
+  importDialog.hidden = true;
+}
+
+/** 選んだ読み込み方で plugin 側に渡す。 */
+function chooseImport(mode: ImportMode): void {
+  const pending = pendingImport;
+  if (!pending) {
+    return;
+  }
+  if (mode === "replace" && !pending.confirm) {
+    openImportDialog({ ...pending, confirm: true });
+    return;
+  }
+  const files = pending.files;
+  closeImportDialog();
+  showError(null);
+  postToPlugin({ type: "IMPORT", files, mode });
+  if (mode === "category") {
+    // どこへ入ったかがその場で見えるようにする。カテゴリはこの画面でしか変わらない。
+    if (!categories.includes(IMPORT_CATEGORY_NAME)) {
+      categories = [...categories, IMPORT_CATEGORY_NAME];
+    }
+    saveCategory = IMPORT_CATEGORY_NAME;
+    syncCategoryToggle();
+    renderList();
   }
 }
 
@@ -174,6 +262,151 @@ function setFilterPopoverOpen(open: boolean): void {
 function setListMenuOpen(open: boolean): void {
   listMenuPopover.hidden = !open;
   listMenuToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+/* ------------------------------ カテゴリ ------------------------------ */
+
+/** 保存先のカテゴリ。空文字が「未設定」。ヘッダーのメニューだけで切り替える。 */
+function categoryLabel(name: string): string {
+  return name === "" ? NO_CATEGORY : name;
+}
+
+function syncCategoryToggle(): void {
+  categoryToggleBtn.title = `カテゴリ: ${categoryLabel(saveCategory)}`;
+  categoryToggleBtn.setAttribute(
+    "aria-label",
+    `保存するカテゴリを選ぶ（いま ${categoryLabel(saveCategory)}）`
+  );
+  categoryToggleBtn.classList.toggle("is-active", saveCategory !== "");
+}
+
+/** Rebuilt on every open so the chosen category keeps its mark. */
+function buildCategoryItems(): void {
+  categoryPopover.replaceChildren();
+  categoryPopover.classList.remove("is-input");
+  const names = categories.filter((name) => name !== NO_CATEGORY);
+  const options: Array<{ value: string; label: string }> = [{ value: "", label: NO_CATEGORY }];
+  for (const name of names) {
+    options.push({ value: name, label: name });
+  }
+  for (const option of options) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "row-menu-item";
+    item.setAttribute("role", "menuitemradio");
+    const current = option.value === saveCategory;
+    item.setAttribute("aria-checked", current ? "true" : "false");
+    item.classList.toggle("is-selected", current);
+    item.textContent = option.label;
+    item.addEventListener("click", (event) => {
+      event.stopPropagation();
+      chooseSaveCategory(option.value);
+    });
+    categoryPopover.append(item);
+  }
+  if (saveCategory !== "") {
+    const separator = document.createElement("div");
+    separator.className = "category-popover-separator";
+    separator.setAttribute("aria-hidden", "true");
+    const rename = createMenuButton(
+      "名前を変更",
+      () => setCategoryInput({ mode: "rename", from: saveCategory }),
+      { keepOpen: true }
+    );
+    categoryPopover.append(separator, rename);
+  }
+}
+
+function chooseSaveCategory(value: string): void {
+  saveCategory = value;
+  syncCategoryToggle();
+  closeAllPopups();
+  // 保存先を選ぶと同時に、そのカテゴリの行だけを見えるようにする。
+  renderList();
+}
+
+function setCategoryInput(
+  next: { mode: "add"; value: string } | { mode: "rename"; from: string }
+): void {
+  categoryInput = next;
+  renderCategoryInput();
+}
+
+/** まだ誰にも使われていない「カテゴリ N」を1つ選ぶ。 */
+function nextCategoryName(): string {
+  const used = new Set(categories);
+  let n = 1;
+  while (used.has(`カテゴリ ${n}`)) {
+    n += 1;
+  }
+  return `カテゴリ ${n}`;
+}
+
+function renderCategoryInput(): void {
+  const pending = categoryInput;
+  if (!pending) {
+    return;
+  }
+  categoryPopover.replaceChildren();
+  categoryPopover.classList.add("is-input");
+  const input = createTextInput(
+    pending.mode === "add" ? pending.value : pending.from,
+    "category-rename",
+    commitCategoryInput,
+    cancelCategoryInput
+  );
+  input.setAttribute("aria-label", "カテゴリ名");
+  categoryPopover.append(input);
+}
+
+/** 入力欄は消えるので、先に状態を空にして二重実行を防ぐ。 */
+function commitCategoryInput(value: string): void {
+  const pending = categoryInput;
+  categoryInput = null;
+  if (!pending) {
+    return;
+  }
+  const name = value.trim();
+  if (pending.mode === "add") {
+    if (name) {
+      postToPlugin({ type: "ADD_CATEGORY", name });
+      // 作った直後から使えるように、保存先も新しいカテゴリにしておく。
+      saveCategory = name;
+      syncCategoryToggle();
+    }
+  } else if (name && name !== pending.from) {
+    postToPlugin({ type: "RENAME_CATEGORY", from: pending.from, to: name });
+    if (saveCategory === pending.from) {
+      saveCategory = name;
+      syncCategoryToggle();
+    }
+  }
+  buildCategoryItems();
+  // 保存先が変わった分は、TEMPLATES が返る前に見えていたほうがよい。
+  renderList();
+}
+
+function cancelCategoryInput(): void {
+  if (!categoryInput) {
+    return;
+  }
+  categoryInput = null;
+  closeAllPopups();
+  categoryToggleBtn.focus();
+}
+
+function setCategoryPopoverOpen(open: boolean): void {
+  categoryPopover.hidden = !open;
+  categoryToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
+  if (!open) {
+    categoryInput = null;
+    return;
+  }
+  if (categoryInput) {
+    renderCategoryInput();
+  } else {
+    buildCategoryItems();
+  }
 }
 
 const VIEW_MODE_LABELS: Record<ViewMode, string> = {
@@ -247,6 +480,7 @@ function closeAllPopups(): void {
   closeAllRowMenus();
   setFilterPopoverOpen(false);
   setViewModePopoverOpen(false);
+  setCategoryPopoverOpen(false);
   setListMenuOpen(false);
 }
 
@@ -439,6 +673,49 @@ function createMoveTarget(
   return item;
 }
 
+/** 「カテゴリ」. 行が入っているカテゴリを書き換える。所属ではなくラベルなので移動はしない。 */
+function createCategoryItem(meta: TemplateMeta): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "row-menu-item row-menu-item-has-submenu";
+  button.setAttribute("aria-haspopup", "true");
+
+  const icon = document.createElement("span");
+  icon.className = "row-menu-item-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "#";
+  button.append(icon, document.createTextNode("カテゴリ"));
+
+  const current = meta.category ?? "";
+  const values: string[] = [""];
+  for (const name of categories) {
+    if (name !== NO_CATEGORY && !values.includes(name)) {
+      values.push(name);
+    }
+  }
+  if (current !== "" && !values.includes(current)) {
+    values.push(current);
+  }
+
+  const panel = document.createElement("div");
+  panel.className = "row-menu-submenu";
+  panel.setAttribute("role", "menu");
+  for (const value of values) {
+    panel.append(createCategoryTarget(meta, value));
+  }
+  button.append(panel);
+  return button;
+}
+
+function createCategoryTarget(meta: TemplateMeta, value: string): HTMLButtonElement {
+  const current = meta.category ?? "";
+  const item = createMenuButton(value === "" ? NO_CATEGORY : value, () => {
+    postToPlugin({ type: "SET_CATEGORY", id: meta.id, category: value === "" ? null : value });
+  });
+  item.disabled = value === current;
+  return item;
+}
+
 function createRowMenu(meta: TemplateMeta): HTMLDivElement {
   const wrap = document.createElement("div");
   wrap.className = "row-menu";
@@ -457,6 +734,7 @@ function createRowMenu(meta: TemplateMeta): HTMLDivElement {
 
   panel.append(
     createMoveItem(meta),
+    createCategoryItem(meta),
     createMenuButton("名前を変更", () => startRename(meta.id)),
     createMenuButton("ファイルに書き出す", () => {
       postToPlugin({ type: "EXPORT", ids: [meta.id] });
@@ -1013,8 +1291,10 @@ interface VisibleItem {
 
 function visibleNodes(): Array<VisibleGroup | VisibleItem> {
   const query = filterInput.value.trim().toLowerCase();
+  // 選んでいるカテゴリの行だけを出す。「未設定」（saveCategory が ""）は
+  // category が無いテンプレートに当たる。
   const hits = (meta: TemplateMeta): boolean =>
-    !query || meta.name.toLowerCase().includes(query);
+    (!query || meta.name.toLowerCase().includes(query)) && (meta.category ?? "") === saveCategory;
   const nodes: Array<VisibleGroup | VisibleItem> = [];
   for (const node of tree) {
     if (isGroup(node)) {
@@ -1023,13 +1303,16 @@ function visibleNodes(): Array<VisibleGroup | VisibleItem> {
         return meta && hits(meta) ? [meta] : [];
       });
       // A group just created has nothing in it yet, so it is shown even when empty;
-      // only the filter is allowed to hide a group.
-      if (items.length > 0 || !query) {
+      // only the filters are allowed to hide a group.
+      if (items.length > 0 || (node.items.length === 0 && !query)) {
         // While filtering, a folded group is drawn open so its hits are visible.
+        // A group that loses some of its contents to the filters is opened too;
+        // one whose contents all match keeps its stored fold.
         // The stored flag is left alone.
+        const hiddenInside = items.length !== node.items.length;
         nodes.push({
           type: "group",
-          group: query ? { ...node, collapsed: false } : node,
+          group: query || hiddenInside ? { ...node, collapsed: false } : node,
           items,
         });
       }
@@ -1124,7 +1407,8 @@ function answerImages(includeImages: boolean | null): void {
   if (includeImages === null) {
     return;
   }
-  postToPlugin({ type: "SAVE_SELECTION", includeImages });
+  // 画像の確認で1往復するので、カテゴリも同じものをもう一度送る。
+  postToPlugin({ type: "SAVE_SELECTION", includeImages, category: saveCategory || undefined });
 }
 
 imageCancelBtn.addEventListener("click", () => answerImages(null));
@@ -1143,9 +1427,33 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
+importReplaceBtn.addEventListener("click", () => chooseImport("replace"));
+importAppendBtn.addEventListener("click", () => chooseImport("append"));
+importCategoryBtn.addEventListener("click", () => chooseImport("category"));
+importCancelBtn.addEventListener("click", closeImportDialog);
+importConfirmReplaceBtn.addEventListener("click", () => chooseImport("replace"));
+importBackBtn.addEventListener("click", () => {
+  const pending = pendingImport;
+  if (pending) {
+    openImportDialog({ ...pending, confirm: false });
+  }
+});
+importDialog.addEventListener("click", (event) => {
+  // カードの外（背面）を押したら選択に戻る。
+  if (event.target === importDialog) {
+    closeImportDialog();
+  }
+});
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !importDialog.hidden) {
+    event.preventDefault();
+    closeImportDialog();
+  }
+});
+
 saveBtn.addEventListener("click", () => {
   showError(null);
-  postToPlugin({ type: "SAVE_SELECTION" });
+  postToPlugin({ type: "SAVE_SELECTION", category: saveCategory || undefined });
 });
 
 placeBtn.addEventListener("click", () => {
@@ -1172,6 +1480,24 @@ viewModePopover.addEventListener("keydown", (event) => {
     event.preventDefault();
     setViewModePopoverOpen(false);
     viewModeToggleBtn.focus();
+  }
+});
+
+categoryToggleBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  // 開いているかどうかは閉じる前に見る（closeAllPopups が隠してしまうため）。
+  const willOpen = categoryPopover.hidden;
+  closeAllPopups();
+  setCategoryPopoverOpen(willOpen);
+});
+
+categoryPopover.addEventListener("click", (event) => event.stopPropagation());
+
+categoryPopover.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    setCategoryPopoverOpen(false);
+    categoryToggleBtn.focus();
   }
 });
 
@@ -1205,6 +1531,14 @@ listMenuPopover.addEventListener("keydown", (event) => {
     setListMenuOpen(false);
     listMenuToggleBtn.focus();
   }
+});
+
+addCategoryBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  // 「⋯」を閉じてから、カテゴリメニューの中に入力欄を開く。
+  closeAllPopups();
+  setCategoryInput({ mode: "add", value: nextCategoryName() });
+  setCategoryPopoverOpen(true);
 });
 
 addGroupBtn.addEventListener("click", (event) => {
@@ -1252,6 +1586,11 @@ document.addEventListener("keydown", (event) => {
     viewModeToggleBtn.focus();
     return;
   }
+  if (!categoryPopover.hidden) {
+    setCategoryPopoverOpen(false);
+    categoryToggleBtn.focus();
+    return;
+  }
   if (!filterPopover.hidden) {
     setFilterPopoverOpen(false);
     filterToggleBtn.focus();
@@ -1268,6 +1607,9 @@ document.addEventListener("click", (event) => {
   const target = event.target as Node | null;
   if (target && !viewModeToggleBtn.closest(".view-menu")?.contains(target)) {
     setViewModePopoverOpen(false);
+  }
+  if (target && !categoryToggleBtn.closest(".category-menu")?.contains(target)) {
+    setCategoryPopoverOpen(false);
   }
   if (target && !filterToggleBtn.closest(".filter-menu")?.contains(target)) {
     setFilterPopoverOpen(false);
@@ -1341,6 +1683,15 @@ window.onmessage = (event: MessageEvent) => {
       if (renamingGroupId && !groups.some((g) => g.id === renamingGroupId)) {
         renamingGroupId = null;
       }
+      // カテゴリはこのメッセージでしか届かない。開いていたら作り直す。
+      categories = msg.categories ?? [];
+      if (saveCategory !== "" && !categories.includes(saveCategory)) {
+        saveCategory = "";
+        syncCategoryToggle();
+      }
+      if (!categoryPopover.hidden && !categoryInput) {
+        buildCategoryItems();
+      }
       renderList();
       break;
     }
@@ -1383,6 +1734,7 @@ listEl.addEventListener("dragstart", (event) => event.preventDefault());
 
 setupResize();
 syncViewModeToggle();
+syncCategoryToggle();
 renderSelectionHint(0, false, 0);
 renderList();
 postToPlugin({ type: "LIST" });
