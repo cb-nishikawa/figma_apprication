@@ -648,7 +648,7 @@ function createGroupItem(group: TemplateGroup, items: TemplateMeta[]): HTMLLIEle
   li.setAttribute("aria-level", "1");
   li.setAttribute("aria-expanded", collapsed ? "false" : "true");
   li.setAttribute("aria-selected", group.id === selectedGroupId ? "true" : "false");
-  li.title = "ドラッグで並べ替え・テンプレートをここへ移動";
+  li.title = "名前をダブルクリックで名前変更・ドラッグで並べ替え・テンプレートをここへ移動";
 
   const head = document.createElement("div");
   head.className = "template-group-head";
@@ -709,6 +709,14 @@ function createGroupItem(group: TemplateGroup, items: TemplateMeta[]): HTMLLIEle
     closeAllRowMenus();
     selectGroup(group.id);
   });
+  head.addEventListener("dblclick", (event) => {
+    // グループ名のダブルクリックで名前変更。見出しの他の部分は何もしない
+    if (!(event.target as Element | null)?.closest?.(".template-group-name")) {
+      return;
+    }
+    selectGroup(group.id);
+    startRenameGroup(group.id);
+  });
   return li;
 }
 
@@ -720,7 +728,7 @@ function createItem(meta: TemplateMeta, level: number): HTMLLIElement {
   li.setAttribute("role", "treeitem");
   li.setAttribute("aria-level", String(level));
   li.setAttribute("aria-selected", meta.id === selectedId ? "true" : "false");
-  li.title = "クリックで選択・ダブルクリックで複製・ドラッグで並べ替え";
+  li.title = "クリックで選択・名前をダブルクリックで名前変更・ダブルクリックで複製・ドラッグで並べ替え";
 
   const thumb = document.createElement("div");
   thumb.className = "template-thumb";
@@ -760,8 +768,15 @@ function createItem(meta: TemplateMeta, level: number): HTMLLIElement {
     closeAllRowMenus();
     selectTemplate(meta.id);
   });
-  li.addEventListener("dblclick", () => {
+  li.addEventListener("dblclick", (event) => {
+    // 名前テキストのダブルクリックは名前変更。それ以外（サムネイル・情報行・
+    // バッジ）はこれまでどおり複製する
+    const onName = Boolean((event.target as Element | null)?.closest?.(".template-name"));
     selectTemplate(meta.id);
+    if (onName) {
+      startRename(meta.id);
+      return;
+    }
     place(meta.id);
   });
   li.addEventListener("pointerdown", (event) => {
