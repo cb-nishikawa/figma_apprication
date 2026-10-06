@@ -10,13 +10,12 @@ import {
   QUOTA_BYTES,
   QuotaExceededError,
   decodeItem,
-  deleteTemplate,
+  deleteTemplates,
   encodeItem,
   estimateBytes,
   loadIndex,
   loadItem,
   loadTree,
-  renameTemplate,
   saveTemplate,
   saveTree,
   updateTemplate,
@@ -25,11 +24,12 @@ import {
 import {
   addGroup,
   appendMissingItems,
+  dropGroup,
   insertFragment,
   isGroup,
+  listGroups,
   moveNode,
   remapTree,
-  removeGroup,
   removeItems,
   renameGroup,
   setGroupCollapsed,
@@ -393,6 +393,76 @@ function safeFileName(name: string): string {
   return name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").trim() || "template";
 }
 
+/**
+ * Renames the entry and the name stored in the saved data, so a later duplicate
+ * gets the same layer name. The element on the canvas is left alone.
+ * Several roots keep their own names: naming them all the same would lose what
+ * each one was called.
+ */
+function renamedRoots(roots: SerializedNode[], name: string): SerializedNode[] {
+  const root = roots.length === 1 ? roots[0] : null;
+  if (!root || root.props.name === name) {
+    return roots;
+  }
+  return [{ ...root, props: { ...root.props, name } }];
+}
+
+async function handleRename(id: string, rawName: string): Promise<void> {
+  const name = rawName.trim();
+  if (!name) {
+    return;
+  }
+  const meta = (await loadIndex()).find((entry) => entry.id === id);
+  if (!meta) {
+    return;
+  }
+  if (meta.name === name) {
+    await postTemplates(await loadIndex());
+    return;
+  }
+  const item = await loadItem(id);
+  if (!item) {
+    await postTemplates(await updateTemplate(id, { name }));
+    return;
+  }
+  postToUi({ type: "BUSY", message: "名前を変更しています…" });
+  try {
+    const content = decodeItem(item);
+    const roots = renamedRoots(content.roots, name);
+    const next = encodeItem(roots, content.components);
+    // The picture shows the old name, so it has to be drawn again. A failed
+    // render must not wipe the picture that is already there.
+    const drawn = await renderThumbnail(roots);
+    const thumbnail = drawn || meta.thumbnail;
+    await postTemplates(
+      await updateTemplate(
+        id,
+        { name, thumbnail, byteSize: estimateBytes(next, thumbnail) },
+        next
+      )
+    );
+    figma.notify(`「${name}」に名前を変更しました`);
+  } finally {
+    postToUi({ type: "BUSY", message: null });
+  }
+}
+
+/** Deletes a group and the templates inside it. There is no way back. */
+async function handleDeleteGroup(id: string): Promise<void> {
+  const index = await loadIndex();
+  const group = listGroups(await loadTree(index)).find((entry) => entry.id === id);
+  if (!group) {
+    await commitTree(index, (tree) => dropGroup(tree, id));
+    return;
+  }
+  const next = await deleteTemplates(group.items, [id]);
+  await postTemplatesWithTree(next, loadTree(next));
+  const removed = index.length - next.length;
+  figma.notify(
+    `「${group.name}」を削除しました${removed > 0 ? `（中の ${removed} 件も削除）` : ""}`
+  );
+}
+
 /** The tree of a file export, without the templates whose body could not be read. */
 function exportTree(tree: ListNode[], exported: Set<string>): ListNode[] {
   const nodes: ListNode[] = [];
@@ -421,33 +491,71 @@ async function handleExport(ids: string[] | null): Promise<void> {
   }
   postToUi({ type: "BUSY", message: "書き出しています…" });
   try {
-    const file: TemplateFile = { format: TEMPLATE_FILE_FORMAT, version: 3, tree: [], templates: [] };
-    for (const meta of targets) {
-      const item = await loadItem(meta.id);
-      if (item) {
-        const content = decodeItem(item);
-        file.templates.push(
-          content.components
-            ? { meta, roots: content.roots, components: content.components }
-            : { meta, roots: content.roots }
-        );
-      }
-    }
+    const file = await buildExportFile(targets);
     const exported = new Set(file.templates.map((entry) => entry.meta.id));
     // A single template is exported flat; its group is not worth recreating on import.
     file.tree = ids
       ? file.templates.map((entry) => ({ type: "item" as const, id: entry.meta.id }))
       : exportTree(await loadTree(index), exported);
-    const now = new Date();
-    const stamp = `${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-${pad2(now.getHours())}${pad2(now.getMinutes())}`;
     const fileName =
       ids && targets.length === 1
         ? `${safeFileName(targets[0].name)}${FILE_SUFFIX}`
-        : `cbTemplatePalette-${stamp}${FILE_SUFFIX}`;
+        : `cbTemplatePalette-${exportStamp()}${FILE_SUFFIX}`;
     postToUi({ type: "EXPORT_DATA", fileName, text: JSON.stringify(file) });
   } finally {
     postToUi({ type: "BUSY", message: null });
   }
+}
+
+/** Writes one group and nothing else. The group itself comes back as one group on import. */
+async function handleExportGroup(groupId: string): Promise<void> {
+  const index = await loadIndex();
+  const tree = await loadTree(index);
+  const group = listGroups(tree).find((entry) => entry.id === groupId);
+  if (!group) {
+    postToUi({ type: "ERROR", message: "書き出すグループがありません" });
+    return;
+  }
+  const exported = new Set(group.items);
+  const targets = index.filter((meta) => exported.has(meta.id));
+  if (targets.length === 0) {
+    postToUi({ type: "ERROR", message: `グループ「${group.name}」には書き出すテンプレートがありません` });
+    return;
+  }
+  postToUi({ type: "BUSY", message: "書き出しています…" });
+  try {
+    const file = await buildExportFile(targets);
+    file.tree = exportTree(tree, new Set(file.templates.map((entry) => entry.meta.id)));
+    postToUi({
+      type: "EXPORT_DATA",
+      fileName: `${safeFileName(group.name)}${FILE_SUFFIX}`,
+      text: JSON.stringify(file),
+    });
+  } finally {
+    postToUi({ type: "BUSY", message: null });
+  }
+}
+
+/** Reads the saved data of every target. Entries whose data is gone are left out. */
+async function buildExportFile(targets: TemplateMeta[]): Promise<TemplateFile> {
+  const file: TemplateFile = { format: TEMPLATE_FILE_FORMAT, version: 3, tree: [], templates: [] };
+  for (const meta of targets) {
+    const item = await loadItem(meta.id);
+    if (item) {
+      const content = decodeItem(item);
+      file.templates.push(
+        content.components
+          ? { meta, roots: content.roots, components: content.components }
+          : { meta, roots: content.roots }
+      );
+    }
+  }
+  return file;
+}
+
+function exportStamp(): string {
+  const now = new Date();
+  return `${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-${pad2(now.getHours())}${pad2(now.getMinutes())}`;
 }
 
 interface ParsedTemplateFile {
@@ -507,10 +615,25 @@ function parseTemplateFile(text: string): ParsedTemplateFile | null {
   };
 }
 
+/**
+ * The name shown in the list. The file's own name wins; a file written by hand or
+ * by an older version may not have one, so the saved node's name is the next best
+ * thing. Anything still nameless falls back to a plain label.
+ */
+function importedName(meta: Partial<TemplateMeta>, roots: SerializedNode[]): string {
+  const given = typeof meta.name === "string" ? meta.name.trim() : "";
+  if (given) {
+    return given;
+  }
+  const nodeName = roots[0]?.props?.name;
+  const fromNode = typeof nodeName === "string" ? nodeName.trim() : "";
+  return fromNode || "テンプレート";
+}
+
 function importedMeta(meta: Partial<TemplateMeta>, roots: SerializedNode[], thumbnail: string): TemplateMeta {
   return {
     id: newId(),
-    name: typeof meta.name === "string" && meta.name.trim() ? meta.name.trim() : "読み込んだテンプレート",
+    name: importedName(meta, roots),
     width: Number(meta.width) || 0,
     height: Number(meta.height) || 0,
     createdAt: Number(meta.createdAt) || Date.now(),
@@ -672,18 +795,17 @@ async function main(): Promise<void> {
         case "PLACE":
           await handlePlace(msg.id);
           break;
-        case "RENAME": {
-          const name = msg.name.trim();
-          if (name) {
-            await postTemplates(await renameTemplate(msg.id, name));
-          }
+        case "RENAME":
+          await handleRename(msg.id, msg.name);
           break;
-        }
         case "DELETE":
-          await postTemplates(await deleteTemplate(msg.id));
+          await postTemplates(await deleteTemplates([msg.id]));
           break;
         case "EXPORT":
           await handleExport(msg.ids);
+          break;
+        case "EXPORT_GROUP":
+          await handleExportGroup(msg.id);
           break;
         case "IMPORT":
           await handleImport(msg.files);
@@ -714,10 +836,9 @@ async function main(): Promise<void> {
           }
           break;
         }
-        case "DELETE_GROUP": {
-          await commitTree(await loadIndex(), (tree) => removeGroup(tree, msg.id));
+        case "DELETE_GROUP":
+          await handleDeleteGroup(msg.id);
           break;
-        }
         case "TOGGLE_GROUP": {
           await commitTree(await loadIndex(), (tree) =>
             setGroupCollapsed(tree, msg.id, msg.collapsed)

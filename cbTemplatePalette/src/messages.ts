@@ -14,8 +14,10 @@ export type UiToPluginMessage =
   /** The UI generates the id so it can open the name field right after. */
   | { type: "ADD_GROUP"; id: string; name: string }
   | { type: "RENAME_GROUP"; id: string; name: string }
-  /** Deletes the group only; its templates go back to the root. */
+  /** Deletes the group and the templates inside it. */
   | { type: "DELETE_GROUP"; id: string }
+  /** Writes one group, with its templates, as one file. */
+  | { type: "EXPORT_GROUP"; id: string }
   /** Folds or unfolds the group; the choice is remembered per group. */
   | { type: "TOGGLE_GROUP"; id: string; collapsed: boolean }
   /** `groupId: null` targets the root. `index` counts the dragged node itself. */

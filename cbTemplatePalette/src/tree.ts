@@ -131,15 +131,10 @@ export function setGroupCollapsed(
   );
 }
 
-/** Removes the group and puts its contents back at the root where the group was. */
-export function removeGroup(tree: ListNode[], id: string): ListNode[] {
-  const group = groupAt(tree, id);
-  if (!group) {
-    return tree;
-  }
-  const index = tree.findIndex((node) => node.id === id);
-  const contents: ListNode[] = group.items.map((itemId) => ({ type: "item", id: itemId }));
-  return [...tree.slice(0, index), ...contents, ...tree.slice(index + 1)];
+/** Removes the group only. The templates inside it are deleted with it. */
+export function dropGroup(tree: ListNode[], id: string): ListNode[] {
+  const next = tree.filter((node) => !(isGroup(node) && node.id === id));
+  return next.length === tree.length ? tree : next;
 }
 
 /** The group a template sits in, or null at the root. */

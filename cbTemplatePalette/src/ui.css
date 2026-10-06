@@ -577,6 +577,44 @@ body.is-dragging {
   position: relative;
 }
 
+/* Deleting a group cannot be undone, so the panel turns into the question. */
+.row-menu-panel.is-confirm {
+  min-width: 196px;
+}
+
+.row-menu-confirm-text {
+  margin: 2px 4px 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.row-menu-confirm-note {
+  margin: 0 4px 6px;
+  color: #767676;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.row-menu-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.row-menu-actions .row-menu-item {
+  flex: 1;
+  padding: 6px 4px;
+  text-align: center;
+}
+
+.row-menu-item.is-danger {
+  color: #b00020;
+}
+
+.row-menu-item.is-danger:hover:not(:disabled) {
+  background: #fdf0f2;
+}
+
 .row-menu-item-has-submenu:hover,
 .row-menu-item-has-submenu:focus-within {
   background: #f3f3f3;

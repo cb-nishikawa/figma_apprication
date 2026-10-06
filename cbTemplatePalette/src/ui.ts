@@ -371,14 +371,20 @@ function commitRenameGroup(id: string, value: string): void {
   renderList();
 }
 
-function createMenuButton(label: string, onSelect: () => void): HTMLButtonElement {
+function createMenuButton(
+  label: string,
+  onSelect: () => void,
+  options: { danger?: boolean; keepOpen?: boolean } = {}
+): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "row-menu-item";
+  button.className = options.danger ? "row-menu-item is-danger" : "row-menu-item";
   button.textContent = label;
   button.addEventListener("click", (event) => {
     event.stopPropagation();
-    closeAllRowMenus();
+    if (!options.keepOpen) {
+      closeAllRowMenus();
+    }
     onSelect();
   });
   return button;
@@ -485,21 +491,73 @@ function createGroupMenu(group: TemplateGroup): HTMLDivElement {
   panel.className = "row-menu-panel";
   panel.hidden = true;
   panel.setAttribute("role", "menu");
-  panel.append(
-    createMenuButton("名前を変更", () => startRenameGroup(group.id)),
-    createMenuButton("削除", () => {
-      if (selectedGroupId === group.id) {
-        selectedGroupId = null;
-      }
-      postToPlugin({ type: "DELETE_GROUP", id: group.id });
-    })
+
+  // Deleting a group takes its templates with it, so it asks first. The question
+  // stays inside this panel: a modal would need its own focus handling, and
+  // window.confirm is not dependable in the plugin iframe.
+  const confirm = document.createElement("div");
+  confirm.className = "row-menu-confirm";
+  confirm.hidden = true;
+  const question = document.createElement("p");
+  question.className = "row-menu-confirm-text";
+  question.textContent =
+    group.items.length > 0
+      ? `「${group.name}」と中の ${group.items.length} 件を削除します`
+      : `「${group.name}」を削除します`;
+  const note = document.createElement("p");
+  note.className = "row-menu-confirm-note";
+  note.textContent = "元に戻せません。残すなら先に「ファイルに書き出す」で保存";
+  // Every time the panel opens it starts on the menu, never on the question.
+  const showMenu = (): void => {
+    confirm.hidden = true;
+    panel.classList.remove("is-confirm");
+    menu.hidden = false;
+  };
+  const actions = document.createElement("div");
+  actions.className = "row-menu-actions";
+  actions.append(
+    createMenuButton("キャンセル", showMenu, { keepOpen: true }),
+    createMenuButton(
+      "削除",
+      () => {
+        if (selectedGroupId === group.id) {
+          selectedGroupId = null;
+        }
+        postToPlugin({ type: "DELETE_GROUP", id: group.id });
+      },
+      { danger: true }
+    )
   );
+  confirm.append(question, note, actions);
+
+  const menu = document.createElement("div");
+  menu.className = "row-menu-list";
+  menu.append(
+    createMenuButton("名前を変更", () => startRenameGroup(group.id)),
+    createMenuButton("ファイルに書き出す", () => {
+      postToPlugin({ type: "EXPORT_GROUP", id: group.id });
+    }),
+    createMenuButton(
+      "削除",
+      () => {
+        menu.hidden = true;
+        confirm.hidden = false;
+        panel.classList.add("is-confirm");
+      },
+      { keepOpen: true }
+    )
+  );
+
+  panel.append(menu, confirm);
 
   trigger.addEventListener("click", (event) => {
     event.stopPropagation();
     const willOpen = panel.hidden;
     closeAllPopups();
     panel.hidden = !willOpen;
+    if (willOpen) {
+      showMenu();
+    }
   });
   trigger.addEventListener("dblclick", (event) => event.stopPropagation());
   panel.addEventListener("click", (event) => event.stopPropagation());

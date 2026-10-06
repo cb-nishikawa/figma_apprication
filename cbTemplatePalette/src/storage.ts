@@ -1,5 +1,5 @@
 import { gunzipSync, gzipSync, strFromU8, strToU8 } from "fflate";
-import { prependItem, reconcileTree, removeItems } from "./tree";
+import { dropGroup, prependItem, reconcileTree, removeItems } from "./tree";
 import type {
   ListNode,
   SerializedNode,
@@ -121,11 +121,17 @@ export async function saveTemplate(meta: TemplateMeta, item: TemplateItem): Prom
   return next;
 }
 
-export async function deleteTemplate(id: string): Promise<TemplateMeta[]> {
-  const next = (await loadIndex()).filter((meta) => meta.id !== id);
+/** Deletes many templates in one go, so the index and the tree are written once. */
+export async function deleteTemplates(
+  ids: string[],
+  dropGroups: string[] = []
+): Promise<TemplateMeta[]> {
+  const gone = new Set(ids);
+  const next = (await loadIndex()).filter((meta) => !gone.has(meta.id));
   await saveIndex(next);
-  await figma.clientStorage.deleteAsync(itemKey(id));
-  await saveTree(removeItems(await loadTree(next), id));
+  await Promise.all([...gone].map((id) => figma.clientStorage.deleteAsync(itemKey(id))));
+  const kept = removeItems(await loadTree(next), ...gone);
+  await saveTree(dropGroups.reduce(dropGroup, kept));
   return next;
 }
 
@@ -143,14 +149,6 @@ export async function updateTemplate(
     await figma.clientStorage.setAsync(itemKey(id), item);
   }
   const next = index.map((meta) => (meta.id === id ? { ...meta, ...patch } : meta));
-  await saveIndex(next);
-  return next;
-}
-
-export async function renameTemplate(id: string, name: string): Promise<TemplateMeta[]> {
-  const next = (await loadIndex()).map((meta) =>
-    meta.id === id ? { ...meta, name } : meta
-  );
   await saveIndex(next);
   return next;
 }
