@@ -116,21 +116,31 @@ const SHAPE_TYPES = new Set([
   "VECTOR",
 ]);
 
+/**
+ * Top-level node types the save button accepts: containers plus every shape,
+ * vector, boolean and text the serializer can round-trip. Types left out
+ * (slices, connectors, widgets, embeds, tables and the like) cannot be rebuilt,
+ * so a selection containing one is refused instead of quietly dropping it.
+ */
+const SAVABLE_ROOT_TYPES = new Set<string>([
+  "FRAME",
+  "SECTION",
+  "GROUP",
+  "COMPONENT",
+  "COMPONENT_SET",
+  "INSTANCE",
+  ...SHAPE_TYPES,
+  "BOOLEAN_OPERATION",
+  "TEXT",
+]);
+
 /** A single selected component or component set is saved as a component template. */
 export function isComponentRoot(node: SceneNode): node is ComponentNode | ComponentSetNode {
   return node.type === "COMPONENT" || node.type === "COMPONENT_SET";
 }
 
-/** Top-level node types accepted by the save button. */
 export function isSavableRoot(node: SceneNode): boolean {
-  return (
-    node.type === "FRAME" ||
-    node.type === "SECTION" ||
-    node.type === "GROUP" ||
-    node.type === "COMPONENT" ||
-    node.type === "COMPONENT_SET" ||
-    node.type === "INSTANCE"
-  );
+  return SAVABLE_ROOT_TYPES.has(node.type);
 }
 
 /** Deep plain copy without variable bindings (they never resolve in another file). */

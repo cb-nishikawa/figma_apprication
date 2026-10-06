@@ -94,4 +94,5 @@
 ## 関連
 
 - 仕様: [`../../specs/cb-template-palette.md`](../../specs/cb-template-palette.md)
+- 次: [ADR-006 一覧の表示モード](ADR-006-template-palette-view-modes.md)（開閉状態は `tree`、表示モードは `clientStorage` に分けた理由）
 - 実装: `cbTemplatePalette/src/tree.ts`、`src/storage.ts`（`loadTree` / `saveTree`）、`src/ui.ts`（ドラッグ・メニュー）

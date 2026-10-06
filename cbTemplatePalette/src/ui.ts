@@ -9,7 +9,14 @@ import {
   renameGroup,
   setGroupCollapsed,
 } from "./tree";
-import type { ListNode, TemplateGroup, TemplateMeta } from "./types";
+import {
+  isViewMode,
+  VIEW_MODES,
+  type ListNode,
+  type TemplateGroup,
+  type TemplateMeta,
+  type ViewMode,
+} from "./types";
 
 const saveBtn = document.getElementById("save") as HTMLButtonElement;
 const selectionHint = document.getElementById("selection-hint") as HTMLParagraphElement;
@@ -17,6 +24,8 @@ const countEl = document.getElementById("count") as HTMLSpanElement;
 const filterInput = document.getElementById("filter") as HTMLInputElement;
 const filterToggleBtn = document.getElementById("filter-toggle") as HTMLButtonElement;
 const filterPopover = document.getElementById("filter-popover") as HTMLDivElement;
+const viewModeToggleBtn = document.getElementById("view-mode-toggle") as HTMLButtonElement;
+const viewModePopover = document.getElementById("view-mode-popover") as HTMLDivElement;
 const listMenuToggleBtn = document.getElementById("list-menu-toggle") as HTMLButtonElement;
 const listMenuPopover = document.getElementById("list-menu-popover") as HTMLDivElement;
 const addGroupBtn = document.getElementById("add-group") as HTMLButtonElement;
@@ -24,6 +33,8 @@ const errorEl = document.getElementById("error") as HTMLParagraphElement;
 const listEl = document.getElementById("list") as HTMLUListElement;
 const statusSpinner = document.getElementById("status-spinner") as HTMLSpanElement;
 const statusText = document.getElementById("status-text") as HTMLSpanElement;
+const usageBar = document.getElementById("usage-bar") as HTMLDivElement;
+const usageBarFill = document.getElementById("usage-bar-fill") as HTMLElement;
 const placeBtn = document.getElementById("place") as HTMLButtonElement;
 const resizeHandle = document.getElementById("resize-handle") as HTMLDivElement;
 const importBtn = document.getElementById("import") as HTMLButtonElement;
@@ -31,6 +42,8 @@ const exportAllBtn = document.getElementById("export-all") as HTMLButtonElement;
 const importFileInput = document.getElementById("import-file") as HTMLInputElement;
 
 const DRAG_THRESHOLD = 4;
+/** この割合以上なら容量のバーを危険色にする。保存が拒まれる手前。 */
+const USAGE_WARNING_RATIO = 0.8;
 
 let templates: TemplateMeta[] = [];
 let tree: ListNode[] = [];
@@ -39,6 +52,7 @@ let selectedGroupId: string | null = null;
 let renamingId: string | null = null;
 let renamingGroupId: string | null = null;
 let busyMessage: string | null = null;
+let viewMode: ViewMode = "detail";
 let savableCount = 0;
 let canvasSelectionCount = 0;
 let usage = { used: 0, quota: 0 };
@@ -87,9 +101,18 @@ function showError(message: string | null): void {
 
 function renderStatus(): void {
   statusSpinner.hidden = !busyMessage;
+  // 処理中は容量の枠をメッセージが使う。よってバーも一緒に隠す。
+  const showUsage = !busyMessage && usage.quota > 0;
   statusText.textContent =
     busyMessage ??
-    (usage.quota > 0 ? `使用量 ${formatBytes(usage.used)} / ${formatBytes(usage.quota)}` : "");
+    (showUsage ? `使用量 ${formatBytes(usage.used)} / ${formatBytes(usage.quota)}` : "");
+  usageBar.hidden = !showUsage;
+  if (showUsage) {
+    const ratio = usage.used / usage.quota;
+    // 上限を超えた分は丸めて 100% に留める（超過時は別のエラーで知らせる）。
+    usageBarFill.style.width = `${(Math.min(1, ratio) * 100).toFixed(1)}%`;
+    usageBar.classList.toggle("is-warning", ratio >= USAGE_WARNING_RATIO);
+  }
   saveBtn.hidden = savableCount === 0;
   saveBtn.disabled = Boolean(busyMessage);
   placeBtn.hidden = !selectedId;
@@ -145,9 +168,77 @@ function setListMenuOpen(open: boolean): void {
   listMenuToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
+const VIEW_MODE_LABELS: Record<ViewMode, string> = {
+  detail: "詳細",
+  list: "一覧",
+  grid: "サムネイル",
+};
+
+/** One 16x16 glyph per mode, so the button shows what the list looks like now. */
+const VIEW_MODE_GLYPHS: Record<ViewMode, string> = {
+  detail:
+    '<rect x="2" y="3" width="5" height="10" rx="1" stroke="currentColor" stroke-width="1.3" />' +
+    '<path d="M9.5 5.5h4.5M9.5 8.5h4.5M9.5 11h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />',
+  list: '<path d="M2.5 4h11M2.5 8h11M2.5 12h11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />',
+  grid:
+    '<rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1" stroke="currentColor" stroke-width="1.3" />' +
+    '<rect x="9" y="2.5" width="4.5" height="4.5" rx="1" stroke="currentColor" stroke-width="1.3" />' +
+    '<rect x="2.5" y="9" width="4.5" height="4.5" rx="1" stroke="currentColor" stroke-width="1.3" />' +
+    '<rect x="9" y="9" width="4.5" height="4.5" rx="1" stroke="currentColor" stroke-width="1.3" />',
+};
+
+function syncViewModeToggle(): void {
+  const label = VIEW_MODE_LABELS[viewMode];
+  viewModeToggleBtn.title = `表示: ${label}`;
+  viewModeToggleBtn.setAttribute("aria-label", `表示を切り替える（いま ${label}）`);
+  viewModeToggleBtn.innerHTML =
+    `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">${VIEW_MODE_GLYPHS[viewMode]}</svg>`;
+}
+
+/** Rebuilt on every open so the current mode keeps its mark. */
+function buildViewModeItems(): void {
+  viewModePopover.replaceChildren();
+  for (const mode of VIEW_MODES) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "row-menu-item";
+    item.setAttribute("role", "menuitemradio");
+    const current = mode === viewMode;
+    item.setAttribute("aria-checked", current ? "true" : "false");
+    item.classList.toggle("is-selected", current);
+    item.textContent = VIEW_MODE_LABELS[mode];
+    item.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setViewMode(mode);
+    });
+    viewModePopover.append(item);
+  }
+}
+
+/** Switches how the list looks. The rows themselves are unchanged. */
+function setViewMode(mode: ViewMode): void {
+  closeAllPopups();
+  if (mode === viewMode) {
+    return;
+  }
+  viewMode = mode;
+  syncViewModeToggle();
+  renderList();
+  postToPlugin({ type: "SET_VIEW_MODE", mode });
+}
+
+function setViewModePopoverOpen(open: boolean): void {
+  viewModePopover.hidden = !open;
+  viewModeToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) {
+    buildViewModeItems();
+  }
+}
+
 function closeAllPopups(): void {
   closeAllRowMenus();
   setFilterPopoverOpen(false);
+  setViewModePopoverOpen(false);
   setListMenuOpen(false);
 }
 
@@ -188,7 +279,7 @@ function isInsideKeptArea(target: EventTarget | null): boolean {
   }
   return Boolean(
     el.closest(
-      ".template-item, .template-group, .footer-actions, .filter-menu, .list-menu"
+      ".template-item, .template-group, .footer-actions, .view-menu, .filter-menu, .list-menu"
     )
   );
 }
@@ -536,6 +627,7 @@ function createGroupItem(group: TemplateGroup, items: TemplateMeta[]): HTMLLIEle
   if (!collapsed) {
     const list = document.createElement("ul");
     list.className = "template-list is-nested";
+    markViewMode(list);
     list.dataset.groupId = group.id;
     list.setAttribute("role", "group");
     for (const meta of items) {
@@ -570,6 +662,9 @@ function createItem(meta: TemplateMeta, level: number): HTMLLIElement {
     const img = document.createElement("img");
     img.src = meta.thumbnail;
     img.alt = "";
+    // Without this the browser starts its own image drag, which cancels the
+    // pointer drag as soon as a row is picked up by its thumbnail.
+    img.draggable = false;
     thumb.append(img);
   }
 
@@ -614,7 +709,9 @@ function createItem(meta: TemplateMeta, level: number): HTMLLIElement {
 function isDragHandleExcluded(target: EventTarget | null): boolean {
   const el = target as Element | null;
   return Boolean(
-    el?.closest?.("input, textarea, .row-menu, .filter-menu, .list-menu, .template-group-toggle")
+    el?.closest?.(
+      "input, textarea, .row-menu, .filter-menu, .list-menu, .view-menu, .template-group-toggle"
+    )
   );
 }
 
@@ -745,7 +842,10 @@ function resolveDropHint(
     return null;
   }
   const rect = row.getBoundingClientRect();
-  const before = event.clientY < rect.top + rect.height / 2;
+  // A grid reads left to right, so the hint follows the columns there.
+  const before = scope.classList.contains("is-grid")
+    ? event.clientX < rect.left + rect.width / 2
+    : event.clientY < rect.top + rect.height / 2;
   return {
     row,
     mode: before ? "before" : "after",
@@ -811,8 +911,16 @@ function visibleNodes(): Array<VisibleGroup | VisibleItem> {
   return nodes;
 }
 
+/** Marks a list element so the CSS can lay it out for the current mode. */
+function markViewMode(list: HTMLElement): void {
+  list.classList.toggle("is-list", viewMode === "list");
+  list.classList.toggle("is-grid", viewMode === "grid");
+}
+
 function renderList(): void {
   const nodes = visibleNodes();
+  // The mode only changes the layout, never which rows are shown.
+  markViewMode(listEl);
   countEl.textContent = templates.length > 0 ? `${templates.length}件` : "";
   listEl.replaceChildren();
   if (nodes.length === 0) {
@@ -832,11 +940,17 @@ function renderList(): void {
   renderStatus();
 }
 
-function renderSelectionHint(count: number, isComponent: boolean): void {
+function renderSelectionHint(count: number, isComponent: boolean, unsupported: number): void {
   savableCount = count;
-  selectionHint.classList.toggle("is-ready", count > 0);
+  selectionHint.classList.toggle("is-ready", count > 0 && unsupported === 0);
   selectionHint.textContent =
-    count === 0 ? "" : isComponent ? "コンポーネントを選択中" : `${count} 件を選択中`;
+    unsupported > 0
+      ? `保存できない要素が ${unsupported} 件あります`
+      : count === 0
+        ? ""
+        : isComponent
+          ? "コンポーネントを選択中"
+          : `${count} 件を選択中`;
   renderStatus();
 }
 
@@ -856,6 +970,22 @@ placeBtn.addEventListener("click", () => {
 filterInput.addEventListener("input", () => {
   syncFilterActiveState();
   renderList();
+});
+
+viewModeToggleBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  closeAllPopups();
+  setViewModePopoverOpen(viewModePopover.hidden);
+});
+
+viewModePopover.addEventListener("click", (event) => event.stopPropagation());
+
+viewModePopover.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    setViewModePopoverOpen(false);
+    viewModeToggleBtn.focus();
+  }
 });
 
 filterToggleBtn.addEventListener("click", (event) => {
@@ -921,9 +1051,37 @@ exportAllBtn.addEventListener("click", () => {
   postToPlugin({ type: "EXPORT", ids: null });
 });
 
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") {
+    return;
+  }
+  // The toggles keep the focus, so a listener inside the popover alone is not enough.
+  if (listEl.querySelector(".row-menu-panel:not([hidden])")) {
+    closeAllRowMenus();
+    return;
+  }
+  if (!viewModePopover.hidden) {
+    setViewModePopoverOpen(false);
+    viewModeToggleBtn.focus();
+    return;
+  }
+  if (!filterPopover.hidden) {
+    setFilterPopoverOpen(false);
+    filterToggleBtn.focus();
+    return;
+  }
+  if (!listMenuPopover.hidden) {
+    setListMenuOpen(false);
+    listMenuToggleBtn.focus();
+  }
+});
+
 document.addEventListener("click", (event) => {
   closeAllRowMenus();
   const target = event.target as Node | null;
+  if (target && !viewModeToggleBtn.closest(".view-menu")?.contains(target)) {
+    setViewModePopoverOpen(false);
+  }
   if (target && !filterToggleBtn.closest(".filter-menu")?.contains(target)) {
     setFilterPopoverOpen(false);
   }
@@ -977,6 +1135,12 @@ window.onmessage = (event: MessageEvent) => {
     case "TEMPLATES": {
       templates = msg.templates;
       tree = msg.tree;
+      // 容量表示はここでしか受け取らない。外し忘れると表示されない。
+      usage = { used: msg.usedBytes, quota: msg.quotaBytes };
+      if (isViewMode(msg.viewMode)) {
+        viewMode = msg.viewMode;
+        syncViewModeToggle();
+      }
       if (selectedId && !templates.some((t) => t.id === selectedId)) {
         selectedId = null;
       }
@@ -994,7 +1158,7 @@ window.onmessage = (event: MessageEvent) => {
       break;
     }
     case "SELECTION_STATE":
-      renderSelectionHint(msg.savableCount, msg.isComponent);
+      renderSelectionHint(msg.savableCount, msg.isComponent, msg.unsupportedCount);
       canvasSelectionCount = msg.selectionCount;
       // ユーザーがキャンバスで選択を変えたときだけ、一覧の選択を解除する。
       if (msg.origin === "user" && (selectedId || selectedGroupId)) {
@@ -1024,7 +1188,11 @@ window.onmessage = (event: MessageEvent) => {
   }
 };
 
+// Nothing inside the list may start a browser drag; the pointer events handle it.
+listEl.addEventListener("dragstart", (event) => event.preventDefault());
+
 setupResize();
-renderSelectionHint(0, false);
+syncViewModeToggle();
+renderSelectionHint(0, false, 0);
 renderList();
 postToPlugin({ type: "LIST" });

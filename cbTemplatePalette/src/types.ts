@@ -167,6 +167,18 @@ export interface TemplateListEntry {
 
 export type ListNode = TemplateGroup | TemplateListEntry;
 
+/**
+ * 一覧の見た目。`detail` が既定の従来の行、`list` はサムネイルと名前のみ、
+ * `grid` はそれを 2 カラムにして画像を大きくする。
+ */
+export type ViewMode = "detail" | "list" | "grid";
+
+export const VIEW_MODES: ViewMode[] = ["detail", "list", "grid"];
+
+export function isViewMode(value: unknown): value is ViewMode {
+  return typeof value === "string" && (VIEW_MODES as string[]).includes(value);
+}
+
 export const TEMPLATE_FILE_FORMAT = "cbTemplatePalette";
 
 export interface TemplateFile {

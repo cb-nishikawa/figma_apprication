@@ -1,4 +1,4 @@
-import type { ListNode, TemplateMeta } from "./types";
+import type { ListNode, TemplateMeta, ViewMode } from "./types";
 
 export type UiToPluginMessage =
   | { type: "LIST" }
@@ -20,6 +20,8 @@ export type UiToPluginMessage =
   | { type: "TOGGLE_GROUP"; id: string; collapsed: boolean }
   /** `groupId: null` targets the root. `index` counts the dragged node itself. */
   | { type: "MOVE"; nodeId: string; groupId: string | null; index: number }
+  /** 一覧の見た目だけを切り替える。並び順やグループには影響しない。 */
+  | { type: "SET_VIEW_MODE"; mode: ViewMode }
   | { type: "RESIZE_UI"; height: number };
 
 export type PluginToUiMessage =
@@ -28,6 +30,8 @@ export type PluginToUiMessage =
       templates: TemplateMeta[];
       /** List order and groups; reconciled against `templates` before sending. */
       tree: ListNode[];
+      /** 一覧の見た目。UI ごとの好みなので、読み込み時に返す。 */
+      viewMode: ViewMode;
       usedBytes: number;
       quotaBytes: number;
     }
@@ -37,6 +41,8 @@ export type PluginToUiMessage =
       isComponent: boolean;
       /** 選択されているノード数。保存できないノードも含む。 */
       selectionCount: number;
+      /** 保存できないノードの数。1 件でもあると保存しない。 */
+      unsupportedCount: number;
       /** `plugin` はプラグイン自身が選択を変更した場合（一覧の選択を解除しない）。 */
       origin: "user" | "plugin";
     }

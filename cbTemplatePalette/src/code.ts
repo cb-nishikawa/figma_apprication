@@ -35,6 +35,7 @@ import {
   setGroupCollapsed,
 } from "./tree";
 import {
+  isViewMode,
   TEMPLATE_FILE_FORMAT,
   type ListNode,
   type RestoreReport,
@@ -43,6 +44,7 @@ import {
   type TemplateContent,
   type TemplateFile,
   type TemplateMeta,
+  type ViewMode,
 } from "./types";
 
 const UI_WIDTH = 360;
@@ -50,6 +52,7 @@ const DEFAULT_UI_HEIGHT = 560;
 const MIN_UI_HEIGHT = 320;
 const MAX_UI_HEIGHT = 900;
 const UI_HEIGHT_STORAGE_KEY = "cbTemplatePalette.uiHeight";
+const VIEW_MODE_STORAGE_KEY = "cbTemplatePalette.viewMode";
 const THUMBNAIL_SIDE = 120;
 const THUMBNAIL_VERSION = 2;
 const THUMBNAIL_OFFSCREEN_GAP = 1000;
@@ -65,8 +68,21 @@ function clampUiHeight(height: number): number {
   return Math.min(MAX_UI_HEIGHT, Math.max(MIN_UI_HEIGHT, Math.round(height)));
 }
 
-function savableSelection(): SceneNode[] {
-  return figma.currentPage.selection.filter(isSavableRoot);
+/**
+ * How many of the selected nodes can be saved. Unsupported ones are never
+ * dropped silently: a selection holding one is refused by the save button.
+ */
+function selectionCounts(): { savable: SceneNode[]; unsupported: number } {
+  const savable: SceneNode[] = [];
+  let unsupported = 0;
+  for (const node of figma.currentPage.selection) {
+    if (isSavableRoot(node)) {
+      savable.push(node);
+    } else {
+      unsupported += 1;
+    }
+  }
+  return { savable, unsupported };
 }
 
 /** Set while the plugin changes the selection itself, so the next selectionchange is not a user action. */
@@ -75,12 +91,13 @@ let pluginInitiatedSelection = false;
 function postSelectionState(): void {
   const origin = pluginInitiatedSelection ? "plugin" : "user";
   pluginInitiatedSelection = false;
-  const roots = savableSelection();
+  const { savable, unsupported } = selectionCounts();
   postToUi({
     type: "SELECTION_STATE",
-    savableCount: roots.length,
-    isComponent: componentSelection(roots) !== null,
+    savableCount: unsupported > 0 ? 0 : savable.length,
+    isComponent: unsupported > 0 ? false : componentSelection(savable) !== null,
     selectionCount: figma.currentPage.selection.length,
+    unsupportedCount: unsupported,
     origin,
   });
 }
@@ -94,6 +111,7 @@ async function postTemplatesWithTree(index: TemplateMeta[], tree: Promise<ListNo
     type: "TEMPLATES",
     templates: index,
     tree: await tree,
+    viewMode: await loadViewMode(),
     usedBytes: usedBytes(index),
     quotaBytes: QUOTA_BYTES,
   });
@@ -111,16 +129,39 @@ function newId(): string {
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** Renders the first root as it would be duplicated (image paints become solid fills). */
+/**
+ * One node to export. Several roots are grouped so the picture covers all of
+ * them; a section cannot live inside a group, so those fall back to the first
+ * root the way the thumbnail used to be made.
+ */
+function thumbnailTarget(nodes: SceneNode[]): SceneNode {
+  const first = nodes[0];
+  if (nodes.length === 1 || !first || nodes.some((node) => node.type === "SECTION")) {
+    return first;
+  }
+  try {
+    // Grouping keeps the positions the restore just gave the nodes.
+    return figma.group(nodes, figma.currentPage);
+  } catch {
+    return first;
+  }
+}
+
+/**
+ * Renders the selection as it would be duplicated (image paints become solid
+ * fills). Several roots are grouped first, so the picture covers all of them
+ * instead of only the first one.
+ */
 async function renderThumbnail(roots: SerializedNode[]): Promise<string> {
   if (roots.length === 0) {
     return "";
   }
   const bounds = figma.viewport.bounds;
   let created: SceneNode[] = [];
+  let target: SceneNode | null = null;
   try {
     const { nodes } = await restoreTemplate(
-      { roots: [roots[0]] },
+      { roots },
       figma.currentPage,
       {
         x: Math.round(bounds.x + bounds.width + THUMBNAIL_OFFSCREEN_GAP),
@@ -129,19 +170,21 @@ async function renderThumbnail(roots: SerializedNode[]): Promise<string> {
       { mode: "flatten" }
     );
     created = nodes;
-    const node = nodes[0];
-    if (!node) {
-      return "";
-    }
+    target = thumbnailTarget(nodes);
     const constraint: ExportSettingsConstraints =
-      node.width >= node.height
+      target.width >= target.height
         ? { type: "WIDTH", value: THUMBNAIL_SIDE }
         : { type: "HEIGHT", value: THUMBNAIL_SIDE };
-    const bytes = await node.exportAsync({ format: "JPG", constraint });
+    const bytes = await target.exportAsync({ format: "JPG", constraint });
     return `data:image/jpeg;base64,${figma.base64Encode(bytes)}`;
   } catch {
     return "";
   } finally {
+    // A temporary group is not in `created`; removing it takes the nodes with it.
+    // No `return` here: it would throw away the data URL the try block produced.
+    if (target && !created.includes(target) && !target.removed) {
+      target.remove();
+    }
     for (const node of created) {
       if (!node.removed) {
         node.remove();
@@ -177,7 +220,14 @@ function ensureStamp(node: ComponentNode | ComponentSetNode): string {
 }
 
 async function handleSave(): Promise<void> {
-  const roots = savableSelection();
+  const { savable: roots, unsupported } = selectionCounts();
+  if (unsupported > 0) {
+    postToUi({
+      type: "ERROR",
+      message: `保存できない要素が ${unsupported} 件混ざっています。保存できる要素だけを選んでください`,
+    });
+    return;
+  }
   if (roots.length === 0) {
     postToUi({
       type: "ERROR",
@@ -590,6 +640,12 @@ async function initialHeight(): Promise<number> {
   return typeof stored === "number" ? clampUiHeight(stored) : DEFAULT_UI_HEIGHT;
 }
 
+/** 一覧の見え方は UI ごとの好み。読めなかった値や未知の値は詳細に戻す。 */
+async function loadViewMode(): Promise<ViewMode> {
+  const stored = await figma.clientStorage.getAsync(VIEW_MODE_STORAGE_KEY);
+  return isViewMode(stored) ? stored : "detail";
+}
+
 async function main(): Promise<void> {
   figma.showUI(__html__, {
     width: UI_WIDTH,
@@ -671,6 +727,13 @@ async function main(): Promise<void> {
         case "MOVE": {
           const { nodeId, groupId, index: slot } = msg;
           await commitTree(await loadIndex(), (tree) => moveNode(tree, nodeId, groupId, slot));
+          break;
+        }
+        case "SET_VIEW_MODE": {
+          // 一覧の見え方だけなので、並び順の写し直しはしない。
+          if (isViewMode(msg.mode)) {
+            void figma.clientStorage.setAsync(VIEW_MODE_STORAGE_KEY, msg.mode);
+          }
           break;
         }
         case "RESIZE_UI": {

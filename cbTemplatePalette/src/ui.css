@@ -79,6 +79,7 @@ body {
   gap: 4px;
 }
 
+.view-menu,
 .filter-menu,
 .list-menu {
   position: relative;
@@ -86,6 +87,7 @@ body {
 }
 
 .filter-popover,
+.view-menu-popover,
 .list-menu-popover {
   position: absolute;
   top: calc(100% + 4px);
@@ -97,6 +99,32 @@ body {
   border-radius: 6px;
   background: #fff;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.view-menu-popover {
+  width: auto;
+  min-width: 116px;
+  padding: 4px;
+}
+
+/* Same sizing as the list menu items, so both popovers read as one set. */
+.view-menu-popover .row-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+/* The mark for the mode the list is in now. */
+.view-menu-popover .row-menu-item.is-selected::after {
+  content: "";
+  width: 10px;
+  height: 6px;
+  margin-right: auto;
+  border-bottom: 1.5px solid #18a0fb;
+  border-left: 1.5px solid #18a0fb;
+  transform: translateY(-1px) rotate(-45deg);
 }
 
 .list-menu-popover {
@@ -115,6 +143,7 @@ body {
 }
 
 .filter-popover[hidden],
+.view-menu-popover[hidden],
 .list-menu-popover[hidden] {
   display: none !important;
 }
@@ -218,6 +247,80 @@ body.is-dragging {
 .template-group.is-drop-into {
   background: #d6eeff;
   box-shadow: inset 0 0 0 1px #18a0fb;
+}
+
+/* --------------------------- 表示モード（詳細 / 一覧 / サムネイル） --------------------------- */
+
+/* 一覧: サムネイルと名前だけ。サイズや要素数の行は出さない。 */
+.template-list.is-list .template-meta {
+  display: none;
+}
+
+/* 一覧: サムネイルだけ小さくして行を詰める。枠は詳細モードと同じまま。 */
+.template-list.is-list .template-thumb {
+  width: 32px;
+  height: 32px;
+}
+
+/* サムネイル: 2 カラム。画像は上で、名前を下に置く。UI の幅は 360px 固定なので 1 セルは約 162px。 */
+.template-list.is-grid {
+  display: grid;
+  /* minmax(0, 1fr) でないと、折り返さない長い名前が列を広げて UI が横スクロールする */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  align-content: start;
+}
+
+/* グループの見出しは 2 セルを使いきって 1 行にする。 */
+.template-list.is-grid > .template-group {
+  grid-column: 1 / -1;
+}
+
+.template-list.is-grid .template-item {
+  position: relative;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 6px;
+}
+
+.template-list.is-grid .template-item .template-thumb {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 4 / 3;
+}
+
+.template-list.is-grid .template-meta {
+  display: none;
+}
+
+.template-list.is-grid .template-title {
+  justify-content: flex-start;
+}
+
+/* 「⋯」はセルの右上に置き、セルにカーソルがあるあいだだけ出す。 */
+.template-list.is-grid .row-menu {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  opacity: 0;
+}
+
+.template-list.is-grid .template-item:hover .row-menu,
+.template-list.is-grid .row-menu:focus-within,
+.template-list.is-grid .row-menu:has(.row-menu-panel:not([hidden])) {
+  opacity: 1;
+}
+
+/* グリッドでは列のあいだを示すので、ヒントも左右の縦線にする。 */
+.template-list.is-grid .template-item.is-drop-before,
+.template-list.is-grid .template-group.is-drop-before {
+  box-shadow: inset 2px 0 0 #18a0fb;
+}
+
+.template-list.is-grid .template-item.is-drop-after,
+.template-list.is-grid .template-group.is-drop-after {
+  box-shadow: inset -2px 0 0 #18a0fb;
 }
 
 /* --------------------------------- グループ --------------------------------- */
@@ -331,6 +434,9 @@ body.is-dragging {
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
+  /* A native image drag would cancel the pointer drag that moves rows. */
+  -webkit-user-drag: none;
+  user-select: none;
 }
 
 .template-info {
@@ -558,6 +664,27 @@ body.is-dragging {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+
+/** 容量の細帯。数値は隣の文言にあるので装飾として扱う。 */
+.usage-bar {
+  height: 2px;
+  border-radius: 999px;
+  background: #f2f2f2;
+  overflow: hidden;
+}
+
+.usage-bar-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 999px;
+  background: #18a0fb;
+  transition: width 120ms ease;
+}
+
+.usage-bar.is-warning .usage-bar-fill {
+  background: #b00020;
 }
 
 .spinner {
