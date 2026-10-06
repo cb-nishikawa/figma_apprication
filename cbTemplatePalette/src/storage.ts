@@ -4,6 +4,7 @@ import type {
   ListNode,
   SerializedNode,
   StoredTemplateV2,
+  StoredTemplateV3,
   TemplateContent,
   TemplateItem,
   TemplateMeta,
@@ -73,28 +74,59 @@ export function usedBytes(index: TemplateMeta[]): number {
 
 export function encodeItem(
   roots: SerializedNode[],
-  components?: Record<string, SerializedNode>
-): StoredTemplateV2 {
+  components?: Record<string, SerializedNode>,
+  images?: Record<string, Uint8Array>
+): StoredTemplateV3 {
   const body: TemplateContent = { roots };
   if (components && Object.keys(components).length > 0) {
     body.components = components;
   }
-  return { version: 2, data: gzipSync(strToU8(JSON.stringify(body))) };
+  const item: StoredTemplateV3 = { version: 3, data: gzipSync(strToU8(JSON.stringify(body))) };
+  if (images && Object.keys(images).length > 0) {
+    item.images = images;
+  }
+  return item;
 }
 
 export function decodeItem(item: TemplateItem): TemplateContent {
   if (item.version === 1) {
-    return { roots: item.roots };
+    // v1 は画像バイトを残していたので、あればそのまま復帰に使う。
+    return { roots: item.roots, images: normalizeImages(item.images) };
   }
   const parsed = JSON.parse(strFromU8(gunzipSync(new Uint8Array(item.data)))) as Partial<TemplateContent>;
-  return {
+  const content: TemplateContent = {
     roots: Array.isArray(parsed.roots) ? parsed.roots : [],
     components: parsed.components && typeof parsed.components === "object" ? parsed.components : undefined,
   };
+  const images = item.version === 3 ? normalizeImages(item.images) : undefined;
+  if (images) {
+    content.images = images;
+  }
+  return content;
 }
 
-export function estimateBytes(item: StoredTemplateV2, thumbnail: string): number {
-  return item.data.length + thumbnail.length;
+function normalizeImages(
+  images: Record<string, Uint8Array> | undefined
+): Record<string, Uint8Array> | undefined {
+  if (!images || typeof images !== "object") {
+    return undefined;
+  }
+  const entries = Object.entries(images).filter(
+    (entry): entry is [string, Uint8Array] =>
+      entry[0].length > 0 && entry[1] instanceof Uint8Array && entry[1].byteLength > 0
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+export function estimateBytes(
+  item: StoredTemplateV2 | StoredTemplateV3,
+  thumbnail: string
+): number {
+  const images = item.version === 3 ? normalizeImages(item.images) : undefined;
+  const imageBytes = images
+    ? Object.values(images).reduce((sum, bytes) => sum + bytes.byteLength, 0)
+    : 0;
+  return item.data.length + imageBytes + thumbnail.length;
 }
 
 export class QuotaExceededError extends Error {

@@ -12,6 +12,7 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
    - スライスなど保存できない型が 1 つでも混ざると、保存ボタンを出さない。混ざった件数をヒントに出す
 2. プラグインの「＋ 選択中の要素を保存」を押すと、一覧の先頭に追加される
    - 複数選択していたら 1 件のテンプレートにまとめる（名前は「最初のノード名 ほか N 件」）
+   - 選択の中に画像があるときだけ「画像を一緒に保存しますか？」を聞き、答えによって中の画像を残すか枠線に変える（後述「画像の塗り」）
 3. 一覧の行をクリックで選択し、「Figma に複製」かダブルクリックで、今見ている画面の中央に複製する
    - 複製した要素は選択状態になる
 4. 行の「⋯」メニューから「名前を変更」「ファイルに書き出す」「削除」ができる。上部の入力欄で名前の絞り込みができる
@@ -52,7 +53,8 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
   - 上限を超えたときは 100.0% に留める（超過したことは別のエラーで知らせる）
   - 処理中（`保存しています…` など）は同じ行がメッセージに置き換わり、バーも一緒に隠す。進捗用の行は別に増やさない
   - 使用量は `TEMPLATES` メッセージの `usedBytes` / `quotaBytes` で受け取る。保存・削除・読み込み・並べ替えのたびに送り返されるので、そのつど反映される
-- 容量を節約するため、画像のバイト列は保存しない。ノードツリーは gzip で圧縮し、サムネイルは長辺 120px の JPG にする
+- ノードツリーは gzip で圧縮し、サムネイルは長辺 120px の JPG にする
+- 画像のバイト列は「画像を含める」を選んだときだけ、item の中へ JSON と別に持つ（`StoredTemplateV3.images`）。これがあると保存体積とサムネイル作成の時間が増える
 
 | キー | 内容 |
 | --- | --- |
@@ -97,13 +99,14 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
 ## スキーマ（[`../../cbTemplatePalette/src/types.ts`](../../cbTemplatePalette/src/types.ts)）
 
 - `TemplateMeta`: `id`、`name`、`width`、`height`、`createdAt`、`byteSize`（推定）、`nodeCount`、`thumbnail`、`thumbnailVersion`
-  - `thumbnail`: 保存した全ルートのデータを、今見ている画面の外に一時的に復元して書き出した JPG（長辺 120px の data URL）。ルートが複数なら一時グループにまとめて書き出す（section はグループにできないため、その場合は先頭のルートだけ）。書き出したら復元したノードはすぐ削除する。複製結果と同じく画像は単色になる
-  - `thumbnailVersion`: この作り方なら `2`。`2` でないテンプレートは、起動時（UI から最初の `LIST` を受けたとき）にサムネイルを作り直す。そのとき version 1 の本体は version 2 に保存し直す（使わない画像データが消え、使用量が減る）
+  - `thumbnail`: 保存した全ルートのデータを、今見ている画面の外に一時的に復元して書き出した JPG（長辺 120px の data URL）。ルートが複数なら一時グループにまとめて書き出す（section はグループにできないため、その場合は先頭のルートだけ）。書き出したら復元したノードはすぐ削除する。画像は「含める」を選んだときはそのまま、選ばなかったときは枠線（`frame("image")`）になる
+  - `thumbnailVersion`: この作り方なら `2`。`2` でないテンプレートは、起動時（UI から最初の `LIST` を受けたとき）にサムネイルを作り直す。画像を含めてファイルにしたテンプレートは、`imageMode` に合わせて再保存する（不要な画像データが消え、使用量が減る）
   - ファイルから読み込んだテンプレートも、ファイル内のサムネイルは使わず作り直す
 - `TemplateItem`（保存形式）
-  - version 2（現行）: `{ version: 2, data: Uint8Array }`。`data` は `{ roots: SerializedNode[], components? }` の JSON を gzip（fflate）したもの（`components` はコンポーネントのテンプレートだけ）
-  - version 1（初版で保存したもの。読み込みのみ対応）: `{ version: 1, roots, images: Record<元の画像ハッシュ, Uint8Array> }`
-  - `byteSize` は `data.length` とサムネイルの文字数の合計
+  - version 3（現行）: `{ version: 3, data: Uint8Array, images?: Record<画像ハッシュ, Uint8Array> }`。`data` は `{ roots: SerializedNode[], components? }` の JSON を gzip（fflate）したもの（`components` はコンポーネントのテンプレートだけ）。`images` は「画像を含める」を選んだときだけ入り、JSON には混ぜない
+  - version 2: `{ version: 2, data: Uint8Array }`。読み込むと `images` は無い（画像は単色／枠線に戻る）
+  - version 1（初版で保存したもの）: `{ version: 1, roots, images: Record<元の画像ハッシュ, Uint8Array> }`。残っていた `images` は今回から復元に使う
+  - `byteSize` は `data.length` と画像のバイト数の合計、サムネイルの文字数
 - `SerializedNode`
   - `type`（復元時の種類）と `sourceType`（元の種類）
   - `transform`: テンプレート左上を原点とした絶対変換行列（回転を含む）。復元時に配置先の座標系へ変換する
@@ -134,17 +137,36 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
 
 ## 画像の塗り
 
-- 保存するのは画像ハッシュだけ（バイト列は保存しない）
-- 複製時は、同じファイルに元の画像があっても、画像の塗りを必ず単色（SOLID `#D9D9D9`、元の `opacity` / `visible` を引き継ぐ）に置き換える。ノードの形・サイズ・角丸・線・エフェクトはそのまま
-- 置き換えた塗りの数を「画像 N 件を単色に置き換え」と通知する
-- version 1 のテンプレートに保存してある画像データも使わない
+- 保存は「保存」のたびに確認する。選択の中に画像（`imageHash` を持つ塗り・線）があるときだけ、ダイアログを出す
+  - 文言: 「この選択には画像が N 個あります。画像を一緒に保存しますか？」
+  - `画像を含める` / `画像を含めない` / `キャンセル` の 3 つのボタン。Esc とカードの外を押すのは `キャンセル` と同じで、保存自体をやめる
+  - 画像が同じハッシュなら 1 件として数える（塗った回数ではなく種類数）
+- `含める`: バイト列を `figma.getImageByHash(hash).getBytesAsync()` で取得して保存する
+  - 復元時は `figma.createImage(bytes)` を作り、同じハッシュの塗りに貼る
+  - 取得できないハッシュ、4096px 超、PNG / JPEG / GIF 以外、読めないバイト列は、保存できた範囲だけ貼り、できなかった分は単色の枠線にする（同じ扱い）
+  - component.json には入れず、`StoredTemplateV3.images` として JSON と並べる
+  - 容量が足りないときは `含める` を無効にする。残量 −（画像の合計 + サムネイル余力 64KB）が 0 未満なら、`ASK_IMAGES.tooLarge` で「画像を入れると容量が足りません」
+  - 取得済みのバイト列はハッシュで 8MB まで保持する。同じ画像を 2 つ選んでも 1 回しか取得しない
+- `含めない`: バイト列は取らない。次のプレースホルダに置き換える
+  - 中身が無い図形（図形・グループ）は `FRAME(name="image")` を作り、塗りを `0` の単色線（`#C4C4C4`）だけにし、`text("image")`（`#D9D9D9`、中央、サイズ 12）を中央に置く
+  - 中身があるノード（子を持つ、または TEXT）は `FRAME(name="image")` の中に元のノードを置き、**枠線だけ**を足す
+    - 元のノードの型・子・文字・サイズ・角丸・自動レイアウトはそのまま
+    - 元のノードが持っていた画像塗りは外す（`fills` から `type: "IMAGE"` を除く）
+    - 枠線の中で元のノードの位置は (0, 0)（元の絶対位置から枠線の左上を引いた値）
+  - 形の一部である「線」「ベクター領域」「文字の途中」の画像は、枠線にせず単色 `SOLID #D9D9D9` に置き換える（元の `opacity` / `visible` を引き継ぐ）
+  - 置き換えた画像の数を「画像 N 個を枠線に置き換え」と通知する
+  - この置き換えは保存時に行う。`roots` と `components` の両方にあてはめる（コンポーネントの定義の中身も含めてプレースホルダにする）
+- コンポーネントのテンプレートでは、どちらを選んだかを `TemplateMeta.imageMode`（`"keep"` / `"placeholder"`）に残す
+  - 同じファイルの元から複製するとき、`keep` は `clone()` したものをそのまま、`placeholder` は複製後に枠線へ置き換える
+  - 別のファイルへ書き出して読み込んだ場合も `imageMode` に戻す（読み込んだファイル内の `meta.imageMode` を使う）
+- version 1 のテンプレートに残っていた `images` も今回から復元に使う
 
 ## コンポーネントのテンプレート（[ADR-004](../ai/decisions/ADR-004-component-templates.md)）
 
 - 対象: COMPONENT か COMPONENT_SET を 1 つだけ選んで保存したもの。`TemplateMeta.kind = "component"`。一覧の名前の横に「コンポーネント」バッジを出す
 - 保存時に元のノードへ `pluginData("cbTemplatePalette.stamp")` を付け（既にあれば使い回す）、`TemplateMeta.source = { nodeId, stamp }` を残す
 - 複製すると、元とはつながらない新しいコンポーネント（セット）になり、画面中央に置いて選択する
-  - **同じファイル**（`getNodeByIdAsync(nodeId)` が COMPONENT / COMPONENT_SET で、stamp も一致）: 元を `clone()` する。中のインスタンス・スロット・プロパティ・オーバーライドはすべて残る。中身は保存時点ではなく今の元のもの。そのあと画像の塗りを単色に塗り替える（中のインスタンスはオーバーライドとして）
+  - **同じファイル**（`getNodeByIdAsync(nodeId)` が COMPONENT / COMPONENT_SET で、stamp も一致）: 元を `clone()` する。中のインスタンス・スロット・プロパティ・オーバーライドはすべて残る。中身は保存時点ではなく今の元のもの。そのあと `meta.imageMode` が `"placeholder"` のときだけ、複製したものを枠線へ置き換える（`"keep"` ならそのまま置く）
   - **別のファイル、または元が削除されていた**: 保存データから組み立て直す（下記）
 - 追加のスキーマ
   - `componentProps`: `description` と `definitions`（プロパティ名（`#id` 付き）→ `type`・`defaultValue`・`variantOptions`・`preferredValues`・`description`・`slotSettings`・INSTANCE_SWAP の `defaultRef`）
@@ -173,22 +195,31 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
   - 1 件: `<名前>.cbtemplate.json`
   - グループ 1 つ: `<グループ名>.cbtemplate.json`
   - すべて: `cbTemplatePalette-YYYYMMDD-HHmm.cbtemplate.json`
-- 形式（人が読める素の JSON。画像のバイト列は含めない）
+- 形式（人が読める素の JSON）
 
 ```json
 {
   "format": "cbTemplatePalette",
-  "version": 3,
+  "version": 4,
   "tree": [{ "type": "item", "id": "…" }, { "type": "group", "id": "…", "name": "ヘッダー", "items": ["…"] }],
-  "templates": [{ "meta": { "…": "TemplateMeta" }, "roots": [], "components": {} }]
+  "templates": [
+    {
+      "meta": { "…": "TemplateMeta" },
+      "roots": [],
+      "components": {},
+      "images": { "3a1b…": "data:image/png;base64,iVBORw0KGgo…" }
+    }
+  ]
 }
 ```
 
+- version 4 は「画像を含める」で保存したテンプレートにだけ使う。画像が 1 つも無いときは version 3 のまま（version は `tree` と無関係に画像の有無だけで上がる）
+- `templates[].images` はハッシュ → `data:<mime>;base64,<bytes>`。`<mime>` は先頭バイトから PNG / JPEG / GIF / WebP / SVG を当てる（読めない場合は PNG）。値は 1 行の JSON に畳んでよい
 - version 3 で `tree` を書き出す。`tree` の id は `templates[].meta.id` を指す
 - 1 件だけ書き出すときは `tree` を平坦にする（グループを作らない）
 - グループだけ書き出すときは `tree` にそのグループ 1 つだけ入れる。読み込んでも同じグループとして戻る
 - version 2 のファイルには `tree` が無い。読み込んだテンプレートはすべてルートに置かれる
-- `components` はコンポーネントのテンプレートだけ。`meta` の `kind` と `source` もそのまま書き出し・読み込みする
+- `components` はコンポーネントのテンプレートだけ。`meta` の `kind` と `source`、`imageMode` もそのまま書き出し・読み込みする
 - 読み込み時、テンプレートの id とグループの id はどちらも振り直す。`tree` が所述の id を網羅していない分はルート末尾に足す
 
 - 読み込み
@@ -199,4 +230,4 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
 
 ## 関連
 
-- 判断の記録: [`../ai/decisions/ADR-003-template-palette-serialization.md`](../ai/decisions/ADR-003-template-palette-serialization.md)、[`../ai/decisions/ADR-004-component-templates.md`](../ai/decisions/ADR-004-component-templates.md)、[`../ai/decisions/ADR-005-template-palette-groups.md`](../ai/decisions/ADR-005-template-palette-groups.md)
+- 判断の記録: [`../ai/decisions/ADR-003-template-palette-serialization.md`](../ai/decisions/ADR-003-template-palette-serialization.md)、[`../ai/decisions/ADR-004-component-templates.md`](../ai/decisions/ADR-004-component-templates.md)、[`../ai/decisions/ADR-005-template-palette-groups.md`](../ai/decisions/ADR-005-template-palette-groups.md)、[`../ai/decisions/ADR-006-template-palette-view-modes.md`](../ai/decisions/ADR-006-template-palette-view-modes.md)、[`../ai/decisions/ADR-007-template-palette-images.md`](../ai/decisions/ADR-007-template-palette-images.md)

@@ -120,13 +120,30 @@ export interface TemplateMeta {
   kind?: TemplateKind;
   /** Component templates: the original node, used to clone it within the same file. */
   source?: { nodeId: string; stamp: string };
+  /**
+   * Component templates: how the image paints in `source` are treated when the
+   * template is placed again. Absent means "placeholder".
+   */
+  imageMode?: ImageMode;
 }
+
+/**
+ * 保存時の「画像を含めるか」の選択。
+ * - `keep`: 画像バイト列を保存し、復元・複製では画像をそのまま使う
+ * - `placeholder`: 画像部分を `frame("image") > text("image")` _NONE_ に置き換える
+ */
+export type ImageMode = "keep" | "placeholder";
 
 /** Decoded template body used when restoring. */
 export interface TemplateContent {
   roots: SerializedNode[];
   /** Embedded main components that are not in a published library, keyed by component (or set) key. */
   components?: Record<string, SerializedNode>;
+  /**
+   * `imageHash` -> 画像バイト列。保存時に「画像を含める」を選んだときだけ入る。
+   * 無い（あるいは hash 不一致）場合は画像塗りを単色のプレースホルダに戻す。
+   */
+  images?: Record<string, Uint8Array>;
 }
 
 export interface StoredTemplateV1 {
@@ -142,7 +159,15 @@ export interface StoredTemplateV2 {
   data: Uint8Array;
 }
 
-export type TemplateItem = StoredTemplateV1 | StoredTemplateV2;
+export interface StoredTemplateV3 {
+  version: 3;
+  /** gzip of JSON `{ roots, components? }`. */
+  data: Uint8Array;
+  /** `imageHash` -> 画像バイト列。JSON には入れず別枠で持つ。 */
+  images?: Record<string, Uint8Array>;
+}
+
+export type TemplateItem = StoredTemplateV1 | StoredTemplateV2 | StoredTemplateV3;
 
 /** A folder in the list. Groups hold templates only, so they never nest. */
 export interface TemplateGroup {
@@ -183,14 +208,16 @@ export const TEMPLATE_FILE_FORMAT = "cbTemplatePalette";
 
 export interface TemplateFile {
   format: typeof TEMPLATE_FILE_FORMAT;
-  /** 3 adds `tree`; version 2 files are read as a flat list at the root. */
-  version: 2 | 3;
-  /** Only in version 3. Ids refer to `templates[].meta.id`. */
+  /** 4 adds `templates[].images`; 3 adds `tree`; version 2 files are read as a flat list at the root. */
+  version: 2 | 3 | 4;
+  /** Only in version 3+. Ids refer to `templates[].meta.id`. */
   tree?: ListNode[];
   templates: Array<{
     meta: TemplateMeta;
     roots: SerializedNode[];
     components?: Record<string, SerializedNode>;
+    /** Only in version 4. `imageHash` -> `data:image/...;base64,…` */
+    images?: Record<string, string>;
   }>;
 }
 

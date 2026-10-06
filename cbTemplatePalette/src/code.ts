@@ -1,5 +1,12 @@
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
-import { replaceImagePaintsInTree, restoreTemplate } from "./deserialize";
+import { placeholderImageNodesInTree, restoreTemplate } from "./deserialize";
+import {
+  collectImageHashes,
+  decodeImages,
+  encodeImages,
+  withoutImagePaints,
+  withoutImagePaintsIn,
+} from "./images";
 import {
   isComponentRoot,
   isSavableRoot,
@@ -37,10 +44,11 @@ import {
 import {
   isViewMode,
   TEMPLATE_FILE_FORMAT,
+  type ImageMode,
   type ListNode,
   type RestoreReport,
   type SerializedNode,
-  type StoredTemplateV2,
+  type StoredTemplateV3,
   type TemplateContent,
   type TemplateFile,
   type TemplateMeta,
@@ -57,6 +65,11 @@ const THUMBNAIL_SIDE = 120;
 const THUMBNAIL_VERSION = 2;
 const THUMBNAIL_OFFSCREEN_GAP = 1000;
 const FILE_SUFFIX = ".cbtemplate.json";
+/** サムネイルのデータ URL とインデックス分の余裕。 */
+const THUMBNAIL_RESERVE_BYTES = 64 * 1024;
+/** 画像バイト列のキャッシュ上限。ハッシュは内容アドレスなので古いまま使える。 */
+const IMAGE_CACHE_BYTES = 8 * 1024 * 1024;
+const imageBytesCache = new Map<string, Uint8Array>();
 /** Set on a saved component so a template can tell whether its original is in the current file. */
 const STAMP_DATA = "cbTemplatePalette.stamp";
 
@@ -152,7 +165,10 @@ function thumbnailTarget(nodes: SceneNode[]): SceneNode {
  * fills). Several roots are grouped first, so the picture covers all of them
  * instead of only the first one.
  */
-async function renderThumbnail(roots: SerializedNode[]): Promise<string> {
+async function renderThumbnail(
+  roots: SerializedNode[],
+  images?: Record<string, Uint8Array>
+): Promise<string> {
   if (roots.length === 0) {
     return "";
   }
@@ -161,7 +177,7 @@ async function renderThumbnail(roots: SerializedNode[]): Promise<string> {
   let target: SceneNode | null = null;
   try {
     const { nodes } = await restoreTemplate(
-      { roots },
+      { roots, ...(images ? { images } : {}) },
       figma.currentPage,
       {
         x: Math.round(bounds.x + bounds.width + THUMBNAIL_OFFSCREEN_GAP),
@@ -219,7 +235,46 @@ function ensureStamp(node: ComponentNode | ComponentSetNode): string {
   return stamp;
 }
 
-async function handleSave(): Promise<void> {
+/** 保存対象の画像ハッシュのバイト列を取り出す。取れなかった画像は省略する。 */
+async function collectImageBytes(hashes: string[]): Promise<Record<string, Uint8Array>> {
+  const images: Record<string, Uint8Array> = {};
+  for (const hash of hashes) {
+    const cached = imageBytesCache.get(hash);
+    if (cached) {
+      images[hash] = cached;
+      continue;
+    }
+    const image = figma.getImageByHash(hash);
+    if (!image) {
+      continue;
+    }
+    try {
+      const bytes = await image.getBytesAsync();
+      images[hash] = bytes;
+      if (imageBytesCache.size > 0 && cachedBytes() + bytes.byteLength > IMAGE_CACHE_BYTES) {
+        imageBytesCache.clear();
+      }
+      imageBytesCache.set(hash, bytes);
+    } catch {
+      // 読めない画像は単色のプレースホルダに任せる。
+    }
+  }
+  return images;
+}
+
+function cachedBytes(): number {
+  let sum = 0;
+  for (const bytes of imageBytesCache.values()) {
+    sum += bytes.byteLength;
+  }
+  return sum;
+}
+
+function totalBytes(images: Record<string, Uint8Array>): number {
+  return Object.values(images).reduce((sum, bytes) => sum + bytes.byteLength, 0);
+}
+
+async function handleSave(includeImages?: boolean): Promise<void> {
   const { savable: roots, unsupported } = selectionCounts();
   if (unsupported > 0) {
     postToUi({
@@ -245,8 +300,32 @@ async function handleSave(): Promise<void> {
       postToUi({ type: "ERROR", message: "選択した要素のサイズを取得できませんでした" });
       return;
     }
-    const item = encodeItem(serialized.roots, serialized.components);
-    const thumbnail = await renderThumbnail(serialized.roots);
+
+    const hashes = collectImageHashes([
+      ...serialized.roots,
+      ...Object.values(serialized.components ?? {}),
+    ]);
+    if (hashes.length > 0 && includeImages === undefined) {
+      // 画像发展中国家はたくんだめ。選ぶまで保存しない。
+      const bytes = await collectImageBytes(hashes);
+      const remaining = Math.max(QUOTA_BYTES - usedBytes(await loadIndex()), 0);
+      const size = totalBytes(bytes);
+      postToUi({
+        type: "ASK_IMAGES",
+        count: hashes.length,
+        bytes: size,
+        remaining,
+        tooLarge: size + THUMBNAIL_RESERVE_BYTES > remaining,
+      });
+      return;
+    }
+
+    const mode: ImageMode = hashes.length > 0 && includeImages ? "keep" : "placeholder";
+    const images = mode === "keep" ? await collectImageBytes(hashes) : undefined;
+    const savedRoots = mode === "keep" ? serialized.roots : withoutImagePaints(serialized.roots).roots;
+    const savedComponents = withoutImagePaintsIn(serialized.components, mode === "keep");
+    const item = encodeItem(savedRoots, savedComponents, images);
+    const thumbnail = await renderThumbnail(savedRoots, images);
     const meta: TemplateMeta = {
       id: newId(),
       name: roots.length > 1 ? `${roots[0].name} ほか ${roots.length - 1} 件` : roots[0].name,
@@ -261,15 +340,19 @@ async function handleSave(): Promise<void> {
     if (component) {
       meta.kind = "component";
       meta.source = { nodeId: component.id, stamp: ensureStamp(component) };
+      if (hashes.length > 0) {
+        meta.imageMode = mode;
+      }
     }
     const index = await saveTemplate(meta, item);
     await postTemplates(index);
     postToUi({ type: "SAVED", id: meta.id });
     const label = component ? "コンポーネントとして保存しました" : "保存しました";
+    const imageNote = mode === "keep" ? `（画像 ${hashes.length} 個を同梱）` : "";
     figma.notify(
       serialized.report.skipped > 0
-        ? `「${meta.name}」を${label}（対象外の要素 ${serialized.report.skipped} 件はスキップ）`
-        : `「${meta.name}」を${label}`
+        ? `「${meta.name}」を${label}${imageNote}（対象外の要素 ${serialized.report.skipped} 件はスキップ）`
+        : `「${meta.name}」を${label}${imageNote}`
     );
   } finally {
     postToUi({ type: "BUSY", message: null });
@@ -320,17 +403,22 @@ function placementNotes(report: RestoreReport): string[] {
   return notes;
 }
 
-function cloneSourceComponent(
+async function cloneSourceComponent(
   source: ComponentNode | ComponentSetNode,
-  topLeft: { x: number; y: number }
-): { node: SceneNode; replacedImages: number } {
+  topLeft: { x: number; y: number },
+  mode: ImageMode
+): Promise<{ node: SceneNode; replacedImages: number }> {
   const clone = source.clone();
   if (clone.parent !== figma.currentPage) {
     figma.currentPage.appendChild(clone);
   }
   clone.x = topLeft.x;
   clone.y = topLeft.y;
-  return { node: clone, replacedImages: replaceImagePaintsInTree(clone) };
+  if (mode === "keep") {
+    return { node: clone, replacedImages: 0 };
+  }
+  const { node, replaced } = await placeholderImageNodesInTree(clone);
+  return { node, replacedImages: replaced };
 }
 
 async function handlePlace(id: string): Promise<void> {
@@ -353,12 +441,16 @@ async function handlePlace(id: string): Promise<void> {
 
     const source = await findSourceComponent(meta);
     if (source) {
-      const { node, replacedImages } = cloneSourceComponent(source, topLeft);
+      const { node, replacedImages } = await cloneSourceComponent(
+        source,
+        topLeft,
+        meta.imageMode ?? "placeholder"
+      );
       pluginInitiatedSelection = true;
       figma.currentPage.selection = [node];
       figma.notify(
         replacedImages > 0
-          ? `「${meta.name}」を新しいコンポーネントとして複製しました（画像 ${replacedImages} 件を単色に置き換え）`
+          ? `「${meta.name}」を新しいコンポーネントとして複製しました（画像 ${replacedImages} 件を枠線に置き換え）`
           : `「${meta.name}」を新しいコンポーネントとして複製しました`
       );
       return;
@@ -538,18 +630,30 @@ async function handleExportGroup(groupId: string): Promise<void> {
 
 /** Reads the saved data of every target. Entries whose data is gone are left out. */
 async function buildExportFile(targets: TemplateMeta[]): Promise<TemplateFile> {
-  const file: TemplateFile = { format: TEMPLATE_FILE_FORMAT, version: 3, tree: [], templates: [] };
+  const templates: TemplateFile["templates"] = [];
+  let withImages = false;
   for (const meta of targets) {
     const item = await loadItem(meta.id);
-    if (item) {
-      const content = decodeItem(item);
-      file.templates.push(
-        content.components
-          ? { meta, roots: content.roots, components: content.components }
-          : { meta, roots: content.roots }
-      );
+    if (!item) {
+      continue;
     }
+    const content = decodeItem(item);
+    const images = encodeImages(content.images);
+    withImages = withImages || images !== undefined;
+    templates.push({
+      meta,
+      roots: content.roots,
+      ...(content.components ? { components: content.components } : {}),
+      ...(images ? { images } : {}),
+    });
   }
+  // 画像を含まないときは version 3 のまま。古いバージョンでも読める。
+  const file: TemplateFile = {
+    format: TEMPLATE_FILE_FORMAT,
+    version: withImages ? 4 : 3,
+    tree: [],
+    templates,
+  };
   return file;
 }
 
@@ -645,6 +749,9 @@ function importedMeta(meta: Partial<TemplateMeta>, roots: SerializedNode[], thum
     ...(meta.source && typeof meta.source.nodeId === "string" && typeof meta.source.stamp === "string"
       ? { source: { nodeId: meta.source.nodeId, stamp: meta.source.stamp } }
       : {}),
+    ...(meta.imageMode === "keep" || meta.imageMode === "placeholder"
+      ? { imageMode: meta.imageMode }
+      : {}),
   };
 }
 
@@ -669,10 +776,11 @@ async function handleImport(files: Array<{ name: string; text: string }>): Promi
         continue;
       }
       // Render everything first so the tree fragment knows every new id before writing.
-      const prepared: Array<{ meta: TemplateMeta; item: StoredTemplateV2; oldId: string }> = [];
+      const prepared: Array<{ meta: TemplateMeta; item: StoredTemplateV3; oldId: string }> = [];
       for (const entry of parsed.templates) {
-        const item = encodeItem(entry.roots, importedComponents(entry.components));
-        const meta = importedMeta(entry.meta, entry.roots, await renderThumbnail(entry.roots));
+        const images = decodeImages(entry.images);
+        const item = encodeItem(entry.roots, importedComponents(entry.components), images);
+        const meta = importedMeta(entry.meta, entry.roots, await renderThumbnail(entry.roots, images));
         meta.byteSize = estimateBytes(item, meta.thumbnail);
         prepared.push({ meta, item, oldId: entry.meta.id });
       }
@@ -790,7 +898,7 @@ async function main(): Promise<void> {
           }
           break;
         case "SAVE_SELECTION":
-          await handleSave();
+          await handleSave(msg.includeImages);
           break;
         case "PLACE":
           await handlePlace(msg.id);

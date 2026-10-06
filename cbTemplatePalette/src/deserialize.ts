@@ -1,3 +1,12 @@
+import {
+  borderStroke,
+  IMAGE_LABEL_FONT,
+  IMAGE_LABEL_SIZE,
+  IMAGE_PLACEHOLDER_NAME,
+  IMAGE_PLACEHOLDER_TEXT,
+  IMAGE_SOLID,
+  labelFills,
+} from "./images";
 import type {
   Matrix,
   RestoreReport,
@@ -11,7 +20,6 @@ import type {
 } from "./types";
 
 const FALLBACK_FONT: FontName = { family: "Inter", style: "Regular" };
-const IMAGE_PLACEHOLDER: RGB = { r: 0xd9 / 255, g: 0xd9 / 255, b: 0xd9 / 255 };
 
 /** Marks main components recreated from embedded definitions so later placements reuse them. */
 export const SOURCE_KEY_DATA = "cbTemplatePalette.sourceKey";
@@ -73,6 +81,10 @@ interface RestoreContext {
   refsSuspended: number;
   parts: PartsArea;
   recreatedOnPage: Map<string, ComponentLike> | null;
+  /** `imageHash` -> 保存された画像バイト列。 */
+  images: Record<string, Uint8Array>;
+  /** 復元済みの元ハッシュ -> 作り直したハッシュ。同じ画像を二度作らないため。 */
+  restoredImages: Map<string, string>;
 }
 
 function multiply(a: Matrix, b: Matrix): Matrix {
@@ -164,10 +176,34 @@ async function loadFonts(nodes: SerializedNode[], report: RestoreReport): Promis
 function placeholderFor(paint: Paint): SolidPaint {
   return {
     type: "SOLID",
-    color: IMAGE_PLACEHOLDER,
+    color: IMAGE_SOLID,
     opacity: paint.opacity ?? 1,
     visible: paint.visible ?? true,
   };
+}
+
+/**
+ * 保存された画像バイトから Figma の画像を作り直し、paint のハッシュを付け替える。
+ * バイトが無い・壊れている場合は null を返し、単色のプレースホルダに任せる。
+ */
+function restoreImagePaint(paint: ImagePaint, ctx: RestoreContext): ImagePaint | null {
+  const hash = typeof paint.imageHash === "string" ? paint.imageHash : "";
+  const bytes = hash ? ctx.images[hash] : undefined;
+  if (!bytes) {
+    return null;
+  }
+  const known = ctx.restoredImages.get(hash);
+  if (known) {
+    return { ...paint, imageHash: known };
+  }
+  try {
+    const image = figma.createImage(bytes);
+    ctx.restoredImages.set(hash, image.hash);
+    return { ...paint, imageHash: image.hash };
+  } catch {
+    // 4K 超や壊れたバイト列は単色に戻す。
+    return null;
+  }
 }
 
 function remapPaints(paints: unknown, ctx: RestoreContext): Paint[] {
@@ -178,42 +214,269 @@ function remapPaints(paints: unknown, ctx: RestoreContext): Paint[] {
     if (paint.type !== "IMAGE") {
       return paint;
     }
+    const restored = restoreImagePaint(paint, ctx);
+    if (restored) {
+      return restored;
+    }
     ctx.report.replacedImages += 1;
     return placeholderFor(paint);
   });
 }
 
-/** Replaces image paints in an existing subtree (used after cloning). Returns the number replaced. */
-export function replaceImagePaintsInTree(root: SceneNode): number {
+/** 画像塗りを、元の不透明度を引き継いだ単色へ変える。 */
+function solidForLive(paint: Paint): SolidPaint {
+  return {
+    type: "SOLID",
+    color: IMAGE_SOLID,
+    opacity: paint.opacity ?? 1,
+    visible: paint.visible ?? true,
+  };
+}
+
+/**
+ * `fills` / `strokes` / ベクター領域の塗りにある画像だけを単色へ変える。
+ * `fills` に画像があるノードは枠線に差し替えるため、ここでは扱わない。
+ */
+function replaceOtherImagePaints(node: SceneNode): number {
   let count = 0;
-  const visit = (node: SceneNode) => {
-    for (const key of ["fills", "strokes"] as const) {
-      if (!(key in node)) {
-        continue;
-      }
-      const paints = (node as unknown as Record<string, unknown>)[key];
-      if (!Array.isArray(paints) || !paints.some((paint: Paint) => paint.type === "IMAGE")) {
-        continue;
-      }
-      const images = paints.filter((paint: Paint) => paint.type === "IMAGE").length;
+  const target = node as unknown as Record<string, unknown>;
+  const strokes = target.strokes;
+  if (Array.isArray(strokes) && strokes.some((paint: Paint) => paint.type === "IMAGE")) {
+    count += strokes.filter((paint: Paint) => paint.type === "IMAGE").length;
+    try {
+      target.strokes = strokes.map((paint: Paint) =>
+        paint.type === "IMAGE" ? solidForLive(paint) : paint
+      );
+    } catch {
+      // Read-only paint (e.g. locked by the editor): keep it.
+    }
+  }
+  if (node.type === "VECTOR") {
+    const network = node.vectorNetwork;
+    const regions = network.regions ?? [];
+    const images = regions.reduce(
+      (sum, region) => sum + (region.fills ?? []).filter((paint) => paint.type === "IMAGE").length,
+      0
+    );
+    if (images > 0) {
       try {
-        (node as unknown as Record<string, unknown>)[key] = paints.map((paint: Paint) =>
-          paint.type === "IMAGE" ? placeholderFor(paint) : paint
-        );
+        node.vectorNetwork = {
+          ...network,
+          regions: regions.map((region) =>
+            Array.isArray(region.fills)
+              ? {
+                  ...region,
+                  fills: region.fills.map((paint) =>
+                    paint.type === "IMAGE" ? solidForLive(paint) : paint
+                  ),
+                }
+              : region
+          ),
+        };
         count += images;
       } catch {
-        // Read-only paint (e.g. locked by the editor): keep it.
+        // 読取専用（ベクター結合など）はそのまま。
       }
     }
-    if ("children" in node) {
-      for (const child of node.children) {
-        visit(child);
-      }
-    }
-  };
-  visit(root);
+  }
   return count;
 }
+
+function childrenOf(node: SceneNode): SceneNode[] {
+  return "children" in node ? [...node.children] : [];
+}
+
+function readNodeProp(node: SceneNode, key: string): unknown {
+  try {
+    return (node as unknown as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 枠線へ移したノードから画像を取り除く。塗りは残さず、線やベクター領域、文字の途中は
+ * 単色にする（形の一部なので消せない）。
+ */
+function clearImageFills(node: SceneNode): void {
+  const target = node as unknown as Record<string, unknown>;
+  const fills = target.fills;
+  if (Array.isArray(fills) && fills.some((paint: Paint) => paint.type === "IMAGE")) {
+    const kept = fills.filter((paint: Paint) => paint.type !== "IMAGE");
+    try {
+      target.fills = kept;
+    } catch {
+      // 読取専用の塗りはそのまま。
+    }
+  }
+  if (node.type === "TEXT") {
+    try {
+      for (const segment of node.getStyledTextSegments(["fills"])) {
+        const paints = segment.fills as Paint[];
+        if (paints.some((paint) => paint.type === "IMAGE")) {
+          node.setRangeFills(segment.start, segment.end, paints.map(solidForLive));
+        }
+      }
+    } catch {
+      // 読み取れない範囲はそのまま。
+    }
+  }
+  replaceOtherImagePaints(node);
+}
+
+function copyCarriedProps(source: SceneNode, frame: FrameNode): void {
+  const target = frame as unknown as Record<string, unknown>;
+  for (const key of ["opacity", "visible", "blendMode"]) {
+    const value = readNodeProp(source, key);
+    if (value !== undefined) {
+      try {
+        target[key] = value;
+      } catch {
+        // 読み取れない／設定できないプロパティは無視。
+      }
+    }
+  }
+  const corners = ["topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius"];
+  const perCorner = corners.filter((key) => typeof readNodeProp(source, key) === "number");
+  for (const key of perCorner.length > 0 ? corners : ["cornerRadius"]) {
+    const value = readNodeProp(source, key);
+    if (value !== undefined) {
+      try {
+        target[key] = value;
+      } catch {
+        // 図形の固有値を frame が受け付けないことがある。
+      }
+    }
+  }
+}
+
+async function createPlaceholderLabel(font: FontName): Promise<TextNode> {
+  const node = figma.createText();
+  node.fontName = font;
+  node.characters = IMAGE_PLACEHOLDER_TEXT;
+  node.fontSize = IMAGE_LABEL_SIZE;
+  node.name = IMAGE_PLACEHOLDER_NAME;
+  node.textAlignHorizontal = "CENTER";
+  node.textAlignVertical = "CENTER";
+  try {
+    node.fills = [labelFills() as unknown as SolidPaint];
+  } catch {
+    // 既定の黒のままにする。
+  }
+  node.textAutoResize = "WIDTH_AND_HEIGHT";
+  return node;
+}
+
+function relativeTransformIn(parent: BaseNode & ChildrenMixin, node: SceneNode): Matrix {
+  const parentAbs =
+    parent.type === "PAGE" || !("absoluteTransform" in parent)
+      ? translation(0, 0)
+      : (parent as SceneNode).absoluteTransform as Matrix;
+  return multiply(invert(parentAbs), node.absoluteTransform as Matrix);
+}
+
+interface WrapOutcome {
+  node: SceneNode;
+  replaced: number;
+}
+
+/**
+ * 画像塗りを持つノードを `frame("image")` へ差し替える。中身のあるノード（子を持つ
+ * container や TEXT）は元のノードを枠線の中に残し、無い場合は中央に `text("image")` を
+ * 置く。差し替えたノードを返す。
+ */
+async function wrapImageNode(node: SceneNode, font: FontName): Promise<WrapOutcome | null> {
+  const parent = node.parent;
+  if (!parent || !("appendChild" in parent)) {
+    return null;
+  }
+  const owner = parent as unknown as BaseNode & ChildrenMixin;
+  const width = typeof readNodeProp(node, "width") === "number" ? (readNodeProp(node, "width") as number) : 0;
+  const height = typeof readNodeProp(node, "height") === "number" ? (readNodeProp(node, "height") as number) : 0;
+  const relative = relativeTransformIn(owner, node);
+  const index = owner.children.findIndex((child) => child.id === node.id);
+  const keeps = node.type === "TEXT" || ("children" in node && node.children.length > 0);
+
+  const frame = figma.createFrame();
+  owner.appendChild(frame);
+  (frame as unknown as { relativeTransform: Transform }).relativeTransform = relative;
+  frame.name = IMAGE_PLACEHOLDER_NAME;
+  frame.fills = [];
+  frame.strokes = [borderStroke() as unknown as SolidPaint];
+  frame.strokeWeight = 1;
+  frame.strokeAlign = "INSIDE";
+  frame.clipsContent = false;
+  copyCarriedProps(node, frame);
+
+  if (keeps) {
+    // 中身はそのまま。枠線の中では絶対配置（枠線は自動レイアウトにしない）。
+    clearImageFills(node);
+    frame.appendChild(node);
+    (node as unknown as { relativeTransform: Transform }).relativeTransform = [
+      [1, 0, 0],
+      [0, 1, 0],
+    ];
+  } else {
+    frame.layoutMode = "VERTICAL";
+    frame.primaryAxisAlignItems = "CENTER";
+    frame.counterAxisAlignItems = "CENTER";
+    frame.primaryAxisSizingMode = "FIXED";
+    frame.counterAxisSizingMode = "FIXED";
+    frame.appendChild(await createPlaceholderLabel(font));
+    // 中身が無いので、元のノードは削除する。
+    node.remove();
+  }
+
+  try {
+    frame.resize(Math.max(width, 0.01), Math.max(height, 0.01));
+  } catch {
+    // 大きさの取れないノードは既定のまま。
+  }
+  if (index >= 0) {
+    owner.insertChild(index, frame);
+  }
+  return { node: frame, replaced: 1 };
+}
+
+async function rewriteLiveImages(node: SceneNode, font: FontName): Promise<WrapOutcome> {
+  let replaced = 0;
+  const fills = readNodeProp(node, "fills");
+  const hasImageFill = Array.isArray(fills) && fills.some((paint: Paint) => paint.type === "IMAGE");
+  if (hasImageFill) {
+    const wrapped = await wrapImageNode(node, font);
+    if (wrapped) {
+      replaced += wrapped.replaced;
+      for (const child of childrenOf(wrapped.node)) {
+        replaced += (await rewriteLiveImages(child, font)).replaced;
+      }
+      return { node: wrapped.node, replaced };
+    }
+  }
+  replaced += replaceOtherImagePaints(node);
+  for (const child of childrenOf(node)) {
+    replaced += (await rewriteLiveImages(child, font)).replaced;
+  }
+  return { node, replaced };
+}
+
+/**
+ * クローンした既存ツリーの画像塗りを `frame("image") > text("image")` へ置き換える。
+ * 根が画像涂りの場合は包んだ frame を返す。置き換えた塗り・要素の数を返す。
+ */
+export async function placeholderImageNodesInTree(root: SceneNode): Promise<{
+  node: SceneNode;
+  replaced: number;
+}> {
+  let font = FALLBACK_FONT;
+  try {
+    await figma.loadFontAsync(IMAGE_LABEL_FONT as FontName);
+    font = IMAGE_LABEL_FONT as FontName;
+  } catch {
+    font = FALLBACK_FONT;
+  }
+  return rewriteLiveImages(root, font);
+}
+
 
 function remapNetwork(network: unknown, ctx: RestoreContext): VectorNetwork {
   const value = network as VectorNetwork;
@@ -1091,6 +1354,8 @@ export async function restoreTemplate(
       maxWidth: 0,
     },
     recreatedOnPage: null,
+    images: content.images ?? {},
+    restoredImages: new Map(),
   };
   const nodes: SceneNode[] = [];
   for (const root of content.roots) {

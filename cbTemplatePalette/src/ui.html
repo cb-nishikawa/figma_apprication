@@ -160,6 +160,24 @@
       </div>
       <input id="import-file" type="file" accept=".json,application/json" multiple hidden />
     </footer>
+    <div id="image-dialog" class="image-dialog" hidden>
+      <div
+        class="image-dialog-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="image-dialog-title"
+        aria-describedby="image-dialog-body"
+      >
+        <p id="image-dialog-title" class="image-dialog-title">画像を含めますか？</p>
+        <p id="image-dialog-body" class="image-dialog-body"></p>
+        <p id="image-dialog-note" class="image-dialog-note" hidden></p>
+        <div class="image-dialog-actions">
+          <button id="image-cancel" class="btn-secondary" type="button">キャンセル</button>
+          <button id="image-skip" class="btn-secondary" type="button">画像を含めない</button>
+          <button id="image-keep" class="btn-primary" type="button">画像を含める</button>
+        </div>
+      </div>
+    </div>
     <div
       id="resize-handle"
       class="resize-handle"

@@ -2,7 +2,12 @@ import type { ListNode, TemplateMeta, ViewMode } from "./types";
 
 export type UiToPluginMessage =
   | { type: "LIST" }
-  | { type: "SAVE_SELECTION" }
+  /**
+   * `includeImages` は保存時に「画像を含める」を選んだときだけ true。
+   * 画像が選択に含まれる場合は必ず UI が確認してから送るので、
+   * ここが undefined かつ画像ありなら保存は始まらない。
+   */
+  | { type: "SAVE_SELECTION"; includeImages?: boolean }
   | { type: "PLACE"; id: string }
   | { type: "RENAME"; id: string; name: string }
   | { type: "DELETE"; id: string }
@@ -49,6 +54,18 @@ export type PluginToUiMessage =
       origin: "user" | "plugin";
     }
   | { type: "BUSY"; message: string | null }
+  /** 保存対象に画像があるため、含めるか選ばせる。選ぶまで保存は始まらない。 */
+  | {
+      type: "ASK_IMAGES";
+      /** 選択内で見た画像の種類数（同じ画像は 1 つに数える）。 */
+      count: number;
+      /** その画像のバイト列合計。 */
+      bytes: number;
+      /** 保存容量の残り。 */
+      remaining: number;
+      /** 画像を入れると容量を超えるため「含める」を選べない。 */
+      tooLarge: boolean;
+    }
   | { type: "SAVED"; id: string }
   | { type: "EXPORT_DATA"; fileName: string; text: string }
   | { type: "ERROR"; message: string };

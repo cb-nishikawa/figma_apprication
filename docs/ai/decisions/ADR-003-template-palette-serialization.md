@@ -14,7 +14,7 @@ Figma のプラグイン API には、ノードをそのままファイルの外
 - ノードツリーを、プロパティ単位で独自の JSON（`SerializedNode`）に変換する。復元時は、プラグイン API でノードを組み立て直す
 - 保存先は `figma.clientStorage` にする。ユーザー単位・プラグイン単位で保存され、どのファイルからでも読める
   - 一覧用の情報（`index`）と本体（`item.<id>`）を分け、一覧の表示で本体を読まずに済むようにする
-- 画像は、`getImageByHash().getBytesAsync()` のバイト列を `Uint8Array` のまま保存する。復元時に `figma.createImage` で作り直し、塗りのハッシュを付け替える（下の追記で廃止。画像は保存せず、複製時は単色にする）
+- 画像は、`getImageByHash().getBytesAsync()` のバイト列を `Uint8Array` のまま保存する。復元時に `figma.createImage` で作り直し、塗りのハッシュを付け替える（下の追記で廃止。画像は保存せず、複製時は単色にする。→ [ADR-007](ADR-007-template-palette-images.md) で置き換え）
 - 座標は、テンプレート左上を原点とした絶対変換行列で持つ。復元時に配置先コンテナの座標系へ変換する。これで、グループやブーリアン演算（独自の座標系を持たない）や回転にも対応できる
 - オートレイアウトは、子を入れたあとに `layoutMode` などを設定し、最後にサイズ指定モードを戻す（`resize` が FIXED に変えてしまうため）
 
@@ -77,3 +77,4 @@ Figma のプラグイン API には、ノードをそのままファイルの外
 
 - 仕様: [`../../specs/cb-template-palette.md`](../../specs/cb-template-palette.md)
 - 実装: `cbTemplatePalette/src/serialize.ts`、`deserialize.ts`、`storage.ts`
+- 画像の扱いは [ADR-007](ADR-007-template-palette-images.md) で置き換えた（本 ADR の画像の追記は superseded）

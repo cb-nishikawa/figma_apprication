@@ -40,6 +40,12 @@ const resizeHandle = document.getElementById("resize-handle") as HTMLDivElement;
 const importBtn = document.getElementById("import") as HTMLButtonElement;
 const exportAllBtn = document.getElementById("export-all") as HTMLButtonElement;
 const importFileInput = document.getElementById("import-file") as HTMLInputElement;
+const imageDialog = document.getElementById("image-dialog") as HTMLDivElement;
+const imageDialogBody = document.getElementById("image-dialog-body") as HTMLParagraphElement;
+const imageDialogNote = document.getElementById("image-dialog-note") as HTMLParagraphElement;
+const imageCancelBtn = document.getElementById("image-cancel") as HTMLButtonElement;
+const imageSkipBtn = document.getElementById("image-skip") as HTMLButtonElement;
+const imageKeepBtn = document.getElementById("image-keep") as HTMLButtonElement;
 
 const DRAG_THRESHOLD = 4;
 /** この割合以上なら容量のバーを危険色にする。保存が拒まれる手前。 */
@@ -56,6 +62,8 @@ let viewMode: ViewMode = "detail";
 let savableCount = 0;
 let canvasSelectionCount = 0;
 let usage = { used: 0, quota: 0 };
+/** 保存中の「画像を含めるか」の確認。開いている間だけ保持する。 */
+let imageQuestion: { count: number; bytes: number; remaining: number; tooLarge: boolean } | null = null;
 
 interface DragState {
   nodeId: string;
@@ -1014,6 +1022,61 @@ function renderSelectionHint(count: number, isComponent: boolean, unsupported: n
 
 /* --------------------------------- イベント --------------------------------- */
 
+/** 画像の確認ダイアログを出す。選ぶまで保存は始まらない。 */
+function askImages(question: {
+  count: number;
+  bytes: number;
+  remaining: number;
+  tooLarge: boolean;
+}): void {
+  imageQuestion = question;
+  imageDialogBody.textContent =
+    `選択に画像が ${question.count} 個（${formatBytes(question.bytes)}）含まれています。\n` +
+    "画像を含めると容量を使うため、複製時にそのまま表示されます。";
+  imageDialogNote.hidden = !question.tooLarge;
+  imageDialogNote.textContent = question.tooLarge
+    ? `残り容量（${formatBytes(question.remaining)}）より大きいため、「画像を含める」は選べません。`
+    : "";
+  imageKeepBtn.disabled = question.tooLarge;
+  imageKeepBtn.title = question.tooLarge ? "残り容量が足りません" : "";
+  imageDialog.hidden = false;
+  (question.tooLarge ? imageSkipBtn : imageKeepBtn).focus();
+}
+
+function closeImageDialog(): void {
+  imageQuestion = null;
+  imageDialog.hidden = true;
+}
+
+/** 選んだ内容を保存側へ渡す。null は保存をやめる。 */
+function answerImages(includeImages: boolean | null): void {
+  if (!imageQuestion) {
+    return;
+  }
+  closeImageDialog();
+  showError(null);
+  if (includeImages === null) {
+    return;
+  }
+  postToPlugin({ type: "SAVE_SELECTION", includeImages });
+}
+
+imageCancelBtn.addEventListener("click", () => answerImages(null));
+imageSkipBtn.addEventListener("click", () => answerImages(false));
+imageKeepBtn.addEventListener("click", () => answerImages(true));
+imageDialog.addEventListener("click", (event) => {
+  // カードの外（背面）を押したらキャンセル。
+  if (event.target === imageDialog) {
+    answerImages(null);
+  }
+});
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !imageDialog.hidden) {
+    event.preventDefault();
+    answerImages(null);
+  }
+});
+
 saveBtn.addEventListener("click", () => {
   showError(null);
   postToPlugin({ type: "SAVE_SELECTION" });
@@ -1224,6 +1287,9 @@ window.onmessage = (event: MessageEvent) => {
         selectedGroupId = null;
         renderList();
       }
+      break;
+    case "ASK_IMAGES":
+      askImages(msg);
       break;
     case "BUSY":
       busyMessage = msg.message;
