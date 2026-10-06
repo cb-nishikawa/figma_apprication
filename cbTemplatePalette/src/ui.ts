@@ -826,7 +826,8 @@ function onDragEnd(event: PointerEvent): void {
     return;
   }
   suppressClick = true;
-  if (!hint || (state.isGroup && hint.groupId)) {
+  // グループのドラッグは必ずルートの前後（groupId: null）なので、入れ込みは発生しない。
+  if (!hint) {
     renderList();
     return;
   }
@@ -870,9 +871,56 @@ function scopeOf(row: HTMLElement): HTMLElement | null {
   return scope?.classList.contains("template-list") ? (scope as HTMLElement) : null;
 }
 
+/** ルートのスロット番号。絞り込みで見えなくても tree の順で取る。 */
+function rootSlot(id: string): number {
+  return tree.findIndex((node) => node.id === id);
+}
+
+/** グループの中のスロット番号。見つからなければ -1。 */
+function nestedSlot(groupId: string, id: string): number {
+  return listGroups(tree).find((group) => group.id === groupId)?.items.indexOf(id) ?? -1;
+}
+
+/**
+ * ヒントを引く線の前後。グリッドは列が左から右なので左右、リストは上下。
+ * `scope` は入れ先のリスト（グループの中の行ならそのリスト）。
+ */
+function halfBefore(
+  rect: DOMRect,
+  scope: HTMLElement,
+  event: Pick<PointerEvent, "clientX" | "clientY">
+): boolean {
+  return scope.classList.contains("is-grid")
+    ? event.clientX < rect.left + rect.width / 2
+    : event.clientY < rect.top + rect.height / 2;
+}
+
+/**
+ * グループは入れ込めない。グループの見出しや中の行に載せたときは、
+ * そのグループの前後をルートの位置として返す。
+ */
+function besideGroupHint(
+  groupId: string,
+  event: Pick<PointerEvent, "clientX" | "clientY">
+): DropHint | null {
+  const row = listEl.querySelector<HTMLElement>(`.template-group[data-node-id="${groupId}"]`);
+  const at = rootSlot(groupId);
+  if (!row || at < 0) {
+    return null;
+  }
+  const before = halfBefore(row.getBoundingClientRect(), listEl, event);
+  return {
+    row,
+    mode: before ? "before" : "after",
+    groupId: null,
+    index: before ? at : at + 1,
+  };
+}
+
 /**
  * Works out where a drop would land. `index` counts the dragged node itself, so it
- * is the slot the row would occupy in the list as displayed.
+ * is the slot the node would occupy in the tree. The slot comes from the tree
+ * rather than from the DOM, so filtering the list does not shift it.
  */
 function resolveDropHint(
   state: DragState,
@@ -888,30 +936,33 @@ function resolveDropHint(
     return null;
   }
   const scopeGroupId = scope.dataset.groupId ?? null;
+  const rowId = row.dataset.nodeId ?? "";
+  if (!rowId) {
+    return null;
+  }
 
   if (row.classList.contains("template-group")) {
-    if (state.isGroup) {
-      return null;
-    }
-    const group = listGroups(tree).find((entry) => entry.id === row.dataset.nodeId);
+    const group = listGroups(tree).find((entry) => entry.id === rowId);
     if (!group) {
       return null;
+    }
+    // グループ同士は入れ込めないので、見出しの前後を入れ替えにする。
+    if (state.isGroup) {
+      return besideGroupHint(rowId, event);
     }
     return { row, mode: "into", groupId: group.id, index: group.items.length };
   }
 
+  // グループを中の行へ載せても入れ込めない。親グループの前後として受け付ける。
   if (state.isGroup && scopeGroupId) {
-    return null;
+    return besideGroupHint(scopeGroupId, event);
   }
-  const at = Array.from(scope.children).indexOf(row);
+
+  const at = scopeGroupId ? nestedSlot(scopeGroupId, rowId) : rootSlot(rowId);
   if (at < 0) {
     return null;
   }
-  const rect = row.getBoundingClientRect();
-  // A grid reads left to right, so the hint follows the columns there.
-  const before = scope.classList.contains("is-grid")
-    ? event.clientX < rect.left + rect.width / 2
-    : event.clientY < rect.top + rect.height / 2;
+  const before = halfBefore(row.getBoundingClientRect(), scope, event);
   return {
     row,
     mode: before ? "before" : "after",
