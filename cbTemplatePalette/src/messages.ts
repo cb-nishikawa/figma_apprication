@@ -18,22 +18,36 @@ export type UiToPluginMessage =
   /** 一覧の要素を選んだときに、Figma 側の選択を解除する。 */
   | { type: "CLEAR_CANVAS_SELECTION" }
   /** The UI generates the id so it can open the name field right after. */
-  | { type: "ADD_GROUP"; id: string; name: string }
+  /** `category` は今選んでいる保存先。無ければ未設定のグループになる。 */
+  | { type: "ADD_GROUP"; id: string; name: string; category?: string }
   | { type: "RENAME_GROUP"; id: string; name: string }
   /** カテゴリは名前そのものが目印。まだ誰も使っていないカテゴリを 1 つ登録する。 */
   | { type: "ADD_CATEGORY"; name: string }
+  /** そのカテゴリのテンプレートとグループ（中身ごと）を消し、レジストリからも外す。 */
+  | { type: "DELETE_CATEGORY"; name: string }
   /** `to` が既存と重なると 1 つにまとまる。 */
   | { type: "RENAME_CATEGORY"; from: string; to: string }
   /** `category: null` で「未設定」に戻す。 */
   | { type: "SET_CATEGORY"; id: string; category: string | null }
+  /** `category: null` でグループを「未設定」に戻す。 */
+  | { type: "SET_GROUP_CATEGORY"; id: string; category: string | null }
   /** Deletes the group and the templates inside it. */
   | { type: "DELETE_GROUP"; id: string }
   /** Writes one group, with its templates, as one file. */
   | { type: "EXPORT_GROUP"; id: string }
   /** Folds or unfolds the group; the choice is remembered per group. */
   | { type: "TOGGLE_GROUP"; id: string; collapsed: boolean }
-  /** `groupId: null` targets the root. `index` counts the dragged node itself. */
-  | { type: "MOVE"; nodeId: string; groupId: string | null; index: number }
+  /**
+   * `groupId: null` targets the root. `index` counts the dragged node itself.
+   * `category` があればテンプレートのカテゴリも書き換える（null が未設定、キー無しは変えない）。
+   */
+  | {
+      type: "MOVE";
+      nodeId: string;
+      groupId: string | null;
+      index: number;
+      category?: string | null;
+    }
   /** 一覧の見た目だけを切り替える。並び順やグループには影響しない。 */
   | { type: "SET_VIEW_MODE"; mode: ViewMode }
   | { type: "RESIZE_UI"; height: number };

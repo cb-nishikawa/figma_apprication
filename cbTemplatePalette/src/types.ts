@@ -179,6 +179,8 @@ export interface TemplateGroup {
   type: "group";
   id: string;
   name: string;
+  /** Group category label. Missing means "未設定". */
+  category?: string;
   /** Template ids inside, in display order. */
   items: string[];
   /**

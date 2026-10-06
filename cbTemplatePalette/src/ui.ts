@@ -7,6 +7,7 @@ import {
   listGroups,
   moveNode,
   renameGroup,
+  setGroupCategory,
   setGroupCollapsed,
 } from "./tree";
 import {
@@ -30,11 +31,18 @@ const filterPopover = document.getElementById("filter-popover") as HTMLDivElemen
 const viewModeToggleBtn = document.getElementById("view-mode-toggle") as HTMLButtonElement;
 const viewModePopover = document.getElementById("view-mode-popover") as HTMLDivElement;
 const categoryToggleBtn = document.getElementById("category-toggle") as HTMLButtonElement;
+const categoryLabelEl = document.getElementById("category-label") as HTMLSpanElement;
 const categoryPopover = document.getElementById("category-popover") as HTMLDivElement;
 const listMenuToggleBtn = document.getElementById("list-menu-toggle") as HTMLButtonElement;
 const listMenuPopover = document.getElementById("list-menu-popover") as HTMLDivElement;
 const addCategoryBtn = document.getElementById("add-category") as HTMLButtonElement;
 const addGroupBtn = document.getElementById("add-group") as HTMLButtonElement;
+const listMenuItems = document.getElementById("list-menu-items") as HTMLDivElement;
+const deleteCategoryBtn = document.getElementById("delete-category") as HTMLButtonElement;
+const deleteCategoryConfirm = document.getElementById("delete-category-confirm") as HTMLDivElement;
+const deleteCategoryText = document.getElementById("delete-category-text") as HTMLParagraphElement;
+const deleteCategoryCancelBtn = document.getElementById("delete-category-cancel") as HTMLButtonElement;
+const deleteCategoryOkBtn = document.getElementById("delete-category-ok") as HTMLButtonElement;
 const errorEl = document.getElementById("error") as HTMLParagraphElement;
 const listEl = document.getElementById("list") as HTMLUListElement;
 const statusSpinner = document.getElementById("status-spinner") as HTMLSpanElement;
@@ -262,6 +270,31 @@ function setFilterPopoverOpen(open: boolean): void {
 function setListMenuOpen(open: boolean): void {
   listMenuPopover.hidden = !open;
   listMenuToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) {
+    // 開くたびにメニューから始める。確認の画面は残さない。
+    showListMenuItems();
+  }
+}
+
+function showListMenuItems(): void {
+  listMenuItems.hidden = false;
+  deleteCategoryConfirm.hidden = true;
+  listMenuPopover.classList.remove("is-confirm");
+  deleteCategoryBtn.disabled = saveCategory === "";
+  deleteCategoryBtn.title =
+    saveCategory === "" ? "未設定は削除できません" : `カテゴリ「${saveCategory}」を削除`;
+}
+
+/** 消える対象。そのカテゴリのグループと中身、そのカテゴリのテンプレート。 */
+function categoryDeletionTargets(name: string): { templateIds: Set<string>; groupIds: string[] } {
+  const groups = listGroups(tree).filter((group) => group.category === name);
+  const templateIds = new Set<string>(groups.flatMap((group) => group.items));
+  for (const meta of templates) {
+    if (meta.category === name) {
+      templateIds.add(meta.id);
+    }
+  }
+  return { templateIds, groupIds: groups.map((group) => group.id) };
 }
 
 /* ------------------------------ カテゴリ ------------------------------ */
@@ -272,6 +305,7 @@ function categoryLabel(name: string): string {
 }
 
 function syncCategoryToggle(): void {
+  categoryLabelEl.textContent = categoryLabel(saveCategory);
   categoryToggleBtn.title = `カテゴリ: ${categoryLabel(saveCategory)}`;
   categoryToggleBtn.setAttribute(
     "aria-label",
@@ -530,11 +564,25 @@ function metaById(id: string): TemplateMeta | undefined {
   return templates.find((meta) => meta.id === id);
 }
 
-/** Applies a move locally and tells the plugin, which stores it. */
-function moveNodeTo(nodeId: string, groupId: string | null, index: number): void {
+/**
+ * Applies a move locally and tells the plugin, which stores it.
+ * `category` を渡すとテンプレートのカテゴリも同じ MOVE で書き換える（"" が未設定）。
+ */
+function moveNodeTo(
+  nodeId: string,
+  groupId: string | null,
+  index: number,
+  category?: string
+): void {
   let next = moveNode(tree, nodeId, groupId, index);
-  if (JSON.stringify(next) === JSON.stringify(tree)) {
+  const meta = category === undefined ? undefined : metaById(nodeId);
+  const categoryChanged =
+    meta !== undefined && normalizedCategory(meta.category) !== category;
+  if (JSON.stringify(next) === JSON.stringify(tree) && !categoryChanged) {
     return;
+  }
+  if (meta && categoryChanged) {
+    meta.category = category === "" ? undefined : category;
   }
   // Dropping into a folded group would look like nothing happened, so open it.
   const foldedTarget =
@@ -548,19 +596,161 @@ function moveNodeTo(nodeId: string, groupId: string | null, index: number): void
   }
   tree = next;
   renderList();
-  postToPlugin({ type: "MOVE", nodeId, groupId, index });
+  postToPlugin(
+    categoryChanged
+      ? { type: "MOVE", nodeId, groupId, index, category: category === "" ? null : category }
+      : { type: "MOVE", nodeId, groupId, index }
+  );
   if (foldedTarget) {
     postToPlugin({ type: "TOGGLE_GROUP", id: foldedTarget, collapsed: false });
   }
 }
 
-/** 移動 submenu とドラッグの終点から使う「そのグループの末尾に入れる」。 */
-function moveTemplateToGroup(id: string, groupId: string | null): void {
+/** 移動 submenu から使う「そのグループ（null はルート）の末尾に入れる」。 */
+function moveTemplateToGroup(id: string, groupId: string | null, category?: string): void {
   const group = groupId ? listGroups(tree).find((entry) => entry.id === groupId) : undefined;
   if (groupId && !group) {
     return;
   }
-  moveNodeTo(id, groupId, group ? group.items.length : tree.length);
+  moveNodeTo(id, groupId, group ? group.items.length : tree.length, category);
+}
+
+function normalizedCategory(value: string | null | undefined): string {
+  return value?.trim() ?? "";
+}
+
+function categoryTargets(current: string): string[] {
+  const values: string[] = [""];
+  for (const name of categories) {
+    if (name !== NO_CATEGORY && !values.includes(name)) {
+      values.push(name);
+    }
+  }
+  if (current !== "" && !values.includes(current)) {
+    values.push(current);
+  }
+  return values;
+}
+
+function moveCategoryLabel(value: string): string {
+  return value === "" ? NO_CATEGORY : value;
+}
+
+function createCategoryLeafButton(
+  current: string,
+  value: string,
+  onSelect: (value: string) => void
+): HTMLButtonElement {
+  const item = createMenuButton(moveCategoryLabel(value), () => onSelect(value));
+  item.disabled = value === current;
+  return item;
+}
+
+function appendCategoryLeafTargets(
+  panel: HTMLDivElement,
+  current: string,
+  onSelect: (value: string) => void
+): void {
+  for (const value of categoryTargets(current)) {
+    panel.append(createCategoryLeafButton(current, value, onSelect));
+  }
+}
+
+/**
+ * テンプレートを `category` にして、`group` の末尾（null ならルートの末尾）へ入れる。
+ * 今いる場所とカテゴリが同じなら押せない。
+ */
+function createTemplateMoveTarget(
+  meta: TemplateMeta,
+  category: string,
+  group: TemplateGroup | null
+): HTMLButtonElement {
+  const currentGroupId = groupOf(tree, meta.id)?.id ?? null;
+  const currentCategory = normalizedCategory(meta.category);
+  const label = group ? `${group.name}（${group.items.length}件）` : moveCategoryLabel(category);
+  const item = createMenuButton(label, () => {
+    moveTemplateToGroup(meta.id, group ? group.id : null, category);
+  });
+  item.classList.add(group ? "is-indented" : "row-menu-category");
+  item.disabled = currentGroupId === (group?.id ?? null) && currentCategory === category;
+  return item;
+}
+
+function createMoveItem(meta: TemplateMeta): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "row-menu-item row-menu-item-has-submenu";
+  button.setAttribute("aria-haspopup", "true");
+
+  const icon = document.createElement("span");
+  icon.className = "row-menu-item-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "←";
+  button.append(icon, document.createTextNode("移動"));
+
+  // サブメニューは overflow: auto で左に開くため、さらに入れ子にすると枠で切れる。
+  // 1 枚の中にカテゴリの見出しと、字下げしたグループを並べる。
+  const panel = document.createElement("div");
+  panel.className = "row-menu-submenu";
+  panel.setAttribute("role", "menu");
+
+  const groups = listGroups(tree);
+  const targets = categoryTargets(normalizedCategory(meta.category));
+  for (const group of groups) {
+    const category = normalizedCategory(group.category);
+    if (!targets.includes(category)) {
+      targets.push(category);
+    }
+  }
+  for (const category of targets) {
+    panel.append(createTemplateMoveTarget(meta, category, null));
+    for (const group of groups) {
+      if (normalizedCategory(group.category) === category) {
+        panel.append(createTemplateMoveTarget(meta, category, group));
+      }
+    }
+  }
+
+  button.append(panel);
+  return button;
+}
+
+function createGroupMoveItem(group: TemplateGroup): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "row-menu-item row-menu-item-has-submenu";
+  button.setAttribute("aria-haspopup", "true");
+
+  const icon = document.createElement("span");
+  icon.className = "row-menu-item-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = "↕";
+  button.append(icon, document.createTextNode("移動"));
+
+  const current = normalizedCategory(group.category);
+  const panel = document.createElement("div");
+  panel.className = "row-menu-submenu";
+  panel.setAttribute("role", "menu");
+  appendCategoryLeafTargets(panel, current, (value) => {
+    // 返事を待たずに今の一覧から消えるよう、中のテンプレートのカテゴリも先に揃える。
+    const category = value === "" ? undefined : value;
+    tree = setGroupCategory(tree, group.id, category);
+    for (const id of group.items) {
+      const meta = metaById(id);
+      if (meta) {
+        meta.category = category;
+      }
+    }
+    renderList();
+    postToPlugin({
+      type: "SET_GROUP_CATEGORY",
+      id: group.id,
+      category: value === "" ? null : value,
+    });
+  });
+
+  button.append(panel);
+  return button;
 }
 
 function startRename(id: string): void {
@@ -632,90 +822,6 @@ function createMenuButton(
   return button;
 }
 
-/** 「← 移動」. Opens on hover and lists every group plus the root. */
-function createMoveItem(meta: TemplateMeta): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "row-menu-item row-menu-item-has-submenu";
-  button.setAttribute("aria-haspopup", "true");
-
-  const icon = document.createElement("span");
-  icon.className = "row-menu-item-icon";
-  icon.setAttribute("aria-hidden", "true");
-  icon.textContent = "←";
-  button.append(icon, document.createTextNode("移動"));
-
-  const current = groupOf(tree, meta.id);
-  const panel = document.createElement("div");
-  panel.className = "row-menu-submenu";
-  panel.setAttribute("role", "menu");
-  panel.append(createMoveTarget(meta.id, "グループなし", null, false));
-
-  for (const group of listGroups(tree)) {
-    panel.append(createMoveTarget(meta.id, group.name, group.id, group.id === current?.id));
-  }
-  button.append(panel);
-  return button;
-}
-
-function createMoveTarget(
-  metaId: string,
-  label: string,
-  groupId: string | null,
-  isCurrent: boolean
-): HTMLButtonElement {
-  const group = groupId ? listGroups(tree).find((entry) => entry.id === groupId) : undefined;
-  const count = group ? group.items.length : templates.length;
-  const item = createMenuButton(group ? `${label}（${count}件）` : label, () => {
-    moveTemplateToGroup(metaId, groupId);
-  });
-  item.disabled = isCurrent;
-  return item;
-}
-
-/** 「カテゴリ」. 行が入っているカテゴリを書き換える。所属ではなくラベルなので移動はしない。 */
-function createCategoryItem(meta: TemplateMeta): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "row-menu-item row-menu-item-has-submenu";
-  button.setAttribute("aria-haspopup", "true");
-
-  const icon = document.createElement("span");
-  icon.className = "row-menu-item-icon";
-  icon.setAttribute("aria-hidden", "true");
-  icon.textContent = "#";
-  button.append(icon, document.createTextNode("カテゴリ"));
-
-  const current = meta.category ?? "";
-  const values: string[] = [""];
-  for (const name of categories) {
-    if (name !== NO_CATEGORY && !values.includes(name)) {
-      values.push(name);
-    }
-  }
-  if (current !== "" && !values.includes(current)) {
-    values.push(current);
-  }
-
-  const panel = document.createElement("div");
-  panel.className = "row-menu-submenu";
-  panel.setAttribute("role", "menu");
-  for (const value of values) {
-    panel.append(createCategoryTarget(meta, value));
-  }
-  button.append(panel);
-  return button;
-}
-
-function createCategoryTarget(meta: TemplateMeta, value: string): HTMLButtonElement {
-  const current = meta.category ?? "";
-  const item = createMenuButton(value === "" ? NO_CATEGORY : value, () => {
-    postToPlugin({ type: "SET_CATEGORY", id: meta.id, category: value === "" ? null : value });
-  });
-  item.disabled = value === current;
-  return item;
-}
-
 function createRowMenu(meta: TemplateMeta): HTMLDivElement {
   const wrap = document.createElement("div");
   wrap.className = "row-menu";
@@ -734,7 +840,6 @@ function createRowMenu(meta: TemplateMeta): HTMLDivElement {
 
   panel.append(
     createMoveItem(meta),
-    createCategoryItem(meta),
     createMenuButton("名前を変更", () => startRename(meta.id)),
     createMenuButton("ファイルに書き出す", () => {
       postToPlugin({ type: "EXPORT", ids: [meta.id] });
@@ -819,6 +924,7 @@ function createGroupMenu(group: TemplateGroup): HTMLDivElement {
   const menu = document.createElement("div");
   menu.className = "row-menu-list";
   menu.append(
+    createGroupMoveItem(group),
     createMenuButton("名前を変更", () => startRenameGroup(group.id)),
     createMenuButton("ファイルに書き出す", () => {
       postToPlugin({ type: "EXPORT_GROUP", id: group.id });
@@ -1303,8 +1409,11 @@ function visibleNodes(): Array<VisibleGroup | VisibleItem> {
         return meta && hits(meta) ? [meta] : [];
       });
       // A group just created has nothing in it yet, so it is shown even when empty;
-      // only the filters are allowed to hide a group.
-      if (items.length > 0 || (node.items.length === 0 && !query)) {
+      // only the filters are allowed to hide a group. 空のグループは中身で絞れないので、
+      // グループ自身のカテゴリで出し分ける（出さないと全カテゴリに出てしまう）。
+      const emptyHere =
+        node.items.length === 0 && !query && normalizedCategory(node.category) === saveCategory;
+      if (items.length > 0 || emptyHere) {
         // While filtering, a folded group is drawn open so its hits are visible.
         // A group that loses some of its contents to the filters is opened too;
         // one whose contents all match keeps its stored fold.
@@ -1546,14 +1655,61 @@ addGroupBtn.addEventListener("click", (event) => {
   closeAllPopups();
   const id = newUiId();
   const name = `グループ ${listGroups(tree).length + 1}`;
-  tree = addGroup(tree, { type: "group", id, name, items: [] });
+  // 空のグループは自分のカテゴリでしか出ないので、今見ているカテゴリを付ける。
+  const category = saveCategory || undefined;
+  tree = addGroup(tree, { type: "group", id, name, items: [], ...(category ? { category } : {}) });
   renamingGroupId = id;
   selectedGroupId = id;
   selectedId = null;
   renderList();
   // The group lands at the end of the list, so bring it into view when the list is long.
   listEl.querySelector(`[data-node-id="${id}"]`)?.scrollIntoView({ block: "nearest" });
-  postToPlugin({ type: "ADD_GROUP", id, name });
+  postToPlugin({ type: "ADD_GROUP", id, name, category });
+});
+
+deleteCategoryBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  if (saveCategory === "") {
+    return;
+  }
+  const { templateIds, groupIds } = categoryDeletionTargets(saveCategory);
+  const parts = [
+    templateIds.size > 0 ? `テンプレート ${templateIds.size} 件` : "",
+    groupIds.length > 0 ? `グループ ${groupIds.length} 件` : "",
+  ].filter(Boolean);
+  deleteCategoryText.textContent =
+    parts.length > 0
+      ? `「${saveCategory}」と中の${parts.join("・")}を削除します`
+      : `「${saveCategory}」を削除します`;
+  listMenuItems.hidden = true;
+  deleteCategoryConfirm.hidden = false;
+  listMenuPopover.classList.add("is-confirm");
+});
+
+deleteCategoryCancelBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  showListMenuItems();
+});
+
+deleteCategoryOkBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const name = saveCategory;
+  if (name === "") {
+    return;
+  }
+  const { templateIds, groupIds } = categoryDeletionTargets(name);
+  if (selectedId && templateIds.has(selectedId)) {
+    selectedId = null;
+  }
+  if (selectedGroupId && groupIds.includes(selectedGroupId)) {
+    selectedGroupId = null;
+  }
+  closeAllPopups();
+  postToPlugin({ type: "DELETE_CATEGORY", name });
+  categories = categories.filter((entry) => entry !== name);
+  saveCategory = "";
+  syncCategoryToggle();
+  renderList();
 });
 
 importBtn.addEventListener("click", () => importFileInput.click());

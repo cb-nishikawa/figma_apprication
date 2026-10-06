@@ -57,7 +57,10 @@ function isListNodeArray(value: unknown): value is ListNode[] {
         typeof node === "object" &&
         typeof node.id === "string" &&
         (node.type === "item" ||
-          (node.type === "group" && typeof node.name === "string" && Array.isArray(node.items)))
+          (node.type === "group" &&
+            typeof node.name === "string" &&
+            Array.isArray(node.items) &&
+            (node.category === undefined || typeof node.category === "string")))
     )
   );
 }
@@ -205,16 +208,18 @@ async function saveCategories(names: string[]): Promise<string[]> {
 }
 
 /**
- * 一覧に並べるカテゴリ。レジストリと、テンプレートが実際に持つ `category` を
- * 合わせて返す。ファイルから持ってきたカテゴリはテンプレート側にしかないので
- * こちらから見えるようにしてある。
+ * 一覧に並べるカテゴリ。レジストリと、テンプレート・グループが実際に持つ
+ * `category` を合わせて返す。ファイルから持ってきたカテゴリも見えるようにしてある。
  */
-export async function listCategories(index: TemplateMeta[]): Promise<string[]> {
+export async function listCategories(index: TemplateMeta[], tree: ListNode[] = []): Promise<string[]> {
   const registered = await loadCategories();
   const used = index
     .map((meta) => meta.category)
     .filter((name): name is string => typeof name === "string" && name !== "");
-  return [...new Set([...registered, ...used])];
+  const groupCategories = tree
+    .map((node) => (node.type === "group" ? node.category : undefined))
+    .filter((name): name is string => typeof name === "string" && name !== "");
+  return [...new Set([...registered, ...used, ...groupCategories])];
 }
 
 /** まだ誰も使っていないカテゴリを 1 つ足す。同じ名前があればそのまま。 */
@@ -222,15 +227,48 @@ export async function addCategory(name: string): Promise<string[]> {
   return saveCategories([...(await loadCategories()), name]);
 }
 
+/** レジストリから名前を外す。テンプレートやグループには触れない。 */
+export async function removeCategory(name: string): Promise<string[]> {
+  return saveCategories((await loadCategories()).filter((entry) => entry !== name));
+}
+
+/** 複数のテンプレートの `category` を 1 回の保存で書き換える。未設定はキーを落とす。 */
+export async function setTemplatesCategory(
+  ids: string[],
+  category?: string
+): Promise<TemplateMeta[]> {
+  const index = await loadIndex();
+  const targets = new Set(ids);
+  if (!index.some((meta) => targets.has(meta.id))) {
+    return index;
+  }
+  const next = index.map((meta) => {
+    if (!targets.has(meta.id)) {
+      return meta;
+    }
+    if (category) {
+      return { ...meta, category };
+    }
+    const rest = { ...meta };
+    delete rest.category;
+    return rest;
+  });
+  await saveIndex(next);
+  return next;
+}
+
 /** レジストリの名前を付け替え、テンプレートの `category` もまとめて付け替える。 */
 export async function renameCategory(from: string, to: string): Promise<TemplateMeta[]> {
   const registered = await loadCategories();
   await saveCategories([...registered.map((name) => (name === from ? to : name)), to]);
   const index = await loadIndex();
-  if (!index.some((meta) => meta.category === from)) {
-    return index;
-  }
+  const tree = await loadTree(index);
   const next = index.map((meta) => (meta.category === from ? { ...meta, category: to } : meta));
   await saveIndex(next);
+  if (tree.some((node) => node.type === "group" && node.category === from)) {
+    await saveTree(
+      tree.map((node) => (node.type === "group" && node.category === from ? { ...node, category: to } : node))
+    );
+  }
   return next;
 }

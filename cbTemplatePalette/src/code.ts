@@ -25,9 +25,11 @@ import {
   loadIndex,
   loadItem,
   loadTree,
+  removeCategory,
   renameCategory,
   saveTemplate,
   saveTree,
+  setTemplatesCategory,
   updateTemplate,
   usedBytes,
 } from "./storage";
@@ -41,6 +43,7 @@ import {
   remapTree,
   removeItems,
   renameGroup,
+  setGroupCategory,
   setGroupCollapsed,
 } from "./tree";
 import {
@@ -125,12 +128,13 @@ function postTemplates(index: TemplateMeta[]): Promise<void> {
 }
 
 async function postTemplatesWithTree(index: TemplateMeta[], tree: Promise<ListNode[]>): Promise<void> {
+  const resolvedTree = await tree;
   postToUi({
     type: "TEMPLATES",
     templates: index,
-    tree: await tree,
+    tree: resolvedTree,
     viewMode: await loadViewMode(),
-    categories: await listCategories(index),
+    categories: await listCategories(index, resolvedTree),
     usedBytes: usedBytes(index),
     quotaBytes: QUOTA_BYTES,
   });
@@ -566,6 +570,32 @@ async function handleDeleteGroup(id: string): Promise<void> {
   );
 }
 
+/** そのカテゴリのグループ（中身ごと）とテンプレートを消し、レジストリからも外す。 */
+async function handleDeleteCategory(name: string): Promise<void> {
+  const index = await loadIndex();
+  const groups = listGroups(await loadTree(index)).filter((group) => group.category === name);
+  const ids = new Set<string>(groups.flatMap((group) => group.items));
+  for (const meta of index) {
+    if (meta.category === name) {
+      ids.add(meta.id);
+    }
+  }
+  await removeCategory(name);
+  const next = await deleteTemplates(
+    [...ids],
+    groups.map((group) => group.id)
+  );
+  await postTemplatesWithTree(next, loadTree(next));
+  const removed = index.length - next.length;
+  const parts = [
+    removed > 0 ? `テンプレート ${removed} 件` : "",
+    groups.length > 0 ? `グループ ${groups.length} 件` : "",
+  ].filter(Boolean);
+  figma.notify(
+    `カテゴリ「${name}」を削除しました${parts.length > 0 ? `（${parts.join("・")}も削除）` : ""}`
+  );
+}
+
 /** The tree of a file export, without the templates whose body could not be read. */
 function exportTree(tree: ListNode[], exported: Set<string>): ListNode[] {
   const nodes: ListNode[] = [];
@@ -574,7 +604,13 @@ function exportTree(tree: ListNode[], exported: Set<string>): ListNode[] {
       const items = node.items.filter((id) => exported.has(id));
       if (items.length > 0) {
         // Rebuilt instead of spread so `collapsed` stays out of the file.
-        nodes.push({ type: "group", id: node.id, name: node.name, items });
+        nodes.push({
+          type: "group",
+          id: node.id,
+          name: node.name,
+          ...(typeof node.category === "string" && node.category !== "" ? { category: node.category } : {}),
+          items,
+        });
       }
       continue;
     }
@@ -695,6 +731,9 @@ function parsedFileTree(raw: TemplateFile["tree"]): ListNode[] {
         type: "group",
         id: node.id,
         name: name || "グループ",
+        ...(typeof node.category === "string" && node.category.trim() !== ""
+          ? { category: node.category.trim() }
+          : {}),
         items: node.items.filter((id): id is string => typeof id === "string"),
       });
       continue;
@@ -978,6 +1017,7 @@ async function main(): Promise<void> {
             id: msg.id,
             name: msg.name.trim() || "グループ",
             items: [],
+            ...(msg.category?.trim() ? { category: msg.category.trim() } : {}),
           };
           await commitTree(await loadIndex(), (tree) => addGroup(tree, group));
           break;
@@ -1000,6 +1040,13 @@ async function main(): Promise<void> {
           }
           break;
         }
+        case "DELETE_CATEGORY": {
+          const name = msg.name.trim();
+          if (name) {
+            await handleDeleteCategory(name);
+          }
+          break;
+        }
         case "RENAME_CATEGORY": {
           const from = msg.from.trim();
           const to = msg.to.trim();
@@ -1015,6 +1062,16 @@ async function main(): Promise<void> {
           await postTemplates(await updateTemplate(msg.id, { category }));
           break;
         }
+        case "SET_GROUP_CATEGORY": {
+          // 一覧はテンプレートのカテゴリで絞るので、中のテンプレートも揃えないと
+          // グループが今のカテゴリに残って見える。
+          const category = msg.category?.trim() || undefined;
+          const tree = await loadTree(await loadIndex());
+          const group = listGroups(tree).find((entry) => entry.id === msg.id);
+          const index = await setTemplatesCategory(group ? group.items : [], category);
+          await postTemplatesWithTree(index, saveTree(setGroupCategory(tree, msg.id, category)));
+          break;
+        }
         case "TOGGLE_GROUP": {
           await commitTree(await loadIndex(), (tree) =>
             setGroupCollapsed(tree, msg.id, msg.collapsed)
@@ -1023,7 +1080,13 @@ async function main(): Promise<void> {
         }
         case "MOVE": {
           const { nodeId, groupId, index: slot } = msg;
-          await commitTree(await loadIndex(), (tree) => moveNode(tree, nodeId, groupId, slot));
+          // カテゴリと並びを 1 回で書いて送る。別メッセージにすると返事の順番が入れ替わり、
+          // 古い一覧が後から届くことがある。
+          const index =
+            msg.category === undefined
+              ? await loadIndex()
+              : await updateTemplate(nodeId, { category: msg.category?.trim() || undefined });
+          await commitTree(index, (tree) => moveNode(tree, nodeId, groupId, slot));
           break;
         }
         case "SET_VIEW_MODE": {

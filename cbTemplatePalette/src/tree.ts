@@ -97,6 +97,9 @@ export function remapTree(
       type: "group",
       id: groupIds.get(node.id) ?? node.id,
       name: node.name,
+      ...(typeof node.category === "string" && node.category.trim() !== ""
+        ? { category: node.category }
+        : {}),
       items: node.items.flatMap((id) => (itemIds.has(id) ? [itemIds.get(id) as string] : [])),
     });
   }
@@ -118,6 +121,20 @@ export function addGroup(tree: ListNode[], group: TemplateGroup): ListNode[] {
 
 export function renameGroup(tree: ListNode[], id: string, name: string): ListNode[] {
   return tree.map((node) => (isGroup(node) && node.id === id ? { ...node, name } : node));
+}
+
+export function setGroupCategory(tree: ListNode[], id: string, category?: string): ListNode[] {
+  return tree.map((node) => {
+    if (!isGroup(node) || node.id !== id) {
+      return node;
+    }
+    if (category) {
+      return { ...node, category };
+    }
+    const next = { ...node };
+    delete next.category;
+    return next;
+  });
 }
 
 /** Folds or unfolds a group. Every other operation keeps the flag as it is. */
