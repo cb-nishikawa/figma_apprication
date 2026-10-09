@@ -151,6 +151,17 @@ body {
   background: #e6e6e6;
 }
 
+.category-source-tag {
+  flex-shrink: 0;
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 1px solid #d0d0d0;
+  border-radius: 3px;
+  color: #666;
+  font-size: 10px;
+  line-height: 14px;
+}
+
 .btn-secondary.is-danger {
   border-color: #e0b4b0;
   color: #b3261e;
@@ -974,6 +985,75 @@ body.is-resizing * {
   gap: 8px;
   justify-content: flex-end;
   margin-top: 14px;
+}
+
+/* 共有カテゴリの追加。プラグインの高さが低いときはカードの中でスクロールする。 */
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 100%;
+  overflow: auto;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-label {
+  color: #555;
+  font-size: 11px;
+}
+
+.settings-test {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.settings-test-result {
+  min-width: 0;
+  color: #767676;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-line;
+}
+
+.settings-test-result.is-ok {
+  color: #14804a;
+}
+
+.settings-test-result.is-error {
+  color: #b00020;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-line {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.storage-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.storage-error[hidden] {
+  display: none;
+}
+
+.storage-error-text {
+  margin: 0;
 }
 
 /* 3 つの読み込み方を縦に並べる。360px だと横並びに収まらない。 */

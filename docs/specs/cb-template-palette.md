@@ -54,11 +54,12 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
    - タッチではドラッグしない（行の「⋯」→「← 移動」を使う）
    - たためたグループにドロップすると、自動で開いて中に入れる。中身が見えないと移動できたかどうか分からないため
 8. 一覧の見出しの「読み込む」「すべて書き出す」で、パソコンのファイルとやり取りできる（後述）
+9. 一覧の「⋯」→「共有カテゴリを追加…」で、Cloudflare R2 の保存先をカテゴリとして足す（後述「共有カテゴリ」）。保存先を切り替える「設定」は無い（2026-10-09 に削除）
 
 ## 保存先
 
-- `figma.clientStorage`（ユーザー単位・プラグイン単位。デバイス内に保存され、どのファイルからでも読める）
-- 容量の上限はプラグインごとに約 5MB（Figma の固定値で引き上げられない）。上限を超える保存は拒否する
+- 「未設定」と通常のカテゴリは、常に `figma.clientStorage`（ユーザー単位・プラグイン単位。デバイス内に保存され、どのファイルからでも読める）。外部の保存先は共有カテゴリ（Cloudflare R2）だけ（後述）
+- 容量の上限はプラグインごとに約 5MB（Figma の固定値で引き上げられない）。上限を超える保存は拒否する。共有カテゴリ（R2）では上限を持たない（バーは出さず「Cloudflare R2 に保存 3.2MB」と出す）
 - 使用量はフッターに出し、選択中の件数（`◯件を選択中`）より下の行に置く。`使用量 3.2MB / 5.0MB` の下に高さ 2px の細いバーを添える
   - 80% 以上のときはバーの塗りだけを `#b00020`（`.error` と同じ危険色）に変える。文言は変えない
   - 上限を超えたときは 100.0% に留める（超過したことは別のエラーで知らせる）
@@ -75,6 +76,42 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
 | `cbTemplatePalette.uiHeight` | UI の高さ |
 | `cbTemplatePalette.viewMode` | 一覧の表示モード（`detail` / `list` / `grid`。既定は `detail`） |
 | `cbTemplatePalette.categories` | カテゴリ名の配列。まだ誰も使っていないものも残る |
+| `cbTemplatePalette.linkedCategories` | 共有カテゴリ `{ id, name, source }[]`。`source` は R2 のスペース `{ provider: "r2", endpoint, token, space }` |
+
+### Cloudflare R2（[ADR-011](../ai/decisions/ADR-011-template-palette-shared-categories.md)）
+
+- 各自（またはチーム）がデプロイする Worker（[`cbTemplatePalette/r2-worker/`](../../cbTemplatePalette/r2-worker/)）を経由する。R2 のアクセスキーはプラグインに置かず、Worker の URL・アクセストークン・スペース名だけを持つ
+- スペースの中身（キー 1 つにつき 1 ファイル）
+
+| ファイル | 対応するキー |
+| --- | --- |
+| `metadata.json` | （このスペースがテンプレパレットくんのものだという印。`name` は共有カテゴリの名前の初期値） |
+| `index.json` | `cbTemplatePalette.index` |
+| `tree.json` | `cbTemplatePalette.tree` |
+| `categories.json` | `cbTemplatePalette.categories` |
+| `items/<id>.json` | `cbTemplatePalette.item.<id>` |
+
+- `Uint8Array` は `{"$u8": base64}` にして JSON にする
+- URL は `https://` か `http://localhost:<port>`。manifest が許しているのは `*.workers.dev`（独自ドメインは manifest への追加が要る）
+- 届かないとき: 「Cloudflare R2 に接続できませんでした。Worker の URL とアクセストークンを確認してください。」。スペース名が不正: 「保存先のスペースにアクセスできません。スペース名を確認してください。」。黙ってローカルに戻さず、一覧の上に出す
+- 接続テストは ping → テスト用ファイルの書き込み・読み込み・削除
+
+### 共有カテゴリ（[ADR-011](../ai/decisions/ADR-011-template-palette-shared-categories.md)）
+
+- 1 つのカテゴリが 1 つの R2 のスペースに対応する。「未設定」と通常のカテゴリはローカルのまま
+- 同じ Worker の URL・アクセストークン・スペース名を複数の人が追加すると、同じテンプレートを使える
+- 「共有カテゴリを追加」ダイアログ
+  - 「カテゴリ名」（空欄なら `metadata.json` の `name` → スペース名）
+  - 「Worker の URL」「アクセストークン」（伏せ字）「スペース名」（空欄なら `default`）
+  - 「接続テスト」「キャンセル」「追加」。URL とトークンが入っていれば押せる。追加すると保存先を確かめ、そのカテゴリを開く。同じ保存先がすでにある・同じ名前のカテゴリがあるときは断る
+  - Esc・カードの外のクリックでも閉じる
+- カテゴリメニューでは、共有カテゴリの名前の右に「R2」の印を出す
+- 共有カテゴリを選ぶと、その保存先から読み直す（読み込み中は「Cloudflare R2 から読み込んでいます…」）。保存もその保存先へ
+- 中のテンプレートは、保存先に書かれたカテゴリに関係なく共有カテゴリの名前で見せる。「名前を変更」は自分の一覧での表示名だけ変える
+- 「⋯」→「カテゴリを外す」（共有カテゴリのときだけこの名前）: 「「名前」をこの一覧から外します」「保存先のデータは消えません。もう一度追加すれば戻せます」で確かめ、登録だけを消す
+- 別の保存先のカテゴリへの移動は、移動先に保存してから移動元を消す。移動メニューのグループは今見ている保存先のものだけ
+- 「カテゴリにして追加」の読み込みはローカルへ入れる。それ以外の読み込み・書き出しは今見ている保存先が対象
+- 共有カテゴリのエラーは、頭に「共有カテゴリ「名前」」を付けて出す
 
 ## 一覧の並び順とグループ（[ADR-005](../ai/decisions/ADR-005-template-palette-groups.md)）
 
@@ -271,4 +308,4 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
 
 ## 関連
 
-- 判断の記録: [`../ai/decisions/ADR-003-template-palette-serialization.md`](../ai/decisions/ADR-003-template-palette-serialization.md)、[`../ai/decisions/ADR-004-component-templates.md`](../ai/decisions/ADR-004-component-templates.md)、[`../ai/decisions/ADR-005-template-palette-groups.md`](../ai/decisions/ADR-005-template-palette-groups.md)、[`../ai/decisions/ADR-006-template-palette-view-modes.md`](../ai/decisions/ADR-006-template-palette-view-modes.md)、[`../ai/decisions/ADR-007-template-palette-images.md`](../ai/decisions/ADR-007-template-palette-images.md)、[`../ai/decisions/ADR-008-template-palette-categories.md`](../ai/decisions/ADR-008-template-palette-categories.md)
+- 判断の記録: [`../ai/decisions/ADR-003-template-palette-serialization.md`](../ai/decisions/ADR-003-template-palette-serialization.md)、[`../ai/decisions/ADR-004-component-templates.md`](../ai/decisions/ADR-004-component-templates.md)、[`../ai/decisions/ADR-005-template-palette-groups.md`](../ai/decisions/ADR-005-template-palette-groups.md)、[`../ai/decisions/ADR-006-template-palette-view-modes.md`](../ai/decisions/ADR-006-template-palette-view-modes.md)、[`../ai/decisions/ADR-007-template-palette-images.md`](../ai/decisions/ADR-007-template-palette-images.md)、[`../ai/decisions/ADR-008-template-palette-categories.md`](../ai/decisions/ADR-008-template-palette-categories.md)、[`../ai/decisions/ADR-011-template-palette-shared-categories.md`](../ai/decisions/ADR-011-template-palette-shared-categories.md)

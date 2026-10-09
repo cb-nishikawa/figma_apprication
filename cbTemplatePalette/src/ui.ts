@@ -17,6 +17,8 @@ import {
   VIEW_MODES,
   type ImportMode,
   type ListNode,
+  type LinkedCategoryInfo,
+  type R2Source,
   type TemplateGroup,
   type TemplateMeta,
   type ViewMode,
@@ -43,7 +45,20 @@ const deleteCategoryConfirm = document.getElementById("delete-category-confirm")
 const deleteCategoryText = document.getElementById("delete-category-text") as HTMLParagraphElement;
 const deleteCategoryCancelBtn = document.getElementById("delete-category-cancel") as HTMLButtonElement;
 const deleteCategoryOkBtn = document.getElementById("delete-category-ok") as HTMLButtonElement;
+const deleteCategoryNote = document.getElementById("delete-category-note") as HTMLParagraphElement;
+const addLinkedCategoryBtn = document.getElementById("add-linked-category") as HTMLButtonElement;
+const linkedDialog = document.getElementById("linked-dialog") as HTMLDivElement;
+const linkedNameInput = document.getElementById("linked-name") as HTMLInputElement;
+const linkedR2Url = document.getElementById("linked-r2-url") as HTMLInputElement;
+const linkedR2Token = document.getElementById("linked-r2-token") as HTMLInputElement;
+const linkedR2Space = document.getElementById("linked-r2-space") as HTMLInputElement;
+const linkedTestBtn = document.getElementById("linked-test") as HTMLButtonElement;
+const linkedTestResult = document.getElementById("linked-test-result") as HTMLSpanElement;
+const linkedCancelBtn = document.getElementById("linked-cancel") as HTMLButtonElement;
+const linkedAddBtn = document.getElementById("linked-add") as HTMLButtonElement;
 const errorEl = document.getElementById("error") as HTMLParagraphElement;
+const storageErrorEl = document.getElementById("storage-error") as HTMLDivElement;
+const storageErrorText = document.getElementById("storage-error-text") as HTMLParagraphElement;
 const listEl = document.getElementById("list") as HTMLUListElement;
 const statusSpinner = document.getElementById("status-spinner") as HTMLSpanElement;
 const statusText = document.getElementById("status-text") as HTMLSpanElement;
@@ -100,7 +115,14 @@ let categoryInput:
 let pendingImport: { files: Array<{ name: string; text: string }>; confirm: boolean } | null = null;
 let savableCount = 0;
 let canvasSelectionCount = 0;
-let usage = { used: 0, quota: 0 };
+/** `quota: null` は上限の無い保存先（共有カテゴリの R2）。 */
+let usage: { used: number; quota: number | null } = { used: 0, quota: 0 };
+/** 共有カテゴリ。名前はこの人の一覧での表示名（TEMPLATES で受け取る）。 */
+let linkedCategories: LinkedCategoryInfo[] = [];
+/** プラグインに最後に伝えた「今見ているカテゴリ」。変わったときだけ VIEW_CATEGORY を送る。 */
+let viewedCategory = "";
+let linkedTesting = false;
+let linkedAdding = false;
 /** 保存中の「画像を含めるか」の確認。開いている間だけ保持する。 */
 let imageQuestion: { count: number; bytes: number; remaining: number; tooLarge: boolean } | null = null;
 
@@ -144,18 +166,32 @@ function formatBytes(bytes: number): string {
 function showError(message: string | null): void {
   errorEl.hidden = !message;
   errorEl.textContent = message ?? "";
+  if (message === null) {
+    showStorageError(null);
+  }
+}
+
+/** 共有カテゴリの保存先に届かないときの案内。 */
+function showStorageError(message: string | null): void {
+  storageErrorEl.hidden = !message;
+  storageErrorText.textContent = message ?? "";
 }
 
 function renderStatus(): void {
   statusSpinner.hidden = !busyMessage;
   // 処理中は容量の枠をメッセージが使う。よってバーも一緒に隠す。
-  const showUsage = !busyMessage && usage.quota > 0;
+  const quota = usage.quota;
+  const showUsage = !busyMessage && quota !== null && quota > 0;
   statusText.textContent =
     busyMessage ??
-    (showUsage ? `使用量 ${formatBytes(usage.used)} / ${formatBytes(usage.quota)}` : "");
+    (showUsage
+      ? `使用量 ${formatBytes(usage.used)} / ${formatBytes(quota)}`
+      : quota === null
+        ? `Cloudflare R2 に保存 ${formatBytes(usage.used)}`
+        : "");
   usageBar.hidden = !showUsage;
   if (showUsage) {
-    const ratio = usage.used / usage.quota;
+    const ratio = usage.used / quota;
     // 上限を超えた分は丸めて 100% に留める（超過時は別のエラーで知らせる）。
     usageBarFill.style.width = `${(Math.min(1, ratio) * 100).toFixed(1)}%`;
     usageBar.classList.toggle("is-warning", ratio >= USAGE_WARNING_RATIO);
@@ -281,8 +317,14 @@ function showListMenuItems(): void {
   deleteCategoryConfirm.hidden = true;
   listMenuPopover.classList.remove("is-confirm");
   deleteCategoryBtn.disabled = saveCategory === "";
+  const linked = linkedInfo(saveCategory) !== undefined;
+  deleteCategoryBtn.textContent = linked ? "カテゴリを外す" : "カテゴリを削除";
   deleteCategoryBtn.title =
-    saveCategory === "" ? "未設定は削除できません" : `カテゴリ「${saveCategory}」を削除`;
+    saveCategory === ""
+      ? "未設定は削除できません"
+      : linked
+        ? `共有カテゴリ「${saveCategory}」を一覧から外す（保存先のデータは残ります）`
+        : `カテゴリ「${saveCategory}」を削除`;
 }
 
 /** 消える対象。そのカテゴリのグループと中身、そのカテゴリのテンプレート。 */
@@ -312,6 +354,19 @@ function syncCategoryToggle(): void {
     `保存するカテゴリを選ぶ（いま ${categoryLabel(saveCategory)}）`
   );
   categoryToggleBtn.classList.toggle("is-active", saveCategory !== "");
+  // 共有カテゴリは保存先が別なので、切り替えたらプラグインに読み込み直してもらう。
+  if (saveCategory !== viewedCategory) {
+    viewedCategory = saveCategory;
+    postToPlugin({ type: "VIEW_CATEGORY", category: saveCategory });
+  }
+}
+
+function linkedInfo(name: string): LinkedCategoryInfo | undefined {
+  return linkedCategories.find((link) => link.name === name);
+}
+
+function providerTag(provider: LinkedCategoryInfo["provider"]): string {
+  return provider === "r2" ? "R2" : "Drive";
 }
 
 /** Rebuilt on every open so the chosen category keeps its mark. */
@@ -332,6 +387,14 @@ function buildCategoryItems(): void {
     item.setAttribute("aria-checked", current ? "true" : "false");
     item.classList.toggle("is-selected", current);
     item.textContent = option.label;
+    const link = linkedInfo(option.value);
+    if (link) {
+      const tag = document.createElement("span");
+      tag.className = "category-source-tag";
+      tag.textContent = providerTag(link.provider);
+      item.title = `共有カテゴリ（${link.label}）`;
+      item.append(tag);
+    }
     item.addEventListener("click", (event) => {
       event.stopPropagation();
       chooseSaveCategory(option.value);
@@ -1672,15 +1735,25 @@ deleteCategoryBtn.addEventListener("click", (event) => {
   if (saveCategory === "") {
     return;
   }
-  const { templateIds, groupIds } = categoryDeletionTargets(saveCategory);
-  const parts = [
-    templateIds.size > 0 ? `テンプレート ${templateIds.size} 件` : "",
-    groupIds.length > 0 ? `グループ ${groupIds.length} 件` : "",
-  ].filter(Boolean);
-  deleteCategoryText.textContent =
-    parts.length > 0
-      ? `「${saveCategory}」と中の${parts.join("・")}を削除します`
-      : `「${saveCategory}」を削除します`;
+  const linked = linkedInfo(saveCategory) !== undefined;
+  if (linked) {
+    // 共有カテゴリは登録を外すだけ。ほかの人も使っているので中身は消さない。
+    deleteCategoryText.textContent = `「${saveCategory}」をこの一覧から外します`;
+    deleteCategoryNote.textContent = "保存先のデータは消えません。もう一度追加すれば戻せます";
+    deleteCategoryOkBtn.textContent = "外す";
+  } else {
+    const { templateIds, groupIds } = categoryDeletionTargets(saveCategory);
+    const parts = [
+      templateIds.size > 0 ? `テンプレート ${templateIds.size} 件` : "",
+      groupIds.length > 0 ? `グループ ${groupIds.length} 件` : "",
+    ].filter(Boolean);
+    deleteCategoryText.textContent =
+      parts.length > 0
+        ? `「${saveCategory}」と中の${parts.join("・")}を削除します`
+        : `「${saveCategory}」を削除します`;
+    deleteCategoryNote.textContent = "元に戻せません。残すなら先に「すべて書き出す」で保存";
+    deleteCategoryOkBtn.textContent = "削除";
+  }
   listMenuItems.hidden = true;
   deleteCategoryConfirm.hidden = false;
   listMenuPopover.classList.add("is-confirm");
@@ -1710,6 +1783,94 @@ deleteCategoryOkBtn.addEventListener("click", (event) => {
   saveCategory = "";
   syncCategoryToggle();
   renderList();
+});
+
+/* ------------------------------ 共有カテゴリ ------------------------------ */
+
+/** R2 の入力欄から保存先を作る。足りなければ null（整えるのはプラグイン側）。 */
+function readR2Inputs(): R2Source | null {
+  const endpoint = linkedR2Url.value.trim();
+  const token = linkedR2Token.value.trim();
+  if (!endpoint || !token) {
+    return null;
+  }
+  return { provider: "r2", endpoint, token, space: linkedR2Space.value.trim() || "default" };
+}
+
+function setLinkedTestResult(message: string, tone: "ok" | "error" | null = null): void {
+  linkedTestResult.textContent = message;
+  linkedTestResult.classList.toggle("is-ok", tone === "ok");
+  linkedTestResult.classList.toggle("is-error", tone === "error");
+}
+
+function syncLinkedDialog(): void {
+  const ready = readR2Inputs() !== null;
+  linkedTestBtn.disabled = !ready || linkedTesting || linkedAdding;
+  linkedAddBtn.disabled = !ready || linkedAdding;
+}
+
+function openLinkedDialog(): void {
+  closeAllPopups();
+  for (const input of [linkedNameInput, linkedR2Url, linkedR2Token, linkedR2Space]) {
+    input.value = "";
+  }
+  linkedTesting = false;
+  linkedAdding = false;
+  setLinkedTestResult("");
+  syncLinkedDialog();
+  linkedDialog.hidden = false;
+  linkedNameInput.focus();
+}
+
+function closeLinkedDialog(): void {
+  linkedDialog.hidden = true;
+  listMenuToggleBtn.focus();
+}
+
+addLinkedCategoryBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  openLinkedDialog();
+});
+
+[linkedR2Url, linkedR2Token, linkedR2Space].forEach((input) => {
+  input.addEventListener("input", () => {
+    setLinkedTestResult("");
+    syncLinkedDialog();
+  });
+});
+
+linkedTestBtn.addEventListener("click", () => {
+  linkedTesting = true;
+  setLinkedTestResult("確認しています…");
+  syncLinkedDialog();
+  postToPlugin({ type: "STORAGE_TEST", source: readR2Inputs() });
+});
+
+linkedAddBtn.addEventListener("click", () => {
+  const source = readR2Inputs();
+  if (!source) {
+    return;
+  }
+  linkedAdding = true;
+  setLinkedTestResult("保存先を確認しています…");
+  syncLinkedDialog();
+  postToPlugin({ type: "ADD_LINKED_CATEGORY", name: linkedNameInput.value.trim(), source });
+});
+
+linkedCancelBtn.addEventListener("click", closeLinkedDialog);
+
+linkedDialog.addEventListener("click", (event) => {
+  // カードの外（背面）を押したら閉じる。
+  if (event.target === linkedDialog) {
+    closeLinkedDialog();
+  }
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !linkedDialog.hidden) {
+    event.preventDefault();
+    closeLinkedDialog();
+  }
 });
 
 importBtn.addEventListener("click", () => importFileInput.click());
@@ -1822,6 +1983,8 @@ window.onmessage = (event: MessageEvent) => {
       tree = msg.tree;
       // 容量表示はここでしか受け取らない。外し忘れると表示されない。
       usage = { used: msg.usedBytes, quota: msg.quotaBytes };
+      // 一覧が届いたなら保存先には届いている。
+      showStorageError(null);
       if (isViewMode(msg.viewMode)) {
         viewMode = msg.viewMode;
         syncViewModeToggle();
@@ -1841,6 +2004,7 @@ window.onmessage = (event: MessageEvent) => {
       }
       // カテゴリはこのメッセージでしか届かない。開いていたら作り直す。
       categories = msg.categories ?? [];
+      linkedCategories = msg.linked ?? [];
       if (saveCategory !== "" && !categories.includes(saveCategory)) {
         saveCategory = "";
         syncCategoryToggle();
@@ -1881,6 +2045,32 @@ window.onmessage = (event: MessageEvent) => {
       break;
     case "ERROR":
       showError(msg.message);
+      break;
+    case "STORAGE_TEST_RESULT":
+      linkedTesting = false;
+      setLinkedTestResult(msg.message, msg.ok ? "ok" : "error");
+      syncLinkedDialog();
+      break;
+    case "LINKED_CATEGORY_RESULT":
+      linkedAdding = false;
+      if (msg.ok && msg.name) {
+        linkedDialog.hidden = true;
+        if (!categories.includes(msg.name)) {
+          categories = [...categories, msg.name];
+        }
+        // 追加したカテゴリをそのまま開く。中身はプラグインが読み込んで送ってくる。
+        saveCategory = msg.name;
+        syncCategoryToggle();
+        renderList();
+      } else {
+        setLinkedTestResult(msg.message ?? "", "error");
+        syncLinkedDialog();
+      }
+      break;
+    case "STORAGE_ERROR":
+      // 黙ってローカルに戻さず、設定画面で選び直してもらう。
+      errorEl.hidden = true;
+      showStorageError(msg.message);
       break;
   }
 };

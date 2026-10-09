@@ -1,0 +1,11 @@
+name = "cb-template-palette-r2"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+# `npx wrangler r2 bucket create cb-template-palette` で作ったバケット名に合わせる。
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "cb-template-palette"
+
+# 合言葉は `npx wrangler secret put ACCESS_TOKEN` で入れる（このファイルには書かない）。
+#   ACCESS_TOKEN  プラグインに入力するアクセストークン。カンマ区切りで複数を許可できる

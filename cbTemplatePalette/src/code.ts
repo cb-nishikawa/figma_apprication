@@ -13,8 +13,9 @@ import {
   serializeComponentTemplate,
   serializeSelection,
 } from "./serialize";
+import { isMetadata } from "./jsonCodec";
+import { METADATA_KEY, adapterForSource, normalizeSource, sameSource, sourceErrorMessage, testSource } from "./sources";
 import {
-  QUOTA_BYTES,
   QuotaExceededError,
   addCategory,
   decodeItem,
@@ -33,6 +34,23 @@ import {
   updateTemplate,
   usedBytes,
 } from "./storage";
+import { StorageAccessError, storage } from "./storageAdapter";
+import {
+  activeStore,
+  currentViewCategory,
+  enqueue,
+  homeStore,
+  initStores,
+  linkByName,
+  linkedCategories,
+  linkedCategoryInfo,
+  setLinkedCategories,
+  setViewCategory,
+  storeForCategory,
+  viewStore,
+  withStore,
+  type Store,
+} from "./stores";
 import {
   addGroup,
   appendMissingItems,
@@ -48,6 +66,7 @@ import {
 } from "./tree";
 import {
   IMPORT_CATEGORY_NAME,
+  NO_CATEGORY,
   isImportMode,
   isViewMode,
   TEMPLATE_FILE_FORMAT,
@@ -59,6 +78,8 @@ import {
   type StoredTemplateV3,
   type TemplateContent,
   type TemplateFile,
+  type TemplateGroup,
+  type TemplateItem,
   type TemplateMeta,
   type ViewMode,
 } from "./types";
@@ -127,16 +148,30 @@ function postTemplates(index: TemplateMeta[]): Promise<void> {
   return postTemplatesWithTree(index, loadTree(index));
 }
 
+/**
+ * 今使っている保存先の一覧を送る。共有カテゴリの保存先なら、テンプレートとグループに
+ * そのカテゴリ名を付ける（保存先の中のカテゴリ名は人によって違うので使わない）。
+ */
 async function postTemplatesWithTree(index: TemplateMeta[], tree: Promise<ListNode[]>): Promise<void> {
   const resolvedTree = await tree;
+  const store = activeStore();
+  const link = store.link;
+  if (!link) {
+    homeCategories = await listCategories(index, resolvedTree);
+  }
+  const linkedNames = linkedCategories().map((entry) => entry.name);
+  listedStoreKey = store.key;
   postToUi({
     type: "TEMPLATES",
-    templates: index,
-    tree: resolvedTree,
+    templates: link ? index.map((meta) => ({ ...meta, category: link.name })) : index,
+    tree: link
+      ? resolvedTree.map((node) => (isGroup(node) ? { ...node, category: link.name } : node))
+      : resolvedTree,
     viewMode: await loadViewMode(),
-    categories: await listCategories(index, resolvedTree),
+    categories: [...new Set([...homeCategories.filter((name) => !linkedNames.includes(name)), ...linkedNames])],
+    linked: linkedCategoryInfo(),
     usedBytes: usedBytes(index),
-    quotaBytes: QUOTA_BYTES,
+    quotaBytes: storage().quotaBytes,
   });
 }
 
@@ -318,7 +353,9 @@ async function handleSave(includeImages?: boolean, category?: string): Promise<v
     if (hashes.length > 0 && includeImages === undefined) {
       // 画像を含めるか聞くまで保存しない。
       const bytes = await collectImageBytes(hashes);
-      const remaining = Math.max(QUOTA_BYTES - usedBytes(await loadIndex()), 0);
+      const quota = storage().quotaBytes;
+      const remaining =
+        quota === null ? Number.MAX_SAFE_INTEGER : Math.max(quota - usedBytes(await loadIndex()), 0);
       const size = totalBytes(bytes);
       postToUi({
         type: "ASK_IMAGES",
@@ -961,149 +998,432 @@ async function loadViewMode(): Promise<ViewMode> {
   return isViewMode(stored) ? stored : "detail";
 }
 
+/* ------------------------------ 保存先 ------------------------------ */
+
+const R2_INPUT_MESSAGE = "Worker の URL・アクセストークン・スペース名を入力してください";
+
+/** 保存先ごとに 1 回、一覧を開いたときにサムネイルを作り直す。 */
+const thumbnailsRefreshed = new Set<string>();
+/** UI に最後に一覧を送った保存先。カテゴリを切り替えても保存先が同じなら送り直さない。 */
+let listedStoreKey: string | null = null;
+/** ローカルのカテゴリ。共有カテゴリを見ている間もカテゴリのメニューに出すため覚えておく。 */
+let homeCategories: string[] = [];
+
+function storageErrorMessage(err: StorageAccessError): string {
+  const message = sourceErrorMessage(err.kind);
+  return err.category ? `共有カテゴリ「${err.category}」\n${message}` : message;
+}
+
+/** 今使っている保存先の一覧を送る。保存先ごとに 1 回だけサムネイルも作り直す。 */
+async function listTemplates(): Promise<void> {
+  const store = activeStore();
+  const remote = store.adapter.type !== "local";
+  if (remote) {
+    postToUi({ type: "BUSY", message: "Cloudflare R2 から読み込んでいます…" });
+  }
+  try {
+    await postTemplates(await loadIndex());
+  } finally {
+    if (remote) {
+      postToUi({ type: "BUSY", message: null });
+    }
+  }
+  postSelectionState();
+  if (!thumbnailsRefreshed.has(store.key)) {
+    thumbnailsRefreshed.add(store.key);
+    await refreshThumbnails();
+  }
+}
+
+/** 今 UI で見ているカテゴリの保存先の一覧を送り直す。 */
+async function postViewTemplates(): Promise<void> {
+  await withStore(viewStore(), async () => postTemplates(await loadIndex()));
+}
+
+async function handleStorageTest(raw: unknown): Promise<void> {
+  const source = normalizeSource(raw);
+  if (!source) {
+    postToUi({ type: "STORAGE_TEST_RESULT", ok: false, message: R2_INPUT_MESSAGE });
+    return;
+  }
+  const failure = await testSource(source);
+  postToUi({
+    type: "STORAGE_TEST_RESULT",
+    ok: failure === null,
+    message: failure === null ? "接続成功" : sourceErrorMessage(failure),
+  });
+}
+
+/* ------------------------------ 共有カテゴリ ------------------------------ */
+
+function categoryNameTaken(name: string, except?: string): boolean {
+  if (name === NO_CATEGORY) {
+    return true;
+  }
+  const names = [...homeCategories, ...linkedCategories().map((link) => link.name)];
+  return names.some((entry) => entry === name && entry !== except);
+}
+
+/**
+ * 共有カテゴリを足す。保存先を確かめ、印（metadata.json）に名前が無ければ書いておく
+ * （他の人が同じ保存先を足すときの名前の初期値になる）。
+ */
+async function handleAddLinkedCategory(rawName: string, raw: unknown): Promise<void> {
+  const fail = (message: string) => postToUi({ type: "LINKED_CATEGORY_RESULT", ok: false, message });
+  const source = normalizeSource(raw);
+  if (!source) {
+    fail(R2_INPUT_MESSAGE);
+    return;
+  }
+  const existing = linkedCategories().find((link) => sameSource(link.source, source));
+  if (existing) {
+    fail(`この保存先は、共有カテゴリ「${existing.name}」としてすでに追加されています`);
+    return;
+  }
+  const adapter = adapterForSource(source);
+  let metadata: unknown;
+  try {
+    await adapter.verify();
+    metadata = await adapter.get(METADATA_KEY);
+  } catch (err) {
+    fail(sourceErrorMessage(err instanceof StorageAccessError ? err.kind : "network"));
+    return;
+  }
+  const stored = isMetadata(metadata) ? metadata : null;
+  const name = rawName.trim() || stored?.name?.trim() || source.space;
+  if (categoryNameTaken(name)) {
+    fail(`「${name}」というカテゴリはすでにあります。別の名前にしてください`);
+    return;
+  }
+  if (stored && !stored.name) {
+    await adapter.set(METADATA_KEY, { ...stored, name }).catch(() => undefined);
+  }
+  await setLinkedCategories([...linkedCategories(), { id: newId(), name, source }]);
+  postToUi({ type: "LINKED_CATEGORY_RESULT", ok: true, name });
+  figma.notify(`共有カテゴリ「${name}」を追加しました`);
+  await postViewTemplates();
+}
+
+/** 共有カテゴリを外す。登録を消すだけで、保存先のデータには触れない。 */
+async function handleUnlinkCategory(name: string): Promise<void> {
+  const link = linkByName(name);
+  if (!link) {
+    return;
+  }
+  if (currentViewCategory() === name) {
+    setViewCategory("");
+  }
+  thumbnailsRefreshed.delete(`link:${link.id}`);
+  await setLinkedCategories(linkedCategories().filter((entry) => entry.id !== link.id));
+  figma.notify(`共有カテゴリ「${name}」を外しました（保存先のデータはそのまま残っています）`);
+  await withStore(viewStore(), listTemplates);
+}
+
+async function handleRenameCategory(from: string, to: string): Promise<void> {
+  const link = linkByName(from);
+  if (link || linkByName(to)) {
+    // 共有カテゴリの名前は、自分の端末での表示名だけ。まとめる（重ねる）ことはしない。
+    if (!link || categoryNameTaken(to, from)) {
+      postToUi({ type: "ERROR", message: `「${to}」というカテゴリはすでにあります。別の名前にしてください` });
+      return;
+    }
+    await setLinkedCategories(linkedCategories().map((entry) => (entry.id === link.id ? { ...entry, name: to } : entry)));
+    if (currentViewCategory() === from) {
+      setViewCategory(to);
+    }
+    await postViewTemplates();
+    return;
+  }
+  if (currentViewCategory() === from) {
+    setViewCategory(to);
+  }
+  await withStore(homeStore(), async () => {
+    await renameCategory(from, to);
+  });
+  await postViewTemplates();
+}
+
+/* ------------------------------ 保存先をまたぐ移動 ------------------------------ */
+
+/** 移動先の保存先でのカテゴリの値。共有カテゴリはそのカテゴリ名、未設定はキーなし。 */
+function categoryFor(store: Store, category: string | undefined): string | undefined {
+  return store.link ? store.link.name : category;
+}
+
+/**
+ * テンプレート（とグループ）を別の保存先へ移す。移動先に保存しきってから移動元を消すので、
+ * 途中で失敗しても移動元は残る（移動先に一部が増えることはある）。
+ */
+async function moveAcross(
+  from: Store,
+  to: Store,
+  ids: string[],
+  group: TemplateGroup | null,
+  category: string | undefined
+): Promise<void> {
+  const entries = await withStore(from, async () => {
+    const index = await loadIndex();
+    const found: Array<{ meta: TemplateMeta; item: TemplateItem }> = [];
+    for (const id of ids) {
+      const meta = index.find((entry) => entry.id === id);
+      const item = meta ? await loadItem(id) : null;
+      if (meta && item) {
+        found.push({ meta, item });
+      }
+    }
+    return found;
+  });
+  const targetCategory = categoryFor(to, category);
+  await withStore(to, async () => {
+    let index = await loadIndex();
+    const quota = storage().quotaBytes;
+    const adding = entries.reduce((sum, entry) => sum + (entry.meta.byteSize || 0), 0);
+    if (quota !== null && usedBytes(index) + adding > quota) {
+      throw new QuotaExceededError();
+    }
+    const taken = new Set(index.map((meta) => meta.id));
+    const movedIds: string[] = [];
+    // saveTemplate はルートの先頭に足すので、後ろから入れて元の並びにする。
+    for (const { meta, item } of [...entries].reverse()) {
+      const id = taken.has(meta.id) ? newId() : meta.id;
+      const moved: TemplateMeta = { ...meta, id };
+      delete moved.category;
+      index = await saveTemplate(targetCategory ? { ...moved, category: targetCategory } : moved, item);
+      movedIds.unshift(id);
+    }
+    if (group) {
+      const tree = await loadTree(index);
+      const groupId = listGroups(tree).some((entry) => entry.id === group.id) ? newId() : group.id;
+      await saveTree(
+        addGroup(removeItems(tree, ...movedIds), {
+          type: "group",
+          id: groupId,
+          name: group.name,
+          items: movedIds,
+          ...(targetCategory ? { category: targetCategory } : {}),
+        })
+      );
+    }
+  });
+  await withStore(from, async () => {
+    await deleteTemplates(
+      entries.map((entry) => entry.meta.id),
+      group ? [group.id] : []
+    );
+  });
+  figma.notify(`「${targetCategory ?? NO_CATEGORY}」に移動しました`);
+}
+
+/** テンプレート 1 件のカテゴリを変える。保存先が変わるなら移動する。 */
+async function changeTemplateCategory(id: string, rawCategory: string | null): Promise<boolean> {
+  const category = rawCategory?.trim() || undefined;
+  const from = activeStore();
+  const to = storeForCategory(category);
+  if (to.key === from.key) {
+    return false;
+  }
+  await moveAcross(from, to, [id], null, category);
+  await postViewTemplates();
+  return true;
+}
+
+/* ------------------------------ メッセージ ------------------------------ */
+
+/** ストレージを触らないメッセージ。キューを待たずにすぐ処理する（接続テストで一覧が止まらないように）。 */
+async function handleDirect(msg: UiToPluginMessage): Promise<boolean> {
+  switch (msg.type) {
+    case "STORAGE_TEST":
+      await handleStorageTest(msg.source);
+      return true;
+    case "CLEAR_CANVAS_SELECTION":
+      // Assigning an already empty selection fires no selectionchange, which would
+      // leave the flag set and mislabel the next user selection as the plugin's.
+      if (figma.currentPage.selection.length > 0) {
+        pluginInitiatedSelection = true;
+        figma.currentPage.selection = [];
+      }
+      return true;
+    case "SET_VIEW_MODE":
+      // 一覧の見え方だけなので、並び順の写し直しはしない。
+      if (isViewMode(msg.mode)) {
+        void figma.clientStorage.setAsync(VIEW_MODE_STORAGE_KEY, msg.mode);
+      }
+      return true;
+    case "RESIZE_UI": {
+      const height = clampUiHeight(msg.height);
+      figma.ui.resize(UI_WIDTH, height);
+      void figma.clientStorage.setAsync(UI_HEIGHT_STORAGE_KEY, height);
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+/** ストレージを触るメッセージ。キューの中で、今見ている保存先を使っている。 */
+async function handleStorageMessage(msg: UiToPluginMessage): Promise<void> {
+  switch (msg.type) {
+    case "LIST":
+      await listTemplates();
+      break;
+    case "VIEW_CATEGORY": {
+      setViewCategory(typeof msg.category === "string" ? msg.category : "");
+      const store = viewStore();
+      if (store.key !== listedStoreKey) {
+        await withStore(store, listTemplates);
+      }
+      break;
+    }
+    case "ADD_LINKED_CATEGORY":
+      await handleAddLinkedCategory(typeof msg.name === "string" ? msg.name : "", msg.source);
+      break;
+    case "SAVE_SELECTION":
+      // 保存先はカテゴリで決まる（共有カテゴリならその保存先）。
+      await withStore(storeForCategory(msg.category), () => handleSave(msg.includeImages, msg.category));
+      break;
+    case "PLACE":
+      await handlePlace(msg.id);
+      break;
+    case "RENAME":
+      await handleRename(msg.id, msg.name);
+      break;
+    case "DELETE":
+      await postTemplates(await deleteTemplates([msg.id]));
+      break;
+    case "EXPORT":
+      await handleExport(msg.ids);
+      break;
+    case "EXPORT_GROUP":
+      await handleExportGroup(msg.id);
+      break;
+    case "IMPORT": {
+      const mode = isImportMode(msg.mode) ? msg.mode : "append";
+      // 「カテゴリにして追加」は新しい通常のカテゴリになるので、ローカルへ入れる。
+      if (mode === "category") {
+        await withStore(homeStore(), () => handleImport(msg.files, mode));
+      } else {
+        await handleImport(msg.files, mode);
+      }
+      break;
+    }
+    case "ADD_GROUP": {
+      const group = {
+        type: "group" as const,
+        id: msg.id,
+        name: msg.name.trim() || "グループ",
+        items: [],
+        ...(msg.category?.trim() ? { category: msg.category.trim() } : {}),
+      };
+      await commitTree(await loadIndex(), (tree) => addGroup(tree, group));
+      break;
+    }
+    case "RENAME_GROUP": {
+      const name = msg.name.trim();
+      if (name) {
+        await commitTree(await loadIndex(), (tree) => renameGroup(tree, msg.id, name));
+      }
+      break;
+    }
+    case "DELETE_GROUP":
+      await handleDeleteGroup(msg.id);
+      break;
+    case "ADD_CATEGORY": {
+      // カテゴリのレジストリはローカルにある。
+      const name = msg.name.trim();
+      if (name && !categoryNameTaken(name)) {
+        await withStore(homeStore(), () => addCategory(name));
+        await postViewTemplates();
+      }
+      break;
+    }
+    case "DELETE_CATEGORY": {
+      const name = msg.name.trim();
+      if (!name) {
+        break;
+      }
+      if (linkByName(name)) {
+        await handleUnlinkCategory(name);
+      } else {
+        await withStore(homeStore(), () => handleDeleteCategory(name));
+      }
+      break;
+    }
+    case "RENAME_CATEGORY": {
+      const from = msg.from.trim();
+      const to = msg.to.trim();
+      if (from && to && from !== to) {
+        await handleRenameCategory(from, to);
+      }
+      break;
+    }
+    case "SET_CATEGORY": {
+      if (await changeTemplateCategory(msg.id, msg.category)) {
+        break;
+      }
+      // 未設定はキーごと落とすと `category: undefined` になるが、表示も
+      // 書き出しも「無し」と同じ扱いになる。
+      const category = msg.category?.trim() || undefined;
+      await postTemplates(await updateTemplate(msg.id, { category }));
+      break;
+    }
+    case "SET_GROUP_CATEGORY": {
+      // 一覧はテンプレートのカテゴリで絞るので、中のテンプレートも揃えないと
+      // グループが今のカテゴリに残って見える。
+      const category = msg.category?.trim() || undefined;
+      const tree = await loadTree(await loadIndex());
+      const group = listGroups(tree).find((entry) => entry.id === msg.id);
+      const to = storeForCategory(category);
+      if (group && to.key !== activeStore().key) {
+        await moveAcross(activeStore(), to, group.items, group, category);
+        await postViewTemplates();
+        break;
+      }
+      const index = await setTemplatesCategory(group ? group.items : [], category);
+      await postTemplatesWithTree(index, saveTree(setGroupCategory(tree, msg.id, category)));
+      break;
+    }
+    case "TOGGLE_GROUP": {
+      await commitTree(await loadIndex(), (tree) => setGroupCollapsed(tree, msg.id, msg.collapsed));
+      break;
+    }
+    case "MOVE": {
+      const { nodeId, groupId, index: slot } = msg;
+      // 別の保存先のカテゴリへは、移動先のルートに移す（移動先のグループは読み込んでいない）。
+      if (msg.category !== undefined && (await changeTemplateCategory(nodeId, msg.category))) {
+        break;
+      }
+      // カテゴリと並びを 1 回で書いて送る。別メッセージにすると返事の順番が入れ替わり、
+      // 古い一覧が後から届くことがある。
+      const index =
+        msg.category === undefined
+          ? await loadIndex()
+          : await updateTemplate(nodeId, { category: msg.category?.trim() || undefined });
+      await commitTree(index, (tree) => moveNode(tree, nodeId, groupId, slot));
+      break;
+    }
+  }
+}
+
 async function main(): Promise<void> {
   figma.showUI(__html__, {
     width: UI_WIDTH,
     height: await initialHeight(),
     themeColors: false,
   });
+  const storageReady = initStores();
 
   // The UI sends LIST once it is ready; refresh then so BUSY messages are not lost.
-  let thumbnailsRefreshed = false;
   figma.ui.onmessage = async (msg: UiToPluginMessage) => {
     try {
-      switch (msg.type) {
-        case "LIST":
-          await postTemplates(await loadIndex());
-          postSelectionState();
-          if (!thumbnailsRefreshed) {
-            thumbnailsRefreshed = true;
-            await refreshThumbnails();
-          }
-          break;
-        case "SAVE_SELECTION":
-          await handleSave(msg.includeImages, msg.category);
-          break;
-        case "PLACE":
-          await handlePlace(msg.id);
-          break;
-        case "RENAME":
-          await handleRename(msg.id, msg.name);
-          break;
-        case "DELETE":
-          await postTemplates(await deleteTemplates([msg.id]));
-          break;
-        case "EXPORT":
-          await handleExport(msg.ids);
-          break;
-        case "EXPORT_GROUP":
-          await handleExportGroup(msg.id);
-          break;
-        case "IMPORT":
-          await handleImport(msg.files, isImportMode(msg.mode) ? msg.mode : "append");
-          break;
-        case "CLEAR_CANVAS_SELECTION": {
-          // Assigning an already empty selection fires no selectionchange, which would
-          // leave the flag set and mislabel the next user selection as the plugin's.
-          if (figma.currentPage.selection.length > 0) {
-            pluginInitiatedSelection = true;
-            figma.currentPage.selection = [];
-          }
-          break;
-        }
-        case "ADD_GROUP": {
-          const group = {
-            type: "group" as const,
-            id: msg.id,
-            name: msg.name.trim() || "グループ",
-            items: [],
-            ...(msg.category?.trim() ? { category: msg.category.trim() } : {}),
-          };
-          await commitTree(await loadIndex(), (tree) => addGroup(tree, group));
-          break;
-        }
-        case "RENAME_GROUP": {
-          const name = msg.name.trim();
-          if (name) {
-            await commitTree(await loadIndex(), (tree) => renameGroup(tree, msg.id, name));
-          }
-          break;
-        }
-        case "DELETE_GROUP":
-          await handleDeleteGroup(msg.id);
-          break;
-        case "ADD_CATEGORY": {
-          const name = msg.name.trim();
-          if (name) {
-            await addCategory(name);
-            await postTemplates(await loadIndex());
-          }
-          break;
-        }
-        case "DELETE_CATEGORY": {
-          const name = msg.name.trim();
-          if (name) {
-            await handleDeleteCategory(name);
-          }
-          break;
-        }
-        case "RENAME_CATEGORY": {
-          const from = msg.from.trim();
-          const to = msg.to.trim();
-          if (from && to && from !== to) {
-            await postTemplates(await renameCategory(from, to));
-          }
-          break;
-        }
-        case "SET_CATEGORY": {
-          // 未設定はキーごと落とすと `category: undefined` になるが、表示も
-          // 書き出しも「無し」と同じ扱いになる。
-          const category = msg.category?.trim() || undefined;
-          await postTemplates(await updateTemplate(msg.id, { category }));
-          break;
-        }
-        case "SET_GROUP_CATEGORY": {
-          // 一覧はテンプレートのカテゴリで絞るので、中のテンプレートも揃えないと
-          // グループが今のカテゴリに残って見える。
-          const category = msg.category?.trim() || undefined;
-          const tree = await loadTree(await loadIndex());
-          const group = listGroups(tree).find((entry) => entry.id === msg.id);
-          const index = await setTemplatesCategory(group ? group.items : [], category);
-          await postTemplatesWithTree(index, saveTree(setGroupCategory(tree, msg.id, category)));
-          break;
-        }
-        case "TOGGLE_GROUP": {
-          await commitTree(await loadIndex(), (tree) =>
-            setGroupCollapsed(tree, msg.id, msg.collapsed)
-          );
-          break;
-        }
-        case "MOVE": {
-          const { nodeId, groupId, index: slot } = msg;
-          // カテゴリと並びを 1 回で書いて送る。別メッセージにすると返事の順番が入れ替わり、
-          // 古い一覧が後から届くことがある。
-          const index =
-            msg.category === undefined
-              ? await loadIndex()
-              : await updateTemplate(nodeId, { category: msg.category?.trim() || undefined });
-          await commitTree(index, (tree) => moveNode(tree, nodeId, groupId, slot));
-          break;
-        }
-        case "SET_VIEW_MODE": {
-          // 一覧の見え方だけなので、並び順の写し直しはしない。
-          if (isViewMode(msg.mode)) {
-            void figma.clientStorage.setAsync(VIEW_MODE_STORAGE_KEY, msg.mode);
-          }
-          break;
-        }
-        case "RESIZE_UI": {
-          const height = clampUiHeight(msg.height);
-          figma.ui.resize(UI_WIDTH, height);
-          void figma.clientStorage.setAsync(UI_HEIGHT_STORAGE_KEY, height);
-          break;
-        }
+      await storageReady;
+      if (!(await handleDirect(msg))) {
+        await enqueue(() => handleStorageMessage(msg));
       }
     } catch (err) {
+      if (err instanceof StorageAccessError) {
+        postToUi({ type: "STORAGE_ERROR", kind: err.kind, message: storageErrorMessage(err), category: err.category });
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       postToUi({ type: "ERROR", message: `エラーが発生しました: ${message}` });
     }

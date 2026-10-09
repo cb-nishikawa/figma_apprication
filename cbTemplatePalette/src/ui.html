@@ -100,6 +100,9 @@
                   <button id="add-category" class="row-menu-item" type="button" role="menuitem">
                     カテゴリを追加
                   </button>
+                  <button id="add-linked-category" class="row-menu-item" type="button" role="menuitem">
+                    共有カテゴリを追加…
+                  </button>
                   <button id="add-group" class="row-menu-item" type="button" role="menuitem">
                     グループを追加
                   </button>
@@ -114,7 +117,7 @@
                 </div>
                 <div id="delete-category-confirm" class="row-menu-confirm" hidden>
                   <p id="delete-category-text" class="row-menu-confirm-text"></p>
-                  <p class="row-menu-confirm-note">元に戻せません。残すなら先に「すべて書き出す」で保存</p>
+                  <p id="delete-category-note" class="row-menu-confirm-note">元に戻せません。残すなら先に「すべて書き出す」で保存</p>
                   <div class="row-menu-actions">
                     <button id="delete-category-cancel" class="row-menu-item" type="button">
                       キャンセル
@@ -129,6 +132,9 @@
           </div>
         </div>
         <p id="error" class="error" hidden></p>
+        <div id="storage-error" class="error storage-error" role="alert" hidden>
+          <p id="storage-error-text" class="storage-error-text"></p>
+        </div>
         <ul id="list" class="template-list" role="tree" aria-label="保存した要素"></ul>
       </section>
     </div>
@@ -247,6 +253,66 @@
           <button id="import-confirm-replace" class="btn-secondary is-danger" type="button">
             全て入れ替える
           </button>
+        </div>
+      </div>
+    </div>
+    <div id="linked-dialog" class="image-dialog" hidden>
+      <div
+        class="image-dialog-card settings-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="linked-dialog-title"
+      >
+        <p id="linked-dialog-title" class="image-dialog-title">共有カテゴリを追加</p>
+        <p class="settings-line">
+          Cloudflare R2 の保存先を 1 つのカテゴリとして足します。ほかの人と同じ保存先を追加すると、同じテンプレートを使えます。
+        </p>
+        <label class="settings-field">
+          <span class="settings-label">カテゴリ名</span>
+          <input
+            id="linked-name"
+            class="text-input"
+            type="text"
+            placeholder="空欄なら保存先の名前"
+            spellcheck="false"
+            autocomplete="off"
+          />
+        </label>
+        <div id="linked-r2" class="settings-section">
+          <label class="settings-field">
+            <span class="settings-label">Worker の URL</span>
+            <input
+              id="linked-r2-url"
+              class="text-input"
+              type="url"
+              placeholder="https://cb-template-palette-r2.xxxx.workers.dev"
+              spellcheck="false"
+              autocomplete="off"
+            />
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">アクセストークン</span>
+            <input id="linked-r2-token" class="text-input" type="password" autocomplete="off" />
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">スペース名</span>
+            <input
+              id="linked-r2-space"
+              class="text-input"
+              type="text"
+              placeholder="default"
+              spellcheck="false"
+              autocomplete="off"
+            />
+          </label>
+        </div>
+        <div class="settings-test">
+          <button id="linked-test" class="btn-secondary" type="button">接続テスト</button>
+          <span id="linked-test-result" class="settings-test-result" role="status"></span>
+        </div>
+        <div class="image-dialog-actions">
+          <button id="linked-cancel" class="btn-secondary" type="button">キャンセル</button>
+          <button id="linked-add" class="btn-primary" type="button">追加</button>
         </div>
       </div>
     </div>

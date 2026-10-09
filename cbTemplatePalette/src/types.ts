@@ -231,6 +231,46 @@ export const IMPORT_CATEGORY_NAME = "追加されたカテゴリ";
 /** 一覧に出すカテゴリ。`category` が無いテンプレートはこれに入る。 */
 export const NO_CATEGORY = "未設定";
 
+/**
+ * Cloudflare R2 の保存先。ユーザー（チーム）が自分で立てた Worker（cbTemplatePalette/r2-worker）を通す。
+ * `token` はその Worker の合言葉で、R2 の Access Key ではない。
+ */
+export interface R2Source {
+  provider: "r2";
+  /** Worker の URL（末尾の / なし）。 */
+  endpoint: string;
+  token: string;
+  /** バケットの中の置き場所の名前。同じスペースを指定した人どうしで同じデータになる。 */
+  space: string;
+}
+
+/** 外部の保存先 1 つ分。 */
+export type SourceConfig = R2Source;
+
+/** `local` は「未設定」と通常のカテゴリを置く端末の clientStorage。 */
+export type StorageType = "local" | "r2";
+
+/**
+ * 共有カテゴリ。カテゴリ 1 つが外部の保存先 1 つに対応し、中身はその保存先に置く。
+ * `name` は自分の端末での表示名（他の人とは違ってよい）。
+ */
+export interface LinkedCategory {
+  id: string;
+  name: string;
+  source: SourceConfig;
+}
+
+/** UI に渡す共有カテゴリの情報。トークンは渡さない。 */
+export interface LinkedCategoryInfo {
+  name: string;
+  provider: SourceConfig["provider"];
+  /** 保存先の説明（スペース名と Worker のホスト）。 */
+  label: string;
+}
+
+/** 失敗の種類。保存先の API のエラー文はユーザーに見せない。 */
+export type StorageErrorKind = "auth" | "folder" | "network";
+
 export const TEMPLATE_FILE_FORMAT = "cbTemplatePalette";
 
 export interface TemplateFile {

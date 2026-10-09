@@ -1,4 +1,5 @@
 import { gunzipSync, gzipSync, strFromU8, strToU8 } from "fflate";
+import { LOCAL_QUOTA_BYTES, storage } from "./storageAdapter";
 import { dropGroup, prependItem, reconcileTree, removeItems } from "./tree";
 import type {
   ListNode,
@@ -17,19 +18,19 @@ const TREE_KEY = "cbTemplatePalette.tree";
 const CATEGORIES_KEY = "cbTemplatePalette.categories";
 
 /** clientStorage allows roughly 5MB per plugin. */
-export const QUOTA_BYTES = 5 * 1024 * 1024;
+export const QUOTA_BYTES = LOCAL_QUOTA_BYTES;
 
 function itemKey(id: string): string {
   return `${ITEM_PREFIX}${id}`;
 }
 
 export async function loadIndex(): Promise<TemplateMeta[]> {
-  const stored = await figma.clientStorage.getAsync(INDEX_KEY);
+  const stored = await storage().get(INDEX_KEY);
   return Array.isArray(stored) ? (stored as TemplateMeta[]) : [];
 }
 
 async function saveIndex(index: TemplateMeta[]): Promise<void> {
-  await figma.clientStorage.setAsync(INDEX_KEY, index);
+  await storage().set(INDEX_KEY, index);
 }
 
 /**
@@ -39,12 +40,12 @@ async function saveIndex(index: TemplateMeta[]): Promise<void> {
  * another window at the same time) still lists every template.
  */
 export async function loadTree(index: TemplateMeta[]): Promise<ListNode[]> {
-  const stored = await figma.clientStorage.getAsync(TREE_KEY);
+  const stored = await storage().get(TREE_KEY);
   return reconcileTree(isListNodeArray(stored) ? stored : [], index.map((meta) => meta.id));
 }
 
 export async function saveTree(tree: ListNode[]): Promise<ListNode[]> {
-  await figma.clientStorage.setAsync(TREE_KEY, tree);
+  await storage().set(TREE_KEY, tree);
   return tree;
 }
 
@@ -66,7 +67,7 @@ function isListNodeArray(value: unknown): value is ListNode[] {
 }
 
 export async function loadItem(id: string): Promise<TemplateItem | null> {
-  const stored = await figma.clientStorage.getAsync(itemKey(id));
+  const stored = await storage().get(itemKey(id));
   if (!stored || typeof stored !== "object") {
     return null;
   }
@@ -142,15 +143,16 @@ export class QuotaExceededError extends Error {
 
 export async function saveTemplate(meta: TemplateMeta, item: TemplateItem): Promise<TemplateMeta[]> {
   const index = await loadIndex();
-  if (usedBytes(index) + meta.byteSize > QUOTA_BYTES) {
+  const quota = storage().quotaBytes;
+  if (quota !== null && usedBytes(index) + meta.byteSize > quota) {
     throw new QuotaExceededError();
   }
-  await figma.clientStorage.setAsync(itemKey(meta.id), item);
+  await storage().set(itemKey(meta.id), item);
   const next = [meta, ...index];
   try {
     await saveIndex(next);
   } catch (err) {
-    await figma.clientStorage.deleteAsync(itemKey(meta.id));
+    await storage().remove(itemKey(meta.id));
     throw err;
   }
   // After the index, so a rejected save cannot leave an entry that points at nothing.
@@ -166,7 +168,7 @@ export async function deleteTemplates(
   const gone = new Set(ids);
   const next = (await loadIndex()).filter((meta) => !gone.has(meta.id));
   await saveIndex(next);
-  await Promise.all([...gone].map((id) => figma.clientStorage.deleteAsync(itemKey(id))));
+  await Promise.all([...gone].map((id) => storage().remove(itemKey(id))));
   const kept = removeItems(await loadTree(next), ...gone);
   await saveTree(dropGroups.reduce(dropGroup, kept));
   return next;
@@ -183,7 +185,7 @@ export async function updateTemplate(
     return index;
   }
   if (item) {
-    await figma.clientStorage.setAsync(itemKey(id), item);
+    await storage().set(itemKey(id), item);
   }
   const next = index.map((meta) => (meta.id === id ? { ...meta, ...patch } : meta));
   await saveIndex(next);
@@ -194,7 +196,7 @@ export async function updateTemplate(
 
 /** レジストリにあるカテゴリ。まだ誰も使っていないものもここで残る。 */
 export async function loadCategories(): Promise<string[]> {
-  const stored = await figma.clientStorage.getAsync(CATEGORIES_KEY);
+  const stored = await storage().get(CATEGORIES_KEY);
   if (!Array.isArray(stored)) {
     return [];
   }
@@ -203,7 +205,7 @@ export async function loadCategories(): Promise<string[]> {
 
 async function saveCategories(names: string[]): Promise<string[]> {
   const unique = [...new Set(names.map((name) => name.trim()).filter((name) => name !== ""))];
-  await figma.clientStorage.setAsync(CATEGORIES_KEY, unique);
+  await storage().set(CATEGORIES_KEY, unique);
   return unique;
 }
 

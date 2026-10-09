@@ -1,4 +1,12 @@
-import type { ImportMode, ListNode, TemplateMeta, ViewMode } from "./types";
+import type {
+  ImportMode,
+  LinkedCategoryInfo,
+  ListNode,
+  SourceConfig,
+  StorageErrorKind,
+  TemplateMeta,
+  ViewMode,
+} from "./types";
 
 export type UiToPluginMessage =
   | { type: "LIST" }
@@ -50,7 +58,16 @@ export type UiToPluginMessage =
     }
   /** 一覧の見た目だけを切り替える。並び順やグループには影響しない。 */
   | { type: "SET_VIEW_MODE"; mode: ViewMode }
-  | { type: "RESIZE_UI"; height: number };
+  | { type: "RESIZE_UI"; height: number }
+  /** 「共有カテゴリを追加」で入力中の（まだ追加していない）保存先で確かめる。 */
+  | { type: "STORAGE_TEST"; source: SourceConfig | null }
+  /**
+   * UI でカテゴリを切り替えた。共有カテゴリならその保存先の一覧を、
+   * それ以外はローカルの一覧を返す（保存先が変わらなければ何も返さない）。
+   */
+  | { type: "VIEW_CATEGORY"; category: string }
+  /** 共有カテゴリを足す。`name` が空なら保存先の名前を使う。 */
+  | { type: "ADD_LINKED_CATEGORY"; name: string; source: SourceConfig };
 
 export type PluginToUiMessage =
   | {
@@ -60,10 +77,13 @@ export type PluginToUiMessage =
       tree: ListNode[];
       /** 一覧の見た目。UI ごとの好みなので、読み込み時に返す。 */
       viewMode: ViewMode;
-      /** 登録済みのカテゴリ（まだ誰も使っていないものも含む）。表示順。 */
+      /** 登録済みのカテゴリ（まだ誰も使っていないものも含む）。表示順。共有カテゴリも入る。 */
       categories: string[];
+      /** 共有カテゴリ（外部の保存先に中身があるカテゴリ）。 */
+      linked: LinkedCategoryInfo[];
       usedBytes: number;
-      quotaBytes: number;
+      /** 上限の無い保存先（R2）は null。 */
+      quotaBytes: number | null;
     }
   | {
       type: "SELECTION_STATE";
@@ -91,4 +111,9 @@ export type PluginToUiMessage =
     }
   | { type: "SAVED"; id: string }
   | { type: "EXPORT_DATA"; fileName: string; text: string }
-  | { type: "ERROR"; message: string };
+  | { type: "ERROR"; message: string }
+  | { type: "STORAGE_TEST_RESULT"; ok: boolean; message: string }
+  /** 共有カテゴリを足した結果。成功なら `name` が決まった名前。 */
+  | { type: "LINKED_CATEGORY_RESULT"; ok: boolean; name?: string; message?: string }
+  /** 共有カテゴリの保存先に届かない。`category` はそのカテゴリ名。 */
+  | { type: "STORAGE_ERROR"; kind: StorageErrorKind; message: string; category?: string };

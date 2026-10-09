@@ -1,0 +1,16 @@
+{
+  "name": "cb-template-palette-r2",
+  "version": "1.0.0",
+  "private": true,
+  "description": "テンプレパレットくんの保存先を Cloudflare R2 にするための Worker（各自・チームでデプロイする）",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "check": "tsc --noEmit && wrangler deploy --dry-run --outdir dist"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261006.1",
+    "typescript": "^5.8.2",
+    "wrangler": "^4.0.0"
+  }
+}

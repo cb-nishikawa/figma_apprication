@@ -7,6 +7,8 @@
   "editorType": ["figma"],
   "documentAccess": "dynamic-page",
   "networkAccess": {
-    "allowedDomains": ["none"]
+    "allowedDomains": ["https://*.workers.dev"],
+    "reasoning": "共有カテゴリ（Cloudflare R2）を追加したときだけ、ユーザーが自分でデプロイした R2 用の Worker（*.workers.dev）に接続します。",
+    "devAllowedDomains": ["http://localhost:8787"]
   }
 }
