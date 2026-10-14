@@ -195,6 +195,8 @@ interface BatchRequest {
   get: string[];
   put: Array<{ path: string; body: string }>;
   delete: string[];
+  /** スペースのファイルを全部消す（ほかの操作より先）。 */
+  clear: boolean;
 }
 
 function batchJson(body: Record<string, unknown>, status = 200): Response {
@@ -232,6 +234,7 @@ function parseBatch(value: unknown): BatchRequest | null {
     get: get as string[],
     put: put as Array<{ path: string; body: string }>,
     delete: del as string[],
+    clear: body.clear === true,
   };
 }
 
@@ -248,8 +251,9 @@ function placeholders(count: number, from: number): string {
 }
 
 /**
- * `{ token, get?, put?, delete? }` を 1 回で処理する。書き込み（削除 → 上書き）は 1 つのトランザクション、
+ * `{ token, get?, put?, delete?, clear? }` を 1 回で処理する。書き込み（全削除 → 削除 → 上書き）は 1 つのトランザクション、
  * 読み込みはその後に 1 文。何も無ければ ping として `app` だけを返す。
+ * `clear` を処理したら `cleared: true` を返す（clear を知らない Worker と見分けるため）。
  */
 async function handleBatch(request: Request, env: Env, rawSpace: string): Promise<Response> {
   if (Number(request.headers.get("content-length") ?? 0) > MAX_BATCH_BYTES) {
@@ -295,6 +299,9 @@ async function handleBatch(request: Request, env: Env, rawSpace: string): Promis
 
   const encoder = new TextEncoder();
   const statements: D1PreparedStatement[] = [];
+  if (parsed.clear) {
+    statements.push(env.DB.prepare("DELETE FROM objects WHERE space = ?1").bind(space));
+  }
   for (const group of chunked(dels as string[], MAX_PATHS_PER_STATEMENT)) {
     statements.push(
       env.DB.prepare(`DELETE FROM objects WHERE space = ?1 AND path IN (${placeholders(group.length, 2)})`).bind(
@@ -349,7 +356,7 @@ async function handleBatch(request: Request, env: Env, rawSpace: string): Promis
       objects[row.path] = (objects[row.path] ?? "") + row.body;
     }
   }
-  return batchJson({ ok: true, app: APP, objects });
+  return batchJson({ ok: true, app: APP, objects, ...(parsed.clear ? { cleared: true } : {}) });
 }
 
 function corsHeaders(): Record<string, string> {

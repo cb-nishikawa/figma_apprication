@@ -10,6 +10,8 @@ import type {
 
 export type UiToPluginMessage =
   | { type: "LIST" }
+  /** 今見ているカテゴリの一覧を保存先から読み直す（D1 の使い回しも捨てる）。 */
+  | { type: "RELOAD" }
   /**
    * `includeImages` は保存時に「画像を含める」を選んだときだけ true。
    * 画像が選択に含まれる場合は必ず UI が確認してから送るので、
@@ -33,6 +35,8 @@ export type UiToPluginMessage =
   | { type: "ADD_CATEGORY"; name: string }
   /** そのカテゴリのテンプレートとグループ（中身ごと）を消し、レジストリからも外す。 */
   | { type: "DELETE_CATEGORY"; name: string }
+  /** 共有カテゴリの保存先（D1 のスペース）のデータを全部消し、登録も外す。 */
+  | { type: "DELETE_LINKED_CATEGORY"; name: string }
   /** `to` が既存と重なると 1 つにまとまる。 */
   | { type: "RENAME_CATEGORY"; from: string; to: string }
   /** `category: null` で「未設定」に戻す。 */

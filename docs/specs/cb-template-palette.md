@@ -26,6 +26,7 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
    - 「名前を変更」は一覧の名前だけじゃなく、保存データの中の要素名も一緒に書き換える。あとサムネイルも描き直す（描けなかったときは前のまま）。キャンバス上の元要素には触れない
    - ルートが複数のテンプレートは、要素名がそれぞれ違うので名前を変えない（一律に同じ名にすると中身の区別がなくなる）
 5. 一覧の表示は「詳細」「一覧」「サムネイル」の 3 つに切り替える。絞り込みアイコンの左のボタンを押すとポップアップで選ぶ（後述）
+   - 表示切り替えの右（絞り込みの左）にリロードボタン（「一覧を読み直す」）を置く。押すと今見ているカテゴリの一覧を読み直す（`RELOAD`）。共有カテゴリでは 10 秒の使い回し（`StorageAdapter.forget`）を捨てて D1 から読み直す（1 回の呼び出し）。ローカルは clientStorage から出し直す。処理中は押せない
    - 詳細 = 今の見た目。48px のサムネイルと名前、そして情報行（大きさ / 要素数 / 容量）
    - 一覧 = サムネイル（32px）と名前のみ。1 カラム。行の高さは 44px になり、詳細モード（60px）より詰まる
    - サムネイル = サムネイルと名前のみ。2 カラム。サムネイルを大きくし、画像を上・名前を下に置く
@@ -61,7 +62,7 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
 
 - 「未設定」と通常のカテゴリは、常に `figma.clientStorage`（ユーザー単位・プラグイン単位。デバイス内に保存され、どのファイルからでも読める）。外部の保存先は共有カテゴリ（Cloudflare D1 のスペース）だけ（後述）
 - 容量の上限はプラグインごとに約 5MB（Figma の固定値で引き上げられない）。上限を超える保存は拒否する。共有カテゴリは 1 つ（D1 のスペース 1 つ）につき 20MB まで（[ADR-015](../ai/decisions/ADR-015-template-palette-image-compression-quota.md)）。超える保存・移動・読み込みはローカルと同じく断り、「保存容量の上限（約 20MB）を超えるため…」と出す。上限はプラグインの中だけで守る（Worker 側では見ない）
-- 使用量の文言は、ローカルが「使用量 3.2MB / 5.0MB」、共有カテゴリが「Cloudflare D1 使用量 3.2MB / 20.0MB」
+- 使用量の文言は、ローカル・共有カテゴリとも「使用量 3.2MB / 5.0MB」（共有カテゴリは上限が 20.0MB）
 - 使用量はフッターに出し、選択中の件数（`◯件を選択中`）より下の行に置く。`使用量 3.2MB / 5.0MB` の下に高さ 2px の細いバーを添える
   - 80% 以上のときはバーの塗りだけを `#b00020`（`.error` と同じ危険色）に変える。文言は変えない
   - 上限を超えたときは 100.0% に留める（超過したことは別のエラーで知らせる）
@@ -85,7 +86,7 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
 ### Cloudflare D1（[ADR-013](../ai/decisions/ADR-013-template-palette-d1.md)）
 
 - 各自（またはチーム）がデプロイする Worker（[`cbTemplatePalette/d1-worker/`](../../cbTemplatePalette/d1-worker/)）を経由する。プラグインには Worker の URL・アクセストークン・スペース名だけを入れ、Cloudflare の認証情報は置かない
-- プラグインが使う API は一括 API `POST /v1/spaces/<space>/batch` だけ（[ADR-017](../ai/decisions/ADR-017-template-palette-d1-batch.md)）。本文 `{ token, get?, put?: { path, body }[], delete? }`、応答 `{ ok: true, app: "cbTemplatePalette-d1", api: 2, objects: { <path>: 本文 | null } }`。削除と上書きを 1 つのトランザクションで行い、そのあと `get` を読む。`Content-Type: text/plain`・トークンは本文なので、CORS の事前確認（OPTIONS）は出ない
+- プラグインが使う API は一括 API `POST /v1/spaces/<space>/batch` だけ（[ADR-017](../ai/decisions/ADR-017-template-palette-d1-batch.md)）。本文 `{ token, get?, put?: { path, body }[], delete?, clear? }`（`clear: true` はスペースを丸ごと消し、応答に `cleared: true`。[ADR-018](../ai/decisions/ADR-018-template-palette-delete-shared.md)）、応答 `{ ok: true, app: "cbTemplatePalette-d1", api: 2, objects: { <path>: 本文 | null } }`。削除と上書きを 1 つのトランザクションで行い、そのあと `get` を読む。`Content-Type: text/plain`・トークンは本文なので、CORS の事前確認（OPTIONS）は出ない
   - 1 回 45 文（SELECT を含む）・`get` 90 個・本文全体 30MB まで（超えたら 413 / 400）
   - 旧 API（`GET /v1/ping`、`GET` / `PUT` / `DELETE /v1/spaces/<space>/objects/<path>`、`Authorization: Bearer <ACCESS_TOKEN>`）も残す。プラグインは使わない
 - Worker への呼び出しは、共有カテゴリを開くと 1 回（新しいスペースは 2 回）、保存・削除は 1 回（使い回しが切れていれば読み込みを足して 2 回）
@@ -133,6 +134,11 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
 - 共有カテゴリを選ぶと、その保存先から読み直す（読み込み中は「Cloudflare D1 から読み込んでいます…」）。保存もその保存先へ
 - 中のテンプレートは、保存先に書かれたカテゴリに関係なく共有カテゴリの名前で見せる。「名前を変更」は自分の一覧での表示名だけ変える
 - 「⋯」→「カテゴリを外す」（共有カテゴリのときだけこの名前）: 「「名前」をこの一覧から外します」「保存先のデータは消えません。もう一度追加すれば戻せます」で確かめ、登録だけを消す
+- 「⋯」→「共有カテゴリを削除」（「カテゴリを外す」の下。共有カテゴリを見ているときだけ）: 保存先の D1 のスペースのデータを丸ごと消し、登録も外す（[ADR-018](../ai/decisions/ADR-018-template-palette-delete-shared.md)）
+  - 確認「「名前」と Cloudflare D1 のデータ（テンプレート N 件）をすべて削除します」「同じスペースを使っているほかの人の一覧からも消えます。元に戻せません。残すなら先に「すべて書き出す」で保存」→「削除」
+  - `DELETE_LINKED_CATEGORY { name }` → 一括 API の `clear: true`（Worker が `DELETE FROM objects WHERE space = ?` で、一覧に載っていないファイルも消す）。処理中は「Cloudflare D1 から削除しています…」。成功したら通知「共有カテゴリ「名前」を削除しました」、見ていれば「未設定」に戻る
+  - 応答に `cleared: true` が無い（clear を知らない Worker）・トークン違い・届かないときは、登録を残し「共有カテゴリ「名前」を削除できませんでした。」と接続テストと同じ案内を出す
+  - ほかの人の登録は残る。その人が次に開くと空のスペースになり、`metadata.json` が作り直される
 - 別の保存先のカテゴリへの移動は、移動先に保存してから移動元を消す。移動メニューのグループは今見ている保存先のものだけ
 - 「カテゴリにして追加」の読み込みはローカルへ入れる。それ以外の読み込み・書き出しは今見ている保存先が対象
 - 共有カテゴリのエラーは、頭に「共有カテゴリ「名前」」を付けて出す

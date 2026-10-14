@@ -14,6 +14,8 @@ export interface StorageAdapter {
    * 無ければ storage.ts が set / remove を 1 つずつ呼ぶ。
    */
   setMany?(entries: Array<{ key: string; value?: unknown }>): Promise<void>;
+  /** 読み込み結果の使い回しを捨て、次の読み込みで保存先から読み直す。使い回しのある保存先（D1）だけ。 */
+  forget?(): void;
   /** 保存できる上限。上限が無い保存先は null。 */
   readonly quotaBytes: number | null;
 }

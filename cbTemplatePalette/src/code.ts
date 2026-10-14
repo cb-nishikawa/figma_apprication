@@ -17,6 +17,7 @@ import { isMetadata } from "./jsonCodec";
 import {
   METADATA_KEY,
   adapterForSource,
+  clearSource,
   normalizeSource,
   sameSource,
   sourceDefaultName,
@@ -1205,13 +1206,39 @@ async function handleUnlinkCategory(name: string): Promise<void> {
   if (!link) {
     return;
   }
+  await removeLink(link.id, name);
+  figma.notify(`共有カテゴリ「${name}」を外しました（保存先のデータはそのまま残っています）`);
+  await withStore(viewStore(), listTemplates);
+}
+
+/** 共有カテゴリの保存先のデータを全部消してから登録を外す。消せなければ登録は残す。 */
+async function handleDeleteLinkedCategory(name: string): Promise<void> {
+  const link = linkByName(name);
+  if (!link) {
+    return;
+  }
+  postToUi({ type: "BUSY", message: "Cloudflare D1 から削除しています…" });
+  let failure: string | null;
+  try {
+    failure = await clearSource(link.source);
+  } finally {
+    postToUi({ type: "BUSY", message: null });
+  }
+  if (failure) {
+    postToUi({ type: "ERROR", message: `共有カテゴリ「${name}」を削除できませんでした。\n${failure}` });
+    return;
+  }
+  await removeLink(link.id, name);
+  figma.notify(`共有カテゴリ「${name}」を削除しました`);
+  await withStore(viewStore(), listTemplates);
+}
+
+async function removeLink(id: string, name: string): Promise<void> {
   if (currentViewCategory() === name) {
     setViewCategory("");
   }
-  thumbnailsRefreshed.delete(`link:${link.id}`);
-  await setLinkedCategories(registeredLinkedCategories().filter((entry) => entry.id !== link.id));
-  figma.notify(`共有カテゴリ「${name}」を外しました（保存先のデータはそのまま残っています）`);
-  await withStore(viewStore(), listTemplates);
+  thumbnailsRefreshed.delete(`link:${id}`);
+  await setLinkedCategories(registeredLinkedCategories().filter((entry) => entry.id !== id));
 }
 
 async function handleRenameCategory(from: string, to: string): Promise<void> {
@@ -1376,6 +1403,12 @@ async function handleStorageMessage(msg: UiToPluginMessage): Promise<void> {
     case "LIST":
       await listTemplates();
       break;
+    case "RELOAD": {
+      const store = viewStore();
+      store.adapter.forget?.();
+      await withStore(store, listTemplates);
+      break;
+    }
     case "VIEW_CATEGORY": {
       setViewCategory(typeof msg.category === "string" ? msg.category : "");
       const store = viewStore();
@@ -1458,6 +1491,13 @@ async function handleStorageMessage(msg: UiToPluginMessage): Promise<void> {
         await handleUnlinkCategory(name);
       } else {
         await withStore(homeStore(), () => handleDeleteCategory(name));
+      }
+      break;
+    }
+    case "DELETE_LINKED_CATEGORY": {
+      const name = msg.name.trim();
+      if (name) {
+        await handleDeleteLinkedCategory(name);
       }
       break;
     }

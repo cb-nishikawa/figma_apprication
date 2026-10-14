@@ -48,6 +48,23 @@
               </button>
               <div id="view-mode-popover" class="view-menu-popover" hidden role="menu" aria-label="表示"></div>
             </div>
+            <button id="reload-list" class="btn-icon" type="button" title="一覧を読み直す" aria-label="一覧を読み直す">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path
+                  d="M13 8a5 5 0 1 1-1.46-3.54"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                />
+                <path
+                  d="M12 2v3h-3"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
             <div class="filter-menu">
               <button
                 id="filter-toggle"
@@ -113,6 +130,15 @@
                     role="menuitem"
                   >
                     カテゴリを削除
+                  </button>
+                  <button
+                    id="delete-linked-category"
+                    class="row-menu-item is-danger"
+                    type="button"
+                    role="menuitem"
+                    hidden
+                  >
+                    共有カテゴリを削除
                   </button>
                   <button id="open-settings" class="row-menu-item" type="button" role="menuitem">
                     設定…
@@ -277,7 +303,6 @@
               id="linked-d1-url"
               class="text-input"
               type="url"
-              placeholder="https://cb-template-palette-d1.xxxx.workers.dev"
               spellcheck="false"
               autocomplete="off"
             />

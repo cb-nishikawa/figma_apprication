@@ -1,4 +1,4 @@
-import { D1StorageAdapter, normalizeD1Source, testD1Connection, type D1TestFailure } from "./d1Storage";
+import { D1StorageAdapter, clearD1Space, normalizeD1Source, testD1Connection, type D1TestFailure } from "./d1Storage";
 import type { StorageAdapter } from "./storageAdapter";
 import type { SourceConfig, StorageErrorKind } from "./types";
 
@@ -50,6 +50,12 @@ export function adapterForSource(source: SourceConfig): ExternalAdapter {
 /** 接続テスト。成功なら null、失敗なら UI に出す案内。 */
 export async function testSource(source: SourceConfig): Promise<string | null> {
   const failure = await testD1Connection(source);
+  return failure === null ? null : d1TestMessage(failure);
+}
+
+/** 保存先のデータを全部消す。成功なら null、失敗なら UI に出す案内。 */
+export async function clearSource(source: SourceConfig): Promise<string | null> {
+  const failure = await clearD1Space(source);
   return failure === null ? null : d1TestMessage(failure);
 }
 

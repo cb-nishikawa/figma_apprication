@@ -66,6 +66,8 @@ interface BatchOps {
   get?: string[];
   put?: Array<{ path: string; body: string }>;
   delete?: string[];
+  /** スペースのファイルを全部消す。 */
+  clear?: boolean;
 }
 
 /**
@@ -88,6 +90,7 @@ async function batch(source: D1Source, ops: BatchOps): Promise<Record<string, st
     app?: unknown;
     api?: unknown;
     objects?: Record<string, string | null>;
+    cleared?: unknown;
   } | null;
   const current = body?.api === API_VERSION;
   if (response.status === 401 || response.status === 403) {
@@ -104,6 +107,10 @@ async function batch(source: D1Source, ops: BatchOps): Promise<Record<string, st
   }
   if (body?.app !== PING_APP || !current) {
     throw new D1AccessError("network", "wrong_worker");
+  }
+  // clear を知らない Worker は clear を無視して ok を返すので、消えていない。
+  if (ops.clear && body.cleared !== true) {
+    throw new D1AccessError("network", "old_worker");
   }
   return body.objects ?? {};
 }
@@ -167,6 +174,10 @@ export class D1StorageAdapter implements StorageAdapter {
       });
     }
     return state.ready;
+  }
+
+  forget(): void {
+    this.state.values.clear();
   }
 
   async get(key: string): Promise<unknown> {
@@ -254,6 +265,28 @@ function safeDecode(text: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * スペースのファイルを Worker 側で全部消す（一覧に載っていないものも含む）。成功なら null、失敗なら理由。
+ * 消せたら、その保存先の確認結果と読み込み結果も捨てる。
+ */
+export async function clearD1Space(source: D1Source): Promise<D1TestFailure | null> {
+  try {
+    await batch(source, { clear: true });
+  } catch (err) {
+    if (err instanceof D1AccessError) {
+      return err.reason;
+    }
+    return err instanceof StorageAccessError ? err.kind : "network";
+  }
+  const prefix = `${source.endpoint}\n${source.space}\n`;
+  for (const key of [...sourceStates.keys()]) {
+    if (key.startsWith(prefix)) {
+      sourceStates.delete(key);
+    }
+  }
+  return null;
 }
 
 /**

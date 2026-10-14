@@ -31,6 +31,7 @@ const filterInput = document.getElementById("filter") as HTMLInputElement;
 const filterToggleBtn = document.getElementById("filter-toggle") as HTMLButtonElement;
 const filterPopover = document.getElementById("filter-popover") as HTMLDivElement;
 const viewModeToggleBtn = document.getElementById("view-mode-toggle") as HTMLButtonElement;
+const reloadListBtn = document.getElementById("reload-list") as HTMLButtonElement;
 const viewModePopover = document.getElementById("view-mode-popover") as HTMLDivElement;
 const categoryToggleBtn = document.getElementById("category-toggle") as HTMLButtonElement;
 const categoryLabelEl = document.getElementById("category-label") as HTMLSpanElement;
@@ -41,6 +42,7 @@ const addCategoryBtn = document.getElementById("add-category") as HTMLButtonElem
 const addGroupBtn = document.getElementById("add-group") as HTMLButtonElement;
 const listMenuItems = document.getElementById("list-menu-items") as HTMLDivElement;
 const deleteCategoryBtn = document.getElementById("delete-category") as HTMLButtonElement;
+const deleteLinkedCategoryBtn = document.getElementById("delete-linked-category") as HTMLButtonElement;
 const deleteCategoryConfirm = document.getElementById("delete-category-confirm") as HTMLDivElement;
 const deleteCategoryText = document.getElementById("delete-category-text") as HTMLParagraphElement;
 const deleteCategoryCancelBtn = document.getElementById("delete-category-cancel") as HTMLButtonElement;
@@ -191,7 +193,7 @@ function renderStatus(): void {
   statusText.textContent =
     busyMessage ??
     (showUsage
-      ? `${linkedInfo(viewedCategory) ? "Cloudflare D1 使用量" : "使用量"} ${formatBytes(usage.used)} / ${formatBytes(quota)}`
+      ? `使用量 ${formatBytes(usage.used)} / ${formatBytes(quota)}`
       : "");
   usageBar.hidden = !showUsage;
   if (showUsage) {
@@ -202,6 +204,7 @@ function renderStatus(): void {
   }
   saveBtn.hidden = savableCount === 0;
   saveBtn.disabled = Boolean(busyMessage);
+  reloadListBtn.disabled = Boolean(busyMessage);
   placeBtn.hidden = !selectedId;
   placeBtn.disabled = Boolean(busyMessage);
   importBtn.disabled = Boolean(busyMessage);
@@ -316,12 +319,17 @@ function setListMenuOpen(open: boolean): void {
   }
 }
 
+/** 確認欄が何の確認か。`linked` は共有カテゴリのデータごとの削除。 */
+let deleteConfirmMode: "category" | "linked" = "category";
+
 function showListMenuItems(): void {
   listMenuItems.hidden = false;
   deleteCategoryConfirm.hidden = true;
   listMenuPopover.classList.remove("is-confirm");
   deleteCategoryBtn.disabled = saveCategory === "";
   const linked = linkedInfo(saveCategory) !== undefined;
+  deleteLinkedCategoryBtn.hidden = !linked;
+  deleteLinkedCategoryBtn.title = linked ? `共有カテゴリ「${saveCategory}」と Cloudflare D1 のデータを削除` : "";
   deleteCategoryBtn.textContent = linked ? "カテゴリを外す" : "カテゴリを削除";
   deleteCategoryBtn.title =
     saveCategory === ""
@@ -1747,6 +1755,11 @@ viewModeToggleBtn.addEventListener("click", (event) => {
 
 viewModePopover.addEventListener("click", (event) => event.stopPropagation());
 
+reloadListBtn.addEventListener("click", () => {
+  closeAllPopups();
+  postToPlugin({ type: "RELOAD" });
+});
+
 viewModePopover.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     event.preventDefault();
@@ -1835,6 +1848,7 @@ deleteCategoryBtn.addEventListener("click", (event) => {
   if (saveCategory === "") {
     return;
   }
+  deleteConfirmMode = "category";
   const linked = linkedInfo(saveCategory) !== undefined;
   if (linked) {
     // 共有カテゴリは登録を外すだけ。ほかの人も使っているので中身は消さない。
@@ -1859,6 +1873,26 @@ deleteCategoryBtn.addEventListener("click", (event) => {
   listMenuPopover.classList.add("is-confirm");
 });
 
+deleteLinkedCategoryBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  if (linkedInfo(saveCategory) === undefined) {
+    return;
+  }
+  deleteConfirmMode = "linked";
+  // 共有カテゴリを見ている間、templates はその保存先の一覧。
+  const count = templates.length;
+  deleteCategoryText.textContent =
+    count > 0
+      ? `「${saveCategory}」と Cloudflare D1 のデータ（テンプレート ${count} 件）をすべて削除します`
+      : `「${saveCategory}」と Cloudflare D1 のデータをすべて削除します`;
+  deleteCategoryNote.textContent =
+    "同じスペースを使っているほかの人の一覧からも消えます。元に戻せません。残すなら先に「すべて書き出す」で保存";
+  deleteCategoryOkBtn.textContent = "削除";
+  listMenuItems.hidden = true;
+  deleteCategoryConfirm.hidden = false;
+  listMenuPopover.classList.add("is-confirm");
+});
+
 deleteCategoryCancelBtn.addEventListener("click", (event) => {
   event.stopPropagation();
   showListMenuItems();
@@ -1868,6 +1902,12 @@ deleteCategoryOkBtn.addEventListener("click", (event) => {
   event.stopPropagation();
   const name = saveCategory;
   if (name === "") {
+    return;
+  }
+  if (deleteConfirmMode === "linked") {
+    // 消せなかったときは登録が残るので、一覧はプラグインから届く結果で変える。
+    closeAllPopups();
+    postToPlugin({ type: "DELETE_LINKED_CATEGORY", name });
     return;
   }
   const { templateIds, groupIds } = categoryDeletionTargets(name);
