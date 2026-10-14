@@ -1,5 +1,6 @@
 import "./ui.css";
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
+import { challengeFor, createVerifier } from "./pkce";
 import {
   addGroup,
   groupOf,
@@ -17,8 +18,10 @@ import {
   VIEW_MODES,
   type ImportMode,
   type ListNode,
+  type DropboxFolder,
+  type D1Source,
+  type DropboxSource,
   type LinkedCategoryInfo,
-  type R2Source,
   type TemplateGroup,
   type TemplateMeta,
   type ViewMode,
@@ -49,9 +52,30 @@ const deleteCategoryNote = document.getElementById("delete-category-note") as HT
 const addLinkedCategoryBtn = document.getElementById("add-linked-category") as HTMLButtonElement;
 const linkedDialog = document.getElementById("linked-dialog") as HTMLDivElement;
 const linkedNameInput = document.getElementById("linked-name") as HTMLInputElement;
-const linkedR2Url = document.getElementById("linked-r2-url") as HTMLInputElement;
-const linkedR2Token = document.getElementById("linked-r2-token") as HTMLInputElement;
-const linkedR2Space = document.getElementById("linked-r2-space") as HTMLInputElement;
+const linkedProviderInputs = Array.from(
+  document.querySelectorAll<HTMLInputElement>('input[name="linked-provider"]')
+);
+const linkedDropboxSection = document.getElementById("linked-dropbox") as HTMLDivElement;
+const linkedD1Section = document.getElementById("linked-d1") as HTMLDivElement;
+const linkedD1Url = document.getElementById("linked-d1-url") as HTMLInputElement;
+const linkedD1Token = document.getElementById("linked-d1-token") as HTMLInputElement;
+const linkedD1Space = document.getElementById("linked-d1-space") as HTMLInputElement;
+const dropboxAccount = document.getElementById("dropbox-account") as HTMLSpanElement;
+const dropboxConnectBtn = document.getElementById("dropbox-connect") as HTMLButtonElement;
+const dropboxDisconnectBtn = document.getElementById("dropbox-disconnect") as HTMLButtonElement;
+const dropboxCodeArea = document.getElementById("dropbox-code-area") as HTMLDivElement;
+const dropboxCodeInput = document.getElementById("dropbox-code") as HTMLInputElement;
+const dropboxCodeSubmitBtn = document.getElementById("dropbox-code-submit") as HTMLButtonElement;
+const dropboxMessage = document.getElementById("dropbox-message") as HTMLSpanElement;
+const folderSection = document.getElementById("folder-section") as HTMLDivElement;
+const folderUpBtn = document.getElementById("folder-up") as HTMLButtonElement;
+const folderPathEl = document.getElementById("folder-path") as HTMLSpanElement;
+const folderList = document.getElementById("folder-list") as HTMLUListElement;
+const folderNewNameInput = document.getElementById("folder-new-name") as HTMLInputElement;
+const folderCreateBtn = document.getElementById("folder-create") as HTMLButtonElement;
+const folderChooseBtn = document.getElementById("folder-choose") as HTMLButtonElement;
+const folderChosenEl = document.getElementById("folder-chosen") as HTMLSpanElement;
+const folderMessage = document.getElementById("folder-message") as HTMLSpanElement;
 const linkedTestBtn = document.getElementById("linked-test") as HTMLButtonElement;
 const linkedTestResult = document.getElementById("linked-test-result") as HTMLSpanElement;
 const linkedCancelBtn = document.getElementById("linked-cancel") as HTMLButtonElement;
@@ -59,6 +83,7 @@ const linkedAddBtn = document.getElementById("linked-add") as HTMLButtonElement;
 const errorEl = document.getElementById("error") as HTMLParagraphElement;
 const storageErrorEl = document.getElementById("storage-error") as HTMLDivElement;
 const storageErrorText = document.getElementById("storage-error-text") as HTMLParagraphElement;
+const storageErrorConnectBtn = document.getElementById("storage-error-connect") as HTMLButtonElement;
 const listEl = document.getElementById("list") as HTMLUListElement;
 const statusSpinner = document.getElementById("status-spinner") as HTMLSpanElement;
 const statusText = document.getElementById("status-text") as HTMLSpanElement;
@@ -115,7 +140,7 @@ let categoryInput:
 let pendingImport: { files: Array<{ name: string; text: string }>; confirm: boolean } | null = null;
 let savableCount = 0;
 let canvasSelectionCount = 0;
-/** `quota: null` は上限の無い保存先（共有カテゴリの R2）。 */
+/** `quota: null` は上限の無い保存先（共有カテゴリの Dropbox）。 */
 let usage: { used: number; quota: number | null } = { used: 0, quota: 0 };
 /** 共有カテゴリ。名前はこの人の一覧での表示名（TEMPLATES で受け取る）。 */
 let linkedCategories: LinkedCategoryInfo[] = [];
@@ -123,6 +148,21 @@ let linkedCategories: LinkedCategoryInfo[] = [];
 let viewedCategory = "";
 let linkedTesting = false;
 let linkedAdding = false;
+/** ダイアログで選んでいる保存先の種類。 */
+let linkedProvider: LinkedCategoryInfo["provider"] = "dropbox";
+let dropboxConnected = false;
+let dropboxEmail = "";
+/** 接続の途中（コードを交換している間）。 */
+let dropboxBusy = false;
+/** PKCE の verifier。ダイアログの間だけメモリに持ち、どこにも保存しない。 */
+let pkceVerifier: string | null = null;
+/** 開いているフォルダまでの道筋（空なら一番上）。共有フォルダの根は namespaceId を持つ。 */
+let folderStack: DropboxFolder[] = [];
+/** 読みに行っている途中の道筋。返事が来たら folderStack にする。 */
+let pendingFolderStack: DropboxFolder[] | null = null;
+let folderEntries: DropboxFolder[] = [];
+let folderLoading = false;
+let chosenFolder: DropboxFolder | null = null;
 /** 保存中の「画像を含めるか」の確認。開いている間だけ保持する。 */
 let imageQuestion: { count: number; bytes: number; remaining: number; tooLarge: boolean } | null = null;
 
@@ -187,7 +227,7 @@ function renderStatus(): void {
     (showUsage
       ? `使用量 ${formatBytes(usage.used)} / ${formatBytes(quota)}`
       : quota === null
-        ? `Cloudflare R2 に保存 ${formatBytes(usage.used)}`
+        ? `${linkedInfo(viewedCategory)?.provider === "d1" ? "Cloudflare D1" : "Dropbox"} に保存 ${formatBytes(usage.used)}`
         : "");
   usageBar.hidden = !showUsage;
   if (showUsage) {
@@ -366,7 +406,7 @@ function linkedInfo(name: string): LinkedCategoryInfo | undefined {
 }
 
 function providerTag(provider: LinkedCategoryInfo["provider"]): string {
-  return provider === "r2" ? "R2" : "Drive";
+  return provider === "d1" ? "D1" : "Dropbox";
 }
 
 /** Rebuilt on every open so the chosen category keeps its mark. */
@@ -1787,14 +1827,32 @@ deleteCategoryOkBtn.addEventListener("click", (event) => {
 
 /* ------------------------------ 共有カテゴリ ------------------------------ */
 
-/** R2 の入力欄から保存先を作る。足りなければ null（整えるのはプラグイン側）。 */
-function readR2Inputs(): R2Source | null {
-  const endpoint = linkedR2Url.value.trim();
-  const token = linkedR2Token.value.trim();
+/** 選んだフォルダから保存先を作る。未選択なら null（整えるのはプラグイン側）。 */
+function readDropboxSource(): DropboxSource | null {
+  if (!chosenFolder) {
+    return null;
+  }
+  return {
+    provider: "dropbox",
+    path: chosenFolder.path,
+    label: chosenFolder.name,
+    ...(chosenFolder.namespaceId ? { namespaceId: chosenFolder.namespaceId } : {}),
+  };
+}
+
+/** D1 の入力欄から保存先を作る。URL かトークンが空なら null（整えるのはプラグイン側）。 */
+function readD1Source(): D1Source | null {
+  const endpoint = linkedD1Url.value.trim();
+  const token = linkedD1Token.value.trim();
   if (!endpoint || !token) {
     return null;
   }
-  return { provider: "r2", endpoint, token, space: linkedR2Space.value.trim() || "default" };
+  return { provider: "d1", endpoint, token, space: linkedD1Space.value.trim() || "default" };
+}
+
+/** ダイアログで選んでいる方の保存先。 */
+function readSource(): DropboxSource | D1Source | null {
+  return linkedProvider === "d1" ? readD1Source() : readDropboxSource();
 }
 
 function setLinkedTestResult(message: string, tone: "ok" | "error" | null = null): void {
@@ -1803,51 +1861,243 @@ function setLinkedTestResult(message: string, tone: "ok" | "error" | null = null
   linkedTestResult.classList.toggle("is-error", tone === "error");
 }
 
+function currentFolderPath(): string {
+  return folderStack[folderStack.length - 1]?.path ?? "";
+}
+
+function renderFolders(): void {
+  folderList.replaceChildren();
+  if (folderEntries.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "folder-empty";
+    empty.textContent = folderLoading ? "読み込んでいます…" : "フォルダはありません";
+    folderList.append(empty);
+  }
+  for (const folder of folderEntries) {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "folder-item";
+    button.textContent = folder.name;
+    button.title = folder.path;
+    button.addEventListener("click", () => openFolder([...folderStack, folder]));
+    item.append(button);
+    folderList.append(item);
+  }
+  folderPathEl.textContent = currentFolderPath() || "/";
+  folderChosenEl.textContent = chosenFolder ? chosenFolder.path : "未選択";
+}
+
 function syncLinkedDialog(): void {
-  const ready = readR2Inputs() !== null;
+  dropboxAccount.textContent = dropboxConnected
+    ? `接続中${dropboxEmail ? `：${dropboxEmail}` : ""}`
+    : "Dropbox に接続していません";
+  dropboxConnectBtn.hidden = dropboxConnected;
+  dropboxConnectBtn.disabled = dropboxBusy;
+  dropboxDisconnectBtn.hidden = !dropboxConnected;
+  dropboxDisconnectBtn.disabled = dropboxBusy;
+  dropboxCodeArea.hidden = dropboxConnected || pkceVerifier === null;
+  dropboxCodeSubmitBtn.disabled = dropboxBusy || !dropboxCodeInput.value.trim();
+  folderSection.hidden = !dropboxConnected;
+  folderUpBtn.disabled = folderLoading || folderStack.length === 0;
+  folderCreateBtn.disabled = folderLoading || !folderNewNameInput.value.trim();
+  folderChooseBtn.disabled = folderLoading || folderStack.length === 0;
+  for (const input of linkedProviderInputs) {
+    input.checked = input.value === linkedProvider;
+    input.disabled = linkedTesting || linkedAdding;
+  }
+  linkedDropboxSection.hidden = linkedProvider !== "dropbox";
+  linkedD1Section.hidden = linkedProvider !== "d1";
+  const ready = linkedProvider === "d1" ? readD1Source() !== null : dropboxConnected && readDropboxSource() !== null;
   linkedTestBtn.disabled = !ready || linkedTesting || linkedAdding;
   linkedAddBtn.disabled = !ready || linkedAdding;
 }
 
-function openLinkedDialog(): void {
+/** フォルダの中を読みに行く。返事（DROPBOX_FOLDERS）が来るまで今の一覧は残す。 */
+function openFolder(stack: DropboxFolder[]): void {
+  pendingFolderStack = stack;
+  folderLoading = true;
+  folderMessage.textContent = "";
+  syncLinkedDialog();
+  postToPlugin({ type: "DROPBOX_LIST_FOLDER", path: stack[stack.length - 1]?.path ?? "" });
+}
+
+function resetFolders(): void {
+  folderStack = [];
+  pendingFolderStack = null;
+  folderEntries = [];
+  folderLoading = false;
+  chosenFolder = null;
+  folderNewNameInput.value = "";
+  folderMessage.textContent = "";
+  renderFolders();
+}
+
+function openLinkedDialog(provider: LinkedCategoryInfo["provider"] = "dropbox"): void {
   closeAllPopups();
-  for (const input of [linkedNameInput, linkedR2Url, linkedR2Token, linkedR2Space]) {
+  linkedProvider = provider;
+  for (const input of [linkedNameInput, linkedD1Url, linkedD1Token, linkedD1Space]) {
     input.value = "";
   }
+  dropboxCodeInput.value = "";
+  dropboxMessage.textContent = "";
+  pkceVerifier = null;
+  dropboxBusy = false;
   linkedTesting = false;
   linkedAdding = false;
   setLinkedTestResult("");
+  resetFolders();
   syncLinkedDialog();
   linkedDialog.hidden = false;
-  linkedNameInput.focus();
+  postToPlugin({ type: "GET_DROPBOX_STATE" });
+  linkedCancelBtn.focus();
 }
 
 function closeLinkedDialog(): void {
   linkedDialog.hidden = true;
+  pkceVerifier = null;
   listMenuToggleBtn.focus();
 }
+
+function handleDropboxState(connected: boolean, email: string | undefined, message: string | undefined): void {
+  const wasConnected = dropboxConnected;
+  dropboxConnected = connected;
+  dropboxEmail = email ?? "";
+  dropboxBusy = false;
+  dropboxMessage.textContent = message ?? "";
+  // 失敗したら「Dropbox に接続」からやり直してもらう（コードは 1 回しか使えない）。
+  if (connected || message) {
+    pkceVerifier = null;
+    dropboxCodeInput.value = "";
+  }
+  if (!connected) {
+    resetFolders();
+  } else if ((!wasConnected || folderEntries.length === 0) && !linkedDialog.hidden && !folderLoading) {
+    openFolder([]);
+  }
+  syncLinkedDialog();
+}
+
+function handleDropboxFolders(path: string, folders: DropboxFolder[], message: string | undefined): void {
+  const pendingPath = pendingFolderStack ? (pendingFolderStack[pendingFolderStack.length - 1]?.path ?? "") : null;
+  if (message) {
+    // 開けなかったときは、今いるフォルダに留まる。
+    if (pendingPath === path) {
+      pendingFolderStack = null;
+      folderLoading = false;
+    }
+    folderMessage.textContent = message;
+  } else if (pendingPath === path && pendingFolderStack) {
+    folderStack = pendingFolderStack;
+    pendingFolderStack = null;
+    folderLoading = false;
+    folderEntries = folders;
+  } else if (pendingPath === null && path === currentFolderPath()) {
+    folderEntries = folders;
+  }
+  renderFolders();
+  syncLinkedDialog();
+}
+
+storageErrorConnectBtn.addEventListener("click", () => openLinkedDialog("dropbox"));
+
+for (const input of linkedProviderInputs) {
+  input.addEventListener("change", () => {
+    if (input.checked && (input.value === "dropbox" || input.value === "d1")) {
+      linkedProvider = input.value;
+      setLinkedTestResult("");
+      syncLinkedDialog();
+    }
+  });
+}
+
+for (const input of [linkedD1Url, linkedD1Token, linkedD1Space]) {
+  input.addEventListener("input", () => {
+    setLinkedTestResult("");
+    syncLinkedDialog();
+  });
+}
+
+dropboxConnectBtn.addEventListener("click", () => {
+  pkceVerifier = createVerifier();
+  dropboxMessage.textContent = "";
+  dropboxCodeInput.value = "";
+  postToPlugin({ type: "DROPBOX_AUTH_START", challenge: challengeFor(pkceVerifier) });
+  syncLinkedDialog();
+  dropboxCodeInput.focus();
+});
+
+dropboxCodeInput.addEventListener("input", syncLinkedDialog);
+
+function submitDropboxCode(): void {
+  const code = dropboxCodeInput.value.trim();
+  if (!code || !pkceVerifier || dropboxBusy) {
+    return;
+  }
+  dropboxBusy = true;
+  dropboxMessage.textContent = "";
+  syncLinkedDialog();
+  postToPlugin({ type: "DROPBOX_AUTH_CODE", code, verifier: pkceVerifier });
+}
+
+dropboxCodeSubmitBtn.addEventListener("click", submitDropboxCode);
+dropboxCodeInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.isComposing) {
+    event.preventDefault();
+    submitDropboxCode();
+  }
+});
+
+dropboxDisconnectBtn.addEventListener("click", () => {
+  dropboxBusy = true;
+  syncLinkedDialog();
+  postToPlugin({ type: "DROPBOX_DISCONNECT" });
+});
+
+folderUpBtn.addEventListener("click", () => openFolder(folderStack.slice(0, -1)));
+
+folderNewNameInput.addEventListener("input", syncLinkedDialog);
+
+function createFolder(): void {
+  const name = folderNewNameInput.value.trim();
+  if (!name || folderLoading) {
+    return;
+  }
+  folderNewNameInput.value = "";
+  folderMessage.textContent = "";
+  syncLinkedDialog();
+  postToPlugin({ type: "DROPBOX_CREATE_FOLDER", parent: currentFolderPath(), name });
+}
+
+folderCreateBtn.addEventListener("click", createFolder);
+folderNewNameInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.isComposing) {
+    event.preventDefault();
+    createFolder();
+  }
+});
+
+folderChooseBtn.addEventListener("click", () => {
+  chosenFolder = folderStack[folderStack.length - 1] ?? null;
+  setLinkedTestResult("");
+  renderFolders();
+  syncLinkedDialog();
+});
 
 addLinkedCategoryBtn.addEventListener("click", (event) => {
   event.stopPropagation();
   openLinkedDialog();
 });
 
-[linkedR2Url, linkedR2Token, linkedR2Space].forEach((input) => {
-  input.addEventListener("input", () => {
-    setLinkedTestResult("");
-    syncLinkedDialog();
-  });
-});
-
 linkedTestBtn.addEventListener("click", () => {
   linkedTesting = true;
   setLinkedTestResult("確認しています…");
   syncLinkedDialog();
-  postToPlugin({ type: "STORAGE_TEST", source: readR2Inputs() });
+  postToPlugin({ type: "STORAGE_TEST", source: readSource() });
 });
 
 linkedAddBtn.addEventListener("click", () => {
-  const source = readR2Inputs();
+  const source = readSource();
   if (!source) {
     return;
   }
@@ -2046,6 +2296,12 @@ window.onmessage = (event: MessageEvent) => {
     case "ERROR":
       showError(msg.message);
       break;
+    case "DROPBOX_STATE":
+      handleDropboxState(msg.connected, msg.email, msg.message);
+      break;
+    case "DROPBOX_FOLDERS":
+      handleDropboxFolders(msg.path, msg.folders, msg.message);
+      break;
     case "STORAGE_TEST_RESULT":
       linkedTesting = false;
       setLinkedTestResult(msg.message, msg.ok ? "ok" : "error");
@@ -2071,6 +2327,7 @@ window.onmessage = (event: MessageEvent) => {
       // 黙ってローカルに戻さず、設定画面で選び直してもらう。
       errorEl.hidden = true;
       showStorageError(msg.message);
+      storageErrorConnectBtn.hidden = !(msg.kind === "auth" && msg.provider === "dropbox");
       break;
   }
 };

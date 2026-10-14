@@ -1,5 +1,5 @@
 /**
- * 外部の保存先（R2）に置くファイル構成と JSON の形。
+ * 外部の保存先（Dropbox のフォルダ・D1 のスペース）に置くファイル構成と JSON の形。
  *
  *   metadata.json        この保存先がテンプレパレットくんのものだという印
  *   index.json           cbTemplatePalette.index

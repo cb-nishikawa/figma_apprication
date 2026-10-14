@@ -13,8 +13,18 @@ import {
   serializeComponentTemplate,
   serializeSelection,
 } from "./serialize";
+import { DropboxConnectError, authorizeUrl, exchangeCode, isAppKeyConfigured, revokeTokens } from "./dropboxAuth";
+import { createDropboxFolder, listDropboxFolders } from "./dropboxStorage";
 import { isMetadata } from "./jsonCodec";
-import { METADATA_KEY, adapterForSource, normalizeSource, sameSource, sourceErrorMessage, testSource } from "./sources";
+import {
+  METADATA_KEY,
+  adapterForSource,
+  normalizeSource,
+  sameSource,
+  sourceDefaultName,
+  sourceErrorMessage,
+  testSource,
+} from "./sources";
 import {
   QuotaExceededError,
   addCategory,
@@ -38,12 +48,14 @@ import { StorageAccessError, storage } from "./storageAdapter";
 import {
   activeStore,
   currentViewCategory,
+  dropboxTokens,
   enqueue,
   homeStore,
   initStores,
   linkByName,
   linkedCategories,
   linkedCategoryInfo,
+  setDropboxTokens,
   setLinkedCategories,
   setViewCategory,
   storeForCategory,
@@ -1000,7 +1012,11 @@ async function loadViewMode(): Promise<ViewMode> {
 
 /* ------------------------------ 保存先 ------------------------------ */
 
-const R2_INPUT_MESSAGE = "Worker の URL・アクセストークン・スペース名を入力してください";
+const FOLDER_INPUT_MESSAGE = "保存先のフォルダを選んでください";
+const D1_INPUT_MESSAGE = "Worker の URL・アクセストークン・スペース名を入力してください";
+const DROPBOX_CODE_MESSAGE = "コードが正しくないか、期限が切れています。\nもう一度「Dropbox に接続」からやり直してください。";
+const DROPBOX_CONFIG_MESSAGE = "Dropbox のアプリキーが設定されていません（DROPBOX_APP_KEY）。";
+const DROPBOX_FAILED_MESSAGE = sourceErrorMessage("auth");
 
 /** 保存先ごとに 1 回、一覧を開いたときにサムネイルを作り直す。 */
 const thumbnailsRefreshed = new Set<string>();
@@ -1009,8 +1025,13 @@ let listedStoreKey: string | null = null;
 /** ローカルのカテゴリ。共有カテゴリを見ている間もカテゴリのメニューに出すため覚えておく。 */
 let homeCategories: string[] = [];
 
+/** 保存先として読めなかったときの案内。どちらの入力欄かは送られてきた `provider` で分ける。 */
+function sourceInputMessage(raw: unknown): string {
+  return (raw as { provider?: unknown } | null)?.provider === "d1" ? D1_INPUT_MESSAGE : FOLDER_INPUT_MESSAGE;
+}
+
 function storageErrorMessage(err: StorageAccessError): string {
-  const message = sourceErrorMessage(err.kind);
+  const message = sourceErrorMessage(err.kind, err.provider);
   return err.category ? `共有カテゴリ「${err.category}」\n${message}` : message;
 }
 
@@ -1019,7 +1040,8 @@ async function listTemplates(): Promise<void> {
   const store = activeStore();
   const remote = store.adapter.type !== "local";
   if (remote) {
-    postToUi({ type: "BUSY", message: "Cloudflare R2 から読み込んでいます…" });
+    const from = store.adapter.type === "d1" ? "Cloudflare D1" : "Dropbox";
+    postToUi({ type: "BUSY", message: `${from} から読み込んでいます…` });
   }
   try {
     await postTemplates(await loadIndex());
@@ -1043,15 +1065,105 @@ async function postViewTemplates(): Promise<void> {
 async function handleStorageTest(raw: unknown): Promise<void> {
   const source = normalizeSource(raw);
   if (!source) {
-    postToUi({ type: "STORAGE_TEST_RESULT", ok: false, message: R2_INPUT_MESSAGE });
+    postToUi({ type: "STORAGE_TEST_RESULT", ok: false, message: sourceInputMessage(raw) });
     return;
   }
-  const failure = await testSource(source);
+  const failure = await testSource(source, dropboxTokens());
   postToUi({
     type: "STORAGE_TEST_RESULT",
     ok: failure === null,
-    message: failure === null ? "接続成功" : sourceErrorMessage(failure),
+    message: failure ?? "接続成功",
   });
+}
+
+/* -------------------------------- Dropbox -------------------------------- */
+
+function postDropboxState(message?: string): void {
+  const tokens = dropboxTokens();
+  postToUi({
+    type: "DROPBOX_STATE",
+    connected: tokens !== null,
+    ...(tokens?.session.email ? { email: tokens.session.email } : {}),
+    ...(message ? { message } : {}),
+  });
+}
+
+/** ブラウザで認可画面を開く。コードは UI に貼ってもらう。 */
+function handleDropboxAuthStart(challenge: string): void {
+  if (!isAppKeyConfigured()) {
+    postDropboxState(DROPBOX_CONFIG_MESSAGE);
+    return;
+  }
+  if (!/^[A-Za-z0-9_-]{43}$/.test(challenge)) {
+    postDropboxState(DROPBOX_FAILED_MESSAGE);
+    return;
+  }
+  figma.openExternal(authorizeUrl(challenge));
+}
+
+/** キューの中で呼ぶ（走っている読み書きの途中で接続を差し替えないため）。 */
+async function handleDropboxAuthCode(code: string, verifier: string): Promise<void> {
+  if (!code.trim() || !verifier) {
+    postDropboxState(DROPBOX_CODE_MESSAGE);
+    return;
+  }
+  try {
+    await setDropboxTokens(await exchangeCode(code, verifier));
+  } catch (err) {
+    const reason = err instanceof DropboxConnectError ? err.reason : "network";
+    postDropboxState(
+      reason === "code" ? DROPBOX_CODE_MESSAGE : reason === "config" ? DROPBOX_CONFIG_MESSAGE : DROPBOX_FAILED_MESSAGE
+    );
+    return;
+  }
+  figma.notify("Dropbox に接続しました");
+  postDropboxState();
+  thumbnailsRefreshed.clear();
+  listedStoreKey = null;
+  const store = viewStore();
+  if (store.link) {
+    await withStore(store, listTemplates);
+  }
+}
+
+/** 接続を切る。共有カテゴリの登録と Dropbox のデータはそのまま（接続し直せばまた使える）。キューの中で呼ぶ。 */
+async function handleDropboxDisconnect(): Promise<void> {
+  const tokens = dropboxTokens();
+  await setDropboxTokens(null);
+  if (tokens) {
+    await revokeTokens(tokens);
+  }
+  thumbnailsRefreshed.clear();
+  listedStoreKey = null;
+  postDropboxState();
+}
+
+async function handleDropboxListFolder(rawPath: unknown): Promise<void> {
+  const path = typeof rawPath === "string" ? rawPath : "";
+  try {
+    postToUi({ type: "DROPBOX_FOLDERS", path, folders: await listDropboxFolders(dropboxTokens(), path) });
+  } catch (err) {
+    const kind = err instanceof StorageAccessError ? err.kind : "network";
+    postToUi({ type: "DROPBOX_FOLDERS", path, folders: [], message: sourceErrorMessage(kind) });
+  }
+}
+
+async function handleDropboxCreateFolder(rawParent: unknown, rawName: unknown): Promise<void> {
+  const parent = typeof rawParent === "string" ? rawParent : "";
+  const name = typeof rawName === "string" ? rawName.trim() : "";
+  if (!name || /[\\/]/.test(name) || name === "." || name === "..") {
+    postToUi({ type: "DROPBOX_FOLDERS", path: parent, folders: [], message: "使えないフォルダ名です" });
+    return;
+  }
+  try {
+    await createDropboxFolder(dropboxTokens(), `${parent}/${name}`);
+  } catch (err) {
+    const kind = err instanceof StorageAccessError ? err.kind : "network";
+    const message = kind === "folder" ? "同じ名前のフォルダがあるか、ここには作れません" : sourceErrorMessage(kind);
+    postToUi({ type: "DROPBOX_FOLDERS", path: parent, folders: [], message });
+    return;
+  }
+  await handleDropboxListFolder(parent);
 }
 
 /* ------------------------------ 共有カテゴリ ------------------------------ */
@@ -1072,7 +1184,7 @@ async function handleAddLinkedCategory(rawName: string, raw: unknown): Promise<v
   const fail = (message: string) => postToUi({ type: "LINKED_CATEGORY_RESULT", ok: false, message });
   const source = normalizeSource(raw);
   if (!source) {
-    fail(R2_INPUT_MESSAGE);
+    fail(sourceInputMessage(raw));
     return;
   }
   const existing = linkedCategories().find((link) => sameSource(link.source, source));
@@ -1080,17 +1192,17 @@ async function handleAddLinkedCategory(rawName: string, raw: unknown): Promise<v
     fail(`この保存先は、共有カテゴリ「${existing.name}」としてすでに追加されています`);
     return;
   }
-  const adapter = adapterForSource(source);
+  const adapter = adapterForSource(source, dropboxTokens());
   let metadata: unknown;
   try {
     await adapter.verify();
     metadata = await adapter.get(METADATA_KEY);
   } catch (err) {
-    fail(sourceErrorMessage(err instanceof StorageAccessError ? err.kind : "network"));
+    fail(sourceErrorMessage(err instanceof StorageAccessError ? err.kind : "network", source.provider));
     return;
   }
   const stored = isMetadata(metadata) ? metadata : null;
-  const name = rawName.trim() || stored?.name?.trim() || source.space;
+  const name = rawName.trim() || stored?.name?.trim() || sourceDefaultName(source);
   if (categoryNameTaken(name)) {
     fail(`「${name}」というカテゴリはすでにあります。別の名前にしてください`);
     return;
@@ -1235,6 +1347,18 @@ async function handleDirect(msg: UiToPluginMessage): Promise<boolean> {
     case "STORAGE_TEST":
       await handleStorageTest(msg.source);
       return true;
+    case "GET_DROPBOX_STATE":
+      postDropboxState();
+      return true;
+    case "DROPBOX_AUTH_START":
+      handleDropboxAuthStart(typeof msg.challenge === "string" ? msg.challenge : "");
+      return true;
+    case "DROPBOX_LIST_FOLDER":
+      await handleDropboxListFolder(msg.path);
+      return true;
+    case "DROPBOX_CREATE_FOLDER":
+      await handleDropboxCreateFolder(msg.parent, msg.name);
+      return true;
     case "CLEAR_CANVAS_SELECTION":
       // Assigning an already empty selection fires no selectionchange, which would
       // leave the flag set and mislabel the next user selection as the plugin's.
@@ -1276,6 +1400,15 @@ async function handleStorageMessage(msg: UiToPluginMessage): Promise<void> {
     }
     case "ADD_LINKED_CATEGORY":
       await handleAddLinkedCategory(typeof msg.name === "string" ? msg.name : "", msg.source);
+      break;
+    case "DROPBOX_AUTH_CODE":
+      await handleDropboxAuthCode(
+        typeof msg.code === "string" ? msg.code : "",
+        typeof msg.verifier === "string" ? msg.verifier : ""
+      );
+      break;
+    case "DROPBOX_DISCONNECT":
+      await handleDropboxDisconnect();
       break;
     case "SAVE_SELECTION":
       // 保存先はカテゴリで決まる（共有カテゴリならその保存先）。
@@ -1421,7 +1554,13 @@ async function main(): Promise<void> {
       }
     } catch (err) {
       if (err instanceof StorageAccessError) {
-        postToUi({ type: "STORAGE_ERROR", kind: err.kind, message: storageErrorMessage(err), category: err.category });
+        postToUi({
+          type: "STORAGE_ERROR",
+          kind: err.kind,
+          message: storageErrorMessage(err),
+          category: err.category,
+          provider: err.provider,
+        });
         return;
       }
       const message = err instanceof Error ? err.message : String(err);

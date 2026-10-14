@@ -1,3 +1,5 @@
+import { DropboxTokens } from "./dropboxAuth";
+import { loadDropboxSession, saveDropboxSession } from "./dropboxSession";
 import { linkedInfo, loadLinkedCategories, saveLinkedCategories } from "./linkedCategories";
 import { adapterForSource } from "./sources";
 import { LocalStorageAdapter, StorageAccessError, useAdapter, type StorageAdapter } from "./storageAdapter";
@@ -21,6 +23,8 @@ export interface Store {
 }
 
 let linked: LinkedCategory[] = [];
+/** Dropbox との接続。Dropbox の共有カテゴリはすべてこの 1 つの接続で読み書きする（D1 は登録ごとのトークン）。 */
+let dropbox: DropboxTokens | null = null;
 const home: Store = { key: "home", adapter: new LocalStorageAdapter(), link: null };
 const linkStores = new Map<string, Store>();
 /** UI で今選んでいるカテゴリ。空文字は「未設定」。 */
@@ -28,20 +32,34 @@ let viewCategory = "";
 let active: Store = home;
 let queue: Promise<void> = Promise.resolve();
 
-/** 共有カテゴリが変わったら作り直す。走っている処理の保存先は差し替えない。 */
+/** 共有カテゴリや接続が変わったら作り直す。走っている処理の保存先は差し替えない。 */
 function rebuild(): void {
   linkStores.clear();
   for (const link of linked) {
-    linkStores.set(link.id, { key: `link:${link.id}`, adapter: adapterForSource(link.source), link });
+    linkStores.set(link.id, { key: `link:${link.id}`, adapter: adapterForSource(link.source, dropbox), link });
   }
 }
 
 export async function initStores(): Promise<void> {
   try {
     linked = await loadLinkedCategories();
+    const session = await loadDropboxSession();
+    dropbox = session ? new DropboxTokens(session) : null;
   } catch {
     linked = [];
+    dropbox = null;
   }
+  rebuild();
+}
+
+export function dropboxTokens(): DropboxTokens | null {
+  return dropbox;
+}
+
+/** 接続・解除。null で解除（clientStorage からも消す）。 */
+export async function setDropboxTokens(next: DropboxTokens | null): Promise<void> {
+  await saveDropboxSession(next ? next.session : null);
+  dropbox = next;
   rebuild();
 }
 

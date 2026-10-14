@@ -232,23 +232,42 @@ export const IMPORT_CATEGORY_NAME = "追加されたカテゴリ";
 export const NO_CATEGORY = "未設定";
 
 /**
- * Cloudflare R2 の保存先。ユーザー（チーム）が自分で立てた Worker（cbTemplatePalette/r2-worker）を通す。
- * `token` はその Worker の合言葉で、R2 の Access Key ではない。
+ * Dropbox の保存先フォルダ。共有フォルダの根なら `namespaceId` を持ち、`ns:<id>/…` で読み書きする
+ * （持ち主がフォルダを移動・改名しても、共有している人が追えるようにするため）。それ以外は `path`。
  */
-export interface R2Source {
-  provider: "r2";
-  /** Worker の URL（末尾の / なし）。 */
+export interface DropboxSource {
+  provider: "dropbox";
+  /** 選んだときの Dropbox の中のパス（先頭が /）。 */
+  path: string;
+  /** フォルダの名前。共有カテゴリの名前の初期値にも使う。 */
+  label: string;
+  namespaceId?: string;
+}
+
+/** フォルダを選ぶ画面に出す 1 件。 */
+export interface DropboxFolder {
+  name: string;
+  path: string;
+  /** 共有フォルダの根のときだけ。 */
+  namespaceId?: string;
+}
+
+/**
+ * Cloudflare D1 の保存先。ユーザー（チーム）が自分でデプロイした Worker（cbTemplatePalette/d1-worker）を経由する。
+ * `token` は Worker の合言葉（D1 や Cloudflare の認証情報ではない）。同じ `endpoint` と `space` の人どうしで同じデータになる。
+ */
+export interface D1Source {
+  provider: "d1";
   endpoint: string;
   token: string;
-  /** バケットの中の置き場所の名前。同じスペースを指定した人どうしで同じデータになる。 */
   space: string;
 }
 
 /** 外部の保存先 1 つ分。 */
-export type SourceConfig = R2Source;
+export type SourceConfig = DropboxSource | D1Source;
 
 /** `local` は「未設定」と通常のカテゴリを置く端末の clientStorage。 */
-export type StorageType = "local" | "r2";
+export type StorageType = "local" | "dropbox" | "d1";
 
 /**
  * 共有カテゴリ。カテゴリ 1 つが外部の保存先 1 つに対応し、中身はその保存先に置く。
@@ -264,7 +283,7 @@ export interface LinkedCategory {
 export interface LinkedCategoryInfo {
   name: string;
   provider: SourceConfig["provider"];
-  /** 保存先の説明（スペース名と Worker のホスト）。 */
+  /** 保存先の説明（Dropbox のフォルダのパス、D1 は Worker の URL とスペース名）。 */
   label: string;
 }
 

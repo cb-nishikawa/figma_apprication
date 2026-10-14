@@ -1,8 +1,10 @@
 # ADR-011: 共有カテゴリ（Cloudflare R2）を足し、保存先の設定と Google Drive をやめる
 
-- ステータス: 採用（R2 用 Worker のデプロイ後に実機確認が必要）
+- ステータス: 採用（R2 の部分は [ADR-012](ADR-012-template-palette-dropbox.md) で Dropbox に置き換え）
 - 日付: 2026-10-09
-- 関連: [ADR-008](ADR-008-template-palette-categories.md)、[ADR-010](ADR-010-template-palette-google-drive.md)（廃止）
+- 関連: [ADR-008](ADR-008-template-palette-categories.md)、[ADR-010](ADR-010-template-palette-google-drive.md)（廃止）、[ADR-012](ADR-012-template-palette-dropbox.md)
+
+> 2026-10-14 追記: Cloudflare R2 と Worker（`r2-worker/`）は削除し、共有カテゴリの保存先は Dropbox のフォルダになった（[ADR-012](ADR-012-template-palette-dropbox.md)）。「カテゴリ = 保存先」「保存先をまたぐ処理」「設定ダイアログと Google Drive をやめる」の決定はそのまま有効。下の R2 の記述（Worker の API・エラー文言など）は当時の記録。
 
 ## コンテキスト
 

@@ -54,12 +54,12 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
    - タッチではドラッグしない（行の「⋯」→「← 移動」を使う）
    - たためたグループにドロップすると、自動で開いて中に入れる。中身が見えないと移動できたかどうか分からないため
 8. 一覧の見出しの「読み込む」「すべて書き出す」で、パソコンのファイルとやり取りできる（後述）
-9. 一覧の「⋯」→「共有カテゴリを追加…」で、Cloudflare R2 の保存先をカテゴリとして足す（後述「共有カテゴリ」）。保存先を切り替える「設定」は無い（2026-10-09 に削除）
+9. 一覧の「⋯」→「共有カテゴリを追加…」で、Dropbox のフォルダか Cloudflare D1 のスペースをカテゴリとして足す（後述「共有カテゴリ」）。保存先を切り替える「設定」は無い（2026-10-09 に削除）
 
 ## 保存先
 
-- 「未設定」と通常のカテゴリは、常に `figma.clientStorage`（ユーザー単位・プラグイン単位。デバイス内に保存され、どのファイルからでも読める）。外部の保存先は共有カテゴリ（Cloudflare R2）だけ（後述）
-- 容量の上限はプラグインごとに約 5MB（Figma の固定値で引き上げられない）。上限を超える保存は拒否する。共有カテゴリ（R2）では上限を持たない（バーは出さず「Cloudflare R2 に保存 3.2MB」と出す）
+- 「未設定」と通常のカテゴリは、常に `figma.clientStorage`（ユーザー単位・プラグイン単位。デバイス内に保存され、どのファイルからでも読める）。外部の保存先は共有カテゴリ（Dropbox のフォルダ・Cloudflare D1 のスペース）だけ（後述）
+- 容量の上限はプラグインごとに約 5MB（Figma の固定値で引き上げられない）。上限を超える保存は拒否する。共有カテゴリ（Dropbox・D1）では上限を持たない（バーは出さず「Dropbox に保存 3.2MB」「Cloudflare D1 に保存 3.2MB」と出す）
 - 使用量はフッターに出し、選択中の件数（`◯件を選択中`）より下の行に置く。`使用量 3.2MB / 5.0MB` の下に高さ 2px の細いバーを添える
   - 80% 以上のときはバーの塗りだけを `#b00020`（`.error` と同じ危険色）に変える。文言は変えない
   - 上限を超えたときは 100.0% に留める（超過したことは別のエラーで知らせる）
@@ -76,37 +76,73 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
 | `cbTemplatePalette.uiHeight` | UI の高さ |
 | `cbTemplatePalette.viewMode` | 一覧の表示モード（`detail` / `list` / `grid`。既定は `detail`） |
 | `cbTemplatePalette.categories` | カテゴリ名の配列。まだ誰も使っていないものも残る |
-| `cbTemplatePalette.linkedCategories` | 共有カテゴリ `{ id, name, source }[]`。`source` は R2 のスペース `{ provider: "r2", endpoint, token, space }` |
+| `cbTemplatePalette.linkedCategories` | 共有カテゴリ `{ id, name, source }[]`。`source` は Dropbox のフォルダ `{ provider: "dropbox", path, label, namespaceId? }` か D1 のスペース `{ provider: "d1", endpoint, token, space }` |
+| `cbTemplatePalette.dropboxSession` | Dropbox との接続 `{ refreshToken, accountId, email? }`。アクセストークンは保存しない。「接続を解除」で消す |
 
-### Cloudflare R2（[ADR-011](../ai/decisions/ADR-011-template-palette-shared-categories.md)）
+### Dropbox（[ADR-012](../ai/decisions/ADR-012-template-palette-dropbox.md)）
 
-- 各自（またはチーム）がデプロイする Worker（[`cbTemplatePalette/r2-worker/`](../../cbTemplatePalette/r2-worker/)）を経由する。R2 のアクセスキーはプラグインに置かず、Worker の URL・アクセストークン・スペース名だけを持つ
-- スペースの中身（キー 1 つにつき 1 ファイル）
+- サーバーは置かない。OAuth 2.0 PKCE（App secret なし・`redirect_uri` なし）で接続し、Dropbox がブラウザに出したコードを貼ってもらう
+- スコープは `account_info.read`・`files.metadata.read`・`files.content.read`・`files.content.write`。アプリは Full Dropbox（共有フォルダを使うため）
+- refresh_token は `cbTemplatePalette.dropboxSession`、アクセストークンはメモリだけ。PKCE の verifier は UI のメモリだけ
+- フォルダの中身（キー 1 つにつき 1 ファイル）
 
 | ファイル | 対応するキー |
 | --- | --- |
-| `metadata.json` | （このスペースがテンプレパレットくんのものだという印。`name` は共有カテゴリの名前の初期値） |
+| `metadata.json` | （このフォルダがテンプレパレットくんのものだという印。`name` は共有カテゴリの名前の初期値） |
 | `index.json` | `cbTemplatePalette.index` |
 | `tree.json` | `cbTemplatePalette.tree` |
 | `categories.json` | `cbTemplatePalette.categories` |
 | `items/<id>.json` | `cbTemplatePalette.item.<id>` |
 
-- `Uint8Array` は `{"$u8": base64}` にして JSON にする
-- URL は `https://` か `http://localhost:<port>`。manifest が許しているのは `*.workers.dev`（独自ドメインは manifest への追加が要る）
-- 届かないとき: 「Cloudflare R2 に接続できませんでした。Worker の URL とアクセストークンを確認してください。」。スペース名が不正: 「保存先のスペースにアクセスできません。スペース名を確認してください。」。黙ってローカルに戻さず、一覧の上に出す
-- 接続テストは ping → テスト用ファイルの書き込み・読み込み・削除
+- `Uint8Array` は `{"$u8": base64}` にして JSON にする。本文と `Dropbox-API-Arg` は ASCII だけ（それ以外は `\uXXXX`）
+- 共有フォルダの根を選んだときは `ns:<namespaceId>/…` で指す（持ち主が名前を変えても同じフォルダ）
+- 使う前に `files/get_metadata` でフォルダがあるか確かめる。消えていたら作り直さずにエラー
+- 401 は 1 回だけトークンを取り直してやり直す。429 は `Retry-After` 待って 2 回まで
+- 接続できない・取り消された: 「Dropbox に接続できませんでした。接続し直してください。」（一覧の上に「Dropbox の接続を確認」ボタン）。フォルダが無い・書けない: 「保存先フォルダにアクセスできません。フォルダを選び直してください。」。黙ってローカルに戻さず、一覧の上に出す
+- 接続テストはフォルダの確認 → テスト用ファイル（`.cbtemplate-connection-test`）の書き込み・読み込み・削除
 
-### 共有カテゴリ（[ADR-011](../ai/decisions/ADR-011-template-palette-shared-categories.md)）
+#### セットアップ（開発者が 1 回だけ）
 
-- 1 つのカテゴリが 1 つの R2 のスペースに対応する。「未設定」と通常のカテゴリはローカルのまま
-- 同じ Worker の URL・アクセストークン・スペース名を複数の人が追加すると、同じテンプレートを使える
+1. [Dropbox App Console](https://www.dropbox.com/developers/apps) で「Create app」→「Scoped access」→「Full Dropbox」
+2. 「Permissions」で上の 4 つのスコープだけにチェックして保存
+3. 「Settings」の App key を `src/dropboxAuth.ts` の `DROPBOX_APP_KEY` に入れる（App secret は使わない・入れない）。Redirect URI は登録しなくてよい
+4. `npm run build`。500 人を超えて配るときは Dropbox に Production の申請をする
+
+### Cloudflare D1（[ADR-013](../ai/decisions/ADR-013-template-palette-d1.md)）
+
+- 各自（またはチーム）がデプロイする Worker（[`cbTemplatePalette/d1-worker/`](../../cbTemplatePalette/d1-worker/)）を経由する。プラグインには Worker の URL・アクセストークン・スペース名だけを入れ、Cloudflare の認証情報は置かない
+- API: `GET /v1/ping`（`{ ok: true, app: "cbTemplatePalette-d1" }`）、`GET` / `PUT` / `DELETE /v1/spaces/<space>/objects/<path>`。すべて `Authorization: Bearer <ACCESS_TOKEN>`
+- テーブルは `objects (space, path, chunk, body, updated_at)`。1 つのファイル（上の Dropbox と同じ構成）を (space, path) の行で持ち、本文は UTF-8 で 1MB ごとの `chunk` に分ける。1 件 25MB まで
+- URL は `https://` か `http://localhost:<port>`。manifest が許しているのは `*.workers.dev`（独自ドメインは manifest への追加が要る）。開発中だけ `http://localhost:8787`
+- 届かない・トークンが違う: 「Cloudflare D1 に接続できませんでした。Worker の URL とアクセストークンを確認してください。」。スペース名が不正: 「保存先のスペースにアクセスできません。スペース名を確認してください。」
+- 接続テストは ping（`app` が `cbTemplatePalette-d1` か）→ テスト用ファイルの書き込み・読み込み・削除。接続テストのときだけ、原因に近い案内を出し分ける（一覧の操作中のエラーは上の 2 つの文言のまま）
+
+| 失敗の理由 | 接続テストの案内 |
+| --- | --- |
+| 届かない（fetch の失敗、ping が 404・5xx） | 「Worker の URL に届いていません。URL と、Worker がデプロイされているかを確認してください。」 |
+| ping は通るが `app` が違う・無い（例: `{"ok":true,"service":"figma-storage-api"}`） | 「この URL はテンプレパレット用の D1 Worker ではありません。cbTemplatePalette/d1-worker をデプロイした URL を入れてください。」 |
+| `app` が `cbTemplatePalette-r2` | 「R2 用 Worker の URL です。D1 には cbTemplatePalette/d1-worker をデプロイしてください。」 |
+| 401 / 403 | 「アクセストークンが Worker の ACCESS_TOKEN と一致しません。トークンを確認してください。」 |
+| ping のあとの読み書きが 5xx | 「Worker 側で D1 の読み書きに失敗しました。migration（npm run migrate）と database_id、Cloudflare のログを確認してください。」 |
+| 400 | 「保存先のスペースにアクセスできません。スペース名を確認してください。」 |
+
+- セットアップは [`d1-worker/README.md`](../../cbTemplatePalette/d1-worker/README.md)（`wrangler d1 create` → `database_id` を `wrangler.toml` に → `npm run migrate` → `wrangler secret put ACCESS_TOKEN` → `npm run deploy`）
+
+### 共有カテゴリ（[ADR-011](../ai/decisions/ADR-011-template-palette-shared-categories.md)・[ADR-012](../ai/decisions/ADR-012-template-palette-dropbox.md)・[ADR-013](../ai/decisions/ADR-013-template-palette-d1.md)）
+
+- 1 つのカテゴリが 1 つの Dropbox のフォルダか D1 のスペースに対応する。「未設定」と通常のカテゴリはローカルのまま
+- Dropbox: フォルダを Dropbox で共有し、受け取った人が自分の Dropbox に追加して同じフォルダを選ぶと、同じテンプレートを使える
+- D1: 同じ Worker の URL・アクセストークン・スペース名を複数の人が入れると、同じテンプレートを使える
 - 「共有カテゴリを追加」ダイアログ
-  - 「カテゴリ名」（空欄なら `metadata.json` の `name` → スペース名）
-  - 「Worker の URL」「アクセストークン」（伏せ字）「スペース名」（空欄なら `default`）
-  - 「接続テスト」「キャンセル」「追加」。URL とトークンが入っていれば押せる。追加すると保存先を確かめ、そのカテゴリを開く。同じ保存先がすでにある・同じ名前のカテゴリがあるときは断る
+  - 上のラジオで「Dropbox」「Cloudflare D1」を選ぶ（開いたときは Dropbox）
+  - Dropbox の接続: 「Dropbox に接続」でブラウザに許可画面を開き、表示されたコードを貼って「接続」。接続中はメールアドレスと「接続を解除」を出す
+  - Dropbox のフォルダ: 一覧（フォルダだけ）を押すと中に入る。「上へ」、新しいフォルダ名 +「作成」、「このフォルダを選ぶ」（一番上は選べない）
+  - D1: 「Worker の URL」「アクセストークン」（伏せ字）「スペース名」（空欄なら `default`）
+  - 「カテゴリ名」（空欄なら `metadata.json` の `name` → フォルダ名 / スペース名）
+  - 「接続テスト」「キャンセル」「追加」。Dropbox はフォルダを選んでいれば、D1 は URL とトークンが入っていれば押せる。追加すると保存先を確かめ、そのカテゴリを開く。同じ保存先がすでにある・同じ名前のカテゴリがあるときは断る
   - Esc・カードの外のクリックでも閉じる
-- カテゴリメニューでは、共有カテゴリの名前の右に「R2」の印を出す
-- 共有カテゴリを選ぶと、その保存先から読み直す（読み込み中は「Cloudflare R2 から読み込んでいます…」）。保存もその保存先へ
+- カテゴリメニューでは、共有カテゴリの名前の右に「Dropbox」か「D1」の印を出す
+- 共有カテゴリを選ぶと、その保存先から読み直す（読み込み中は「Dropbox から読み込んでいます…」「Cloudflare D1 から読み込んでいます…」）。保存もその保存先へ
 - 中のテンプレートは、保存先に書かれたカテゴリに関係なく共有カテゴリの名前で見せる。「名前を変更」は自分の一覧での表示名だけ変える
 - 「⋯」→「カテゴリを外す」（共有カテゴリのときだけこの名前）: 「「名前」をこの一覧から外します」「保存先のデータは消えません。もう一度追加すれば戻せます」で確かめ、登録だけを消す
 - 別の保存先のカテゴリへの移動は、移動先に保存してから移動元を消す。移動メニューのグループは今見ている保存先のものだけ

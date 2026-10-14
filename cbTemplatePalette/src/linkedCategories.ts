@@ -2,8 +2,8 @@ import { normalizeSource, sourceLabel } from "./sources";
 import type { LinkedCategory, LinkedCategoryInfo } from "./types";
 
 /**
- * 共有カテゴリの登録。R2 の合言葉を含み、端末ごとの設定なので clientStorage に置く。
- * R2 として読めない登録は読み飛ばす。
+ * 共有カテゴリの登録。端末ごとの設定なので clientStorage に置く。
+ * Dropbox のフォルダとしても D1 のスペースとしても読めない登録（以前の R2 のものなど）は読み飛ばす。
  */
 const LINKED_KEY = "cbTemplatePalette.linkedCategories";
 

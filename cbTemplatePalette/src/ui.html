@@ -134,6 +134,7 @@
         <p id="error" class="error" hidden></p>
         <div id="storage-error" class="error storage-error" role="alert" hidden>
           <p id="storage-error-text" class="storage-error-text"></p>
+          <button id="storage-error-connect" class="btn-secondary" type="button" hidden>Dropbox の接続を確認</button>
         </div>
         <ul id="list" class="template-list" role="tree" aria-label="保存した要素"></ul>
       </section>
@@ -264,9 +265,92 @@
         aria-labelledby="linked-dialog-title"
       >
         <p id="linked-dialog-title" class="image-dialog-title">共有カテゴリを追加</p>
-        <p class="settings-line">
-          Cloudflare R2 の保存先を 1 つのカテゴリとして足します。ほかの人と同じ保存先を追加すると、同じテンプレートを使えます。
-        </p>
+        <div class="settings-provider" role="radiogroup" aria-label="保存先">
+          <label><input type="radio" name="linked-provider" value="dropbox" checked /> Dropbox</label>
+          <label><input type="radio" name="linked-provider" value="d1" /> Cloudflare D1</label>
+        </div>
+        <div id="linked-dropbox" class="settings-section">
+          <p class="settings-line">
+            Dropbox のフォルダを 1 つのカテゴリとして足します。フォルダを Dropbox で共有し、ほかの人も同じフォルダを選ぶと、同じテンプレートを使えます。
+          </p>
+          <div class="settings-section">
+            <div class="settings-row">
+              <span id="dropbox-account" class="settings-path">Dropbox に接続していません</span>
+              <button id="dropbox-connect" class="btn-secondary" type="button">Dropbox に接続</button>
+              <button id="dropbox-disconnect" class="btn-secondary is-quiet" type="button" hidden>接続を解除</button>
+            </div>
+            <div id="dropbox-code-area" class="settings-section" hidden>
+              <p class="settings-line">ブラウザで「許可」を押したあと、表示されたコードを貼り付けてください。</p>
+              <div class="settings-row">
+                <input
+                  id="dropbox-code"
+                  class="text-input"
+                  type="text"
+                  placeholder="コード"
+                  spellcheck="false"
+                  autocomplete="off"
+                />
+                <button id="dropbox-code-submit" class="btn-primary" type="button">接続</button>
+              </div>
+            </div>
+            <span id="dropbox-message" class="settings-message" role="status"></span>
+          </div>
+          <div id="folder-section" class="settings-section" hidden>
+            <span class="settings-label">保存先フォルダ</span>
+            <div class="settings-row">
+              <button id="folder-up" class="btn-secondary" type="button">上へ</button>
+              <span id="folder-path" class="settings-path">/</span>
+            </div>
+            <ul id="folder-list" class="folder-list" aria-label="フォルダ"></ul>
+            <div class="settings-row">
+              <input
+                id="folder-new-name"
+                class="text-input"
+                type="text"
+                placeholder="新しいフォルダ名"
+                spellcheck="false"
+                autocomplete="off"
+              />
+              <button id="folder-create" class="btn-secondary" type="button">作成</button>
+            </div>
+            <div class="settings-row">
+              <button id="folder-choose" class="btn-secondary" type="button">このフォルダを選ぶ</button>
+              <span id="folder-chosen" class="settings-path">未選択</span>
+            </div>
+            <span id="folder-message" class="settings-message" role="status"></span>
+          </div>
+        </div>
+        <div id="linked-d1" class="settings-section" hidden>
+          <p class="settings-line">
+            自分（チーム）でデプロイした Worker の D1 に置きます。同じ URL・アクセストークン・スペース名を入れた人どうしで、同じテンプレートを使えます。
+          </p>
+          <label class="settings-field">
+            <span class="settings-label">Worker の URL</span>
+            <input
+              id="linked-d1-url"
+              class="text-input"
+              type="url"
+              placeholder="https://cb-template-palette-d1.xxxx.workers.dev"
+              spellcheck="false"
+              autocomplete="off"
+            />
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">アクセストークン</span>
+            <input id="linked-d1-token" class="text-input" type="password" autocomplete="off" />
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">スペース名</span>
+            <input
+              id="linked-d1-space"
+              class="text-input"
+              type="text"
+              placeholder="default"
+              spellcheck="false"
+              autocomplete="off"
+            />
+          </label>
+        </div>
         <label class="settings-field">
           <span class="settings-label">カテゴリ名</span>
           <input
@@ -278,34 +362,6 @@
             autocomplete="off"
           />
         </label>
-        <div id="linked-r2" class="settings-section">
-          <label class="settings-field">
-            <span class="settings-label">Worker の URL</span>
-            <input
-              id="linked-r2-url"
-              class="text-input"
-              type="url"
-              placeholder="https://cb-template-palette-r2.xxxx.workers.dev"
-              spellcheck="false"
-              autocomplete="off"
-            />
-          </label>
-          <label class="settings-field">
-            <span class="settings-label">アクセストークン</span>
-            <input id="linked-r2-token" class="text-input" type="password" autocomplete="off" />
-          </label>
-          <label class="settings-field">
-            <span class="settings-label">スペース名</span>
-            <input
-              id="linked-r2-space"
-              class="text-input"
-              type="text"
-              placeholder="default"
-              spellcheck="false"
-              autocomplete="off"
-            />
-          </label>
-        </div>
         <div class="settings-test">
           <button id="linked-test" class="btn-secondary" type="button">接続テスト</button>
           <span id="linked-test-result" class="settings-test-result" role="status"></span>

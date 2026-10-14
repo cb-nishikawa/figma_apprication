@@ -2,7 +2,7 @@ import type { StorageErrorKind, StorageType } from "./types";
 
 /**
  * テンプレートの保存先。storage.ts はこの get / set / remove だけを使い、
- * どこに保存するか（端末の clientStorage か共有カテゴリの R2 か）は知らない。
+ * どこに保存するか（端末の clientStorage か共有カテゴリの Dropbox・D1 か）は知らない。
  */
 export interface StorageAdapter {
   readonly type: StorageType;
@@ -15,8 +15,8 @@ export interface StorageAdapter {
 
 /**
  * 外部の保存先に届かないときのエラー。API の詳しい内容は持たせず、種類だけを UI に伝える。
- * - auth: アクセストークンが違う・取り消された
- * - folder: スペースが無い・使えない名前
+ * - auth: Dropbox に接続していない・接続が取り消された、D1 の Worker のトークンが通らない
+ * - folder: 保存先フォルダ（D1 はスペース）が無い・使えない
  * - network: 通信できない・一時的なエラー
  */
 export class StorageAccessError extends Error {

@@ -1,9 +1,11 @@
 import type {
+  DropboxFolder,
   ImportMode,
   LinkedCategoryInfo,
   ListNode,
   SourceConfig,
   StorageErrorKind,
+  StorageType,
   TemplateMeta,
   ViewMode,
 } from "./types";
@@ -59,7 +61,17 @@ export type UiToPluginMessage =
   /** 一覧の見た目だけを切り替える。並び順やグループには影響しない。 */
   | { type: "SET_VIEW_MODE"; mode: ViewMode }
   | { type: "RESIZE_UI"; height: number }
-  /** 「共有カテゴリを追加」で入力中の（まだ追加していない）保存先で確かめる。 */
+  /* 以下は「共有カテゴリを追加」の画面。Dropbox との接続とフォルダ選び。 */
+  | { type: "GET_DROPBOX_STATE" }
+  /** ブラウザで Dropbox の認可画面を開く。`challenge` は UI が作った PKCE の S256。 */
+  | { type: "DROPBOX_AUTH_START"; challenge: string }
+  /** Dropbox が表示したコードと、UI だけが持っていた code_verifier。 */
+  | { type: "DROPBOX_AUTH_CODE"; code: string; verifier: string }
+  | { type: "DROPBOX_DISCONNECT" }
+  /** `path: ""` は Dropbox の一番上。 */
+  | { type: "DROPBOX_LIST_FOLDER"; path: string }
+  | { type: "DROPBOX_CREATE_FOLDER"; parent: string; name: string }
+  /** 選んでいる（まだ追加していない）保存先で確かめる。 */
   | { type: "STORAGE_TEST"; source: SourceConfig | null }
   /**
    * UI でカテゴリを切り替えた。共有カテゴリならその保存先の一覧を、
@@ -82,7 +94,7 @@ export type PluginToUiMessage =
       /** 共有カテゴリ（外部の保存先に中身があるカテゴリ）。 */
       linked: LinkedCategoryInfo[];
       usedBytes: number;
-      /** 上限の無い保存先（R2）は null。 */
+      /** 上限の無い保存先（Dropbox・D1）は null。 */
       quotaBytes: number | null;
     }
   | {
@@ -112,8 +124,19 @@ export type PluginToUiMessage =
   | { type: "SAVED"; id: string }
   | { type: "EXPORT_DATA"; fileName: string; text: string }
   | { type: "ERROR"; message: string }
+  /** Dropbox との接続の状態。トークンは UI に渡さない。`message` は接続に失敗したときの文言。 */
+  | { type: "DROPBOX_STATE"; connected: boolean; email?: string; message?: string }
+  /** `path` の中のフォルダ。`message` は読めなかったときの文言。 */
+  | { type: "DROPBOX_FOLDERS"; path: string; folders: DropboxFolder[]; message?: string }
   | { type: "STORAGE_TEST_RESULT"; ok: boolean; message: string }
   /** 共有カテゴリを足した結果。成功なら `name` が決まった名前。 */
   | { type: "LINKED_CATEGORY_RESULT"; ok: boolean; name?: string; message?: string }
   /** 共有カテゴリの保存先に届かない。`category` はそのカテゴリ名。 */
-  | { type: "STORAGE_ERROR"; kind: StorageErrorKind; message: string; category?: string };
+  | {
+      type: "STORAGE_ERROR";
+      kind: StorageErrorKind;
+      message: string;
+      category?: string;
+      /** 失敗した保存先の種類。Dropbox の auth のときだけ「接続を確認」を出す。 */
+      provider?: StorageType;
+    };

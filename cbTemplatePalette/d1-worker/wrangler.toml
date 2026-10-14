@@ -1,11 +1,13 @@
-name = "cb-template-palette-r2"
+name = "cb-template-palette-d1"
 main = "src/index.ts"
 compatibility_date = "2026-01-01"
 
-# `npx wrangler r2 bucket create cb-template-palette` で作ったバケット名に合わせる。
-[[r2_buckets]]
-binding = "BUCKET"
-bucket_name = "cb-template-palette"
+# `npx wrangler d1 create cb-template-palette` で表示される database_id に書き換える。
+[[d1_databases]]
+binding = "DB"
+database_name = "cb-template-palette"
+database_id = "9ec0a0ed-f9dc-409c-a0c6-b10dd22834a4"
+migrations_dir = "migrations"
 
 # 合言葉は `npx wrangler secret put ACCESS_TOKEN` で入れる（このファイルには書かない）。
 #   ACCESS_TOKEN  プラグインに入力するアクセストークン。カンマ区切りで複数を許可できる
