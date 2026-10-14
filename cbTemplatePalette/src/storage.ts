@@ -149,8 +149,19 @@ export async function saveTemplate(meta: TemplateMeta, item: TemplateItem): Prom
   if (quota !== null && usedBytes(index) + meta.byteSize > quota) {
     throw new QuotaExceededError(quota);
   }
-  await storage().set(itemKey(meta.id), item);
   const next = [meta, ...index];
+  const setMany = storage().setMany?.bind(storage());
+  if (setMany) {
+    // まとめて書ける保存先（D1）は 1 回で書く。途中で失敗しても半端に残らない。
+    const tree = prependItem(await loadTree(next), meta.id);
+    await setMany([
+      { key: itemKey(meta.id), value: item },
+      { key: INDEX_KEY, value: next },
+      { key: TREE_KEY, value: tree },
+    ]);
+    return next;
+  }
+  await storage().set(itemKey(meta.id), item);
   try {
     await saveIndex(next);
   } catch (err) {
@@ -169,6 +180,16 @@ export async function deleteTemplates(
 ): Promise<TemplateMeta[]> {
   const gone = new Set(ids);
   const next = (await loadIndex()).filter((meta) => !gone.has(meta.id));
+  const setMany = storage().setMany?.bind(storage());
+  if (setMany) {
+    const tree = dropGroups.reduce(dropGroup, removeItems(await loadTree(next), ...gone));
+    await setMany([
+      { key: INDEX_KEY, value: next },
+      ...[...gone].map((id) => ({ key: itemKey(id) })),
+      { key: TREE_KEY, value: tree },
+    ]);
+    return next;
+  }
   await saveIndex(next);
   await Promise.all([...gone].map((id) => storage().remove(itemKey(id))));
   const kept = removeItems(await loadTree(next), ...gone);
@@ -186,10 +207,15 @@ export async function updateTemplate(
   if (!index.some((meta) => meta.id === id)) {
     return index;
   }
+  const next = index.map((meta) => (meta.id === id ? { ...meta, ...patch } : meta));
+  const setMany = storage().setMany?.bind(storage());
+  if (setMany) {
+    await setMany([...(item ? [{ key: itemKey(id), value: item }] : []), { key: INDEX_KEY, value: next }]);
+    return next;
+  }
   if (item) {
     await storage().set(itemKey(id), item);
   }
-  const next = index.map((meta) => (meta.id === id ? { ...meta, ...patch } : meta));
   await saveIndex(next);
   return next;
 }
@@ -205,8 +231,12 @@ export async function loadCategories(): Promise<string[]> {
   return stored.filter((name): name is string => typeof name === "string" && name.trim() !== "");
 }
 
+function uniqueCategories(names: string[]): string[] {
+  return [...new Set(names.map((name) => name.trim()).filter((name) => name !== ""))];
+}
+
 async function saveCategories(names: string[]): Promise<string[]> {
-  const unique = [...new Set(names.map((name) => name.trim()).filter((name) => name !== ""))];
+  const unique = uniqueCategories(names);
   await storage().set(CATEGORIES_KEY, unique);
   return unique;
 }
@@ -264,6 +294,28 @@ export async function setTemplatesCategory(
 /** レジストリの名前を付け替え、テンプレートの `category` もまとめて付け替える。 */
 export async function renameCategory(from: string, to: string): Promise<TemplateMeta[]> {
   const registered = await loadCategories();
+  const setMany = storage().setMany?.bind(storage());
+  if (setMany) {
+    const index = await loadIndex();
+    const tree = await loadTree(index);
+    const next = index.map((meta) => (meta.category === from ? { ...meta, category: to } : meta));
+    const renamesGroup = tree.some((node) => node.type === "group" && node.category === from);
+    await setMany([
+      { key: CATEGORIES_KEY, value: uniqueCategories([...registered.map((name) => (name === from ? to : name)), to]) },
+      { key: INDEX_KEY, value: next },
+      ...(renamesGroup
+        ? [
+            {
+              key: TREE_KEY,
+              value: tree.map((node) =>
+                node.type === "group" && node.category === from ? { ...node, category: to } : node
+              ),
+            },
+          ]
+        : []),
+    ]);
+    return next;
+  }
   await saveCategories([...registered.map((name) => (name === from ? to : name)), to]);
   const index = await loadIndex();
   const tree = await loadTree(index);

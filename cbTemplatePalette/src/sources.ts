@@ -8,8 +8,7 @@ export interface ExternalAdapter extends StorageAdapter {
   verify(): Promise<void>;
 }
 
-/** 印（metadata.json）のキー。jsonCodec の locate で `metadata.json` になる。 */
-export const METADATA_KEY = "metadata";
+export { METADATA_KEY } from "./jsonCodec";
 
 const D1_FAILED_MESSAGE = "Cloudflare D1 に接続できませんでした。\nWorker の URL とアクセストークンを確認してください。";
 const D1_SPACE_MESSAGE = "保存先のスペースにアクセスできません。\nスペース名を確認してください。";
@@ -20,6 +19,7 @@ const D1_TEST_MESSAGES: Record<Exclude<D1TestFailure, StorageErrorKind>, string>
   wrong_worker:
     "この URL はテンプレパレット用の D1 Worker ではありません。\ncbTemplatePalette/d1-worker をデプロイした URL を入れてください。",
   r2_worker: "R2 用 Worker の URL です。\nD1 には cbTemplatePalette/d1-worker をデプロイしてください。",
+  old_worker: "Worker が古い版です。\ncbTemplatePalette/d1-worker で npm run deploy を実行して更新してください。",
   server:
     "Worker 側で D1 の読み書きに失敗しました。\nmigration（npm run migrate）と database_id、Cloudflare のログを確認してください。",
 };

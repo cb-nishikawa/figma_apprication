@@ -13,6 +13,8 @@ const ITEM_PREFIX = "cbTemplatePalette.item.";
 
 export const ITEMS_FOLDER = "items";
 export const METADATA_FILE = "metadata.json";
+/** 印（metadata.json）のキー。locate で `metadata.json` になる。 */
+export const METADATA_KEY = "metadata";
 export const TEST_FILE = ".cbtemplate-connection-test";
 export const METADATA_APP = "cbTemplatePalette";
 export const METADATA_FORMAT_VERSION = 1;

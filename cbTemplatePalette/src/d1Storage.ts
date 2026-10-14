@@ -1,4 +1,4 @@
-import { METADATA_FILE, TEST_FILE, decodeValue, encodeValue, isMetadata, locatePath, newMetadata } from "./jsonCodec";
+import { METADATA_FILE, METADATA_KEY, TEST_FILE, decodeValue, encodeValue, isMetadata, locatePath, newMetadata } from "./jsonCodec";
 import { SHARED_QUOTA_BYTES, StorageAccessError, type StorageAdapter } from "./storageAdapter";
 import type { D1Source, StorageErrorKind } from "./types";
 
@@ -31,19 +31,27 @@ export function normalizeD1Source(value: unknown): D1Source | null {
   return { provider: "d1", endpoint, token, space };
 }
 
-function objectUrl(source: D1Source, path: string): string {
-  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-  return `${source.endpoint}/v1/spaces/${encodeURIComponent(source.space)}/objects/${encodedPath}`;
-}
+/** 一括 API の版。Worker がこれを返さなければ古い Worker。 */
+const API_VERSION = 2;
+/** まとめて読む一番上のキー。開いたときの確認では metadata も一緒に読む。 */
+const TOP_KEYS = ["cbTemplatePalette.index", "cbTemplatePalette.tree", "cbTemplatePalette.categories"];
+const PREFETCH_KEYS = [METADATA_KEY, ...TOP_KEYS];
 
 /**
  * 接続テストで案内を分けるための理由。一覧の操作中のエラーは `kind` だけを使う。
  * - unreachable: Worker に届かない（URL の誤り・未デプロイ）
  * - wrong_worker: 届いたが d1-worker ではない
  * - r2_worker: 削除した R2 用 Worker の URL
+ * - old_worker: 一括 API を持たない、更新前の d1-worker
  * - server: d1-worker だが D1 の読み書きで失敗した（migration をしていないなど）
  */
-export type D1TestFailure = StorageErrorKind | "unreachable" | "wrong_worker" | "r2_worker" | "server";
+export type D1TestFailure =
+  | StorageErrorKind
+  | "unreachable"
+  | "wrong_worker"
+  | "r2_worker"
+  | "old_worker"
+  | "server";
 
 class D1AccessError extends StorageAccessError {
   constructor(
@@ -54,71 +62,50 @@ class D1AccessError extends StorageAccessError {
   }
 }
 
-async function workerFetch(source: D1Source, url: string, init: FetchOptions = {}): Promise<FetchResponse> {
+interface BatchOps {
+  get?: string[];
+  put?: Array<{ path: string; body: string }>;
+  delete?: string[];
+}
+
+/**
+ * Worker の一括 API を 1 回呼ぶ。POST・text/plain・独自ヘッダー無しにして CORS の preflight を起こさないため、
+ * トークンはヘッダーではなく本文に入れる（URL には入れない）。返すのは読んだファイル（無ければ null）。
+ * Worker の本文は UI に出さず、種類だけにする。
+ */
+async function batch(source: D1Source, ops: BatchOps): Promise<Record<string, string | null>> {
+  let response: FetchResponse;
   try {
-    return await fetch(url, { ...init, headers: { ...init.headers, Authorization: `Bearer ${source.token}` } });
+    response = await fetch(`${source.endpoint}/v1/spaces/${encodeURIComponent(source.space)}/batch`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({ token: source.token, ...ops }),
+    });
   } catch {
     throw new D1AccessError("network", "unreachable");
   }
-}
-
-/** Worker の本文は UI に出さず、種類だけにする。 */
-function toError(response: FetchResponse): StorageAccessError {
+  const body = (await response.json().catch(() => null)) as {
+    app?: unknown;
+    api?: unknown;
+    objects?: Record<string, string | null>;
+  } | null;
+  const current = body?.api === API_VERSION;
   if (response.status === 401 || response.status === 403) {
-    return new D1AccessError("auth", "auth");
+    throw new D1AccessError("auth", current ? "auth" : "old_worker");
   }
-  if (response.status === 400) {
-    return new D1AccessError("folder", "folder");
-  }
-  return new D1AccessError("network", response.status >= 500 ? "server" : "network");
-}
-
-/** URL の先が d1-worker で、トークンが通るか。 */
-async function ping(source: D1Source): Promise<void> {
-  const response = await workerFetch(source, `${source.endpoint}/v1/ping`);
-  if (response.status === 401 || response.status === 403) {
-    throw new D1AccessError("auth", "auth");
-  }
-  // ping は D1 を使わないので、ほかの失敗（404・5xx など）は Worker 自体に届いていないものとして扱う。
   if (!response.ok) {
-    throw new D1AccessError("network", "unreachable");
+    if (response.status === 400) {
+      throw new D1AccessError("folder", "folder");
+    }
+    throw new D1AccessError("network", response.status >= 500 ? "server" : current ? "network" : "unreachable");
   }
-  const body = (await response.json().catch(() => null)) as { app?: unknown } | null;
   if (body?.app === R2_PING_APP) {
     throw new D1AccessError("network", "r2_worker");
   }
-  if (body?.app !== PING_APP) {
+  if (body?.app !== PING_APP || !current) {
     throw new D1AccessError("network", "wrong_worker");
   }
-}
-
-async function readText(source: D1Source, path: string): Promise<string | undefined> {
-  const response = await workerFetch(source, objectUrl(source, path));
-  if (response.status === 404) {
-    return undefined;
-  }
-  if (!response.ok) {
-    throw toError(response);
-  }
-  return response.text();
-}
-
-async function writeText(source: D1Source, path: string, text: string): Promise<void> {
-  const response = await workerFetch(source, objectUrl(source, path), {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: text,
-  });
-  if (!response.ok) {
-    throw toError(response);
-  }
-}
-
-async function deleteObject(source: D1Source, path: string): Promise<void> {
-  const response = await workerFetch(source, objectUrl(source, path), { method: "DELETE" });
-  if (!response.ok && response.status !== 404) {
-    throw toError(response);
-  }
+  return body.objects ?? {};
 }
 
 /**
@@ -127,7 +114,8 @@ async function deleteObject(source: D1Source, path: string): Promise<void> {
  */
 interface SourceState {
   ready: Promise<void> | null;
-  values: Map<string, { text: string; at: number }>;
+  /** `text: null` はファイルが無いと分かっているもの。 */
+  values: Map<string, { text: string | null; at: number }>;
 }
 
 const sourceStates = new Map<string, SourceState>();
@@ -152,21 +140,26 @@ export class D1StorageAdapter implements StorageAdapter {
     this.state = stateFor(source);
   }
 
-  private get values(): Map<string, { text: string; at: number }> {
-    return this.state.values;
-  }
-
-  /** Worker に届き、スペースに印（metadata.json）があるか確かめる。無ければ作る。 */
+  /**
+   * Worker に届き、スペースに印（metadata.json）があるか確かめる。無ければ作る。
+   * 同じ 1 回で index・tree・categories も読んで覚えておく（開いた直後の読み込みに使う）。
+   */
   verify(): Promise<void> {
     const state = this.state;
     if (!state.ready) {
       state.ready = (async () => {
-        await ping(this.source);
-        const text = await readText(this.source, METADATA_FILE);
-        if (text === undefined) {
-          await writeText(this.source, METADATA_FILE, encodeValue(newMetadata()));
-        } else if (!isMetadata(safeDecode(text))) {
+        const objects = await batch(this.source, { get: PREFETCH_KEYS.map(locatePath) });
+        const metadata = objects[METADATA_FILE] ?? null;
+        if (metadata !== null && !isMetadata(safeDecode(metadata))) {
           throw new StorageAccessError("folder");
+        }
+        for (const key of TOP_KEYS) {
+          this.remember(key, objects[locatePath(key)] ?? null);
+        }
+        if (metadata === null) {
+          await this.write([{ key: METADATA_KEY, value: newMetadata() }]);
+        } else {
+          this.remember(METADATA_KEY, metadata);
         }
       })().catch((err) => {
         state.ready = null;
@@ -177,40 +170,81 @@ export class D1StorageAdapter implements StorageAdapter {
   }
 
   async get(key: string): Promise<unknown> {
-    const cached = this.values.get(key);
-    if (cached && Date.now() - cached.at < VALUE_CACHE_MS) {
-      return decodeValue(cached.text);
+    let cached = this.cached(key);
+    if (cached === undefined) {
+      await this.verify();
+      cached = this.cached(key);
     }
-    await this.verify();
-    const path = locatePath(key);
-    const text = await readText(this.source, path);
-    if (text === undefined) {
-      this.values.delete(key);
-      return undefined;
+    if (cached !== undefined) {
+      return cached === null ? undefined : safeDecode(cached);
     }
-    this.remember(key, path, text);
-    return safeDecode(text);
+    // 一番上のキーは、続けて読まれることが多いので 3 つまとめて読む。
+    const keys = TOP_KEYS.includes(key) ? TOP_KEYS : [key];
+    const objects = await batch(this.source, { get: keys.map(locatePath) });
+    for (const entry of keys) {
+      this.remember(entry, objects[locatePath(entry)] ?? null);
+    }
+    const text = objects[locatePath(key)] ?? null;
+    return text === null ? undefined : safeDecode(text);
   }
 
-  async set(key: string, value: unknown): Promise<void> {
+  set(key: string, value: unknown): Promise<void> {
+    return this.setMany([{ key, value }]);
+  }
+
+  remove(key: string): Promise<void> {
+    return this.setMany([{ key }]);
+  }
+
+  /** まとめて 1 回で書く（D1 では 1 つのトランザクション）。`value` が無いものは消す。 */
+  async setMany(entries: Array<{ key: string; value?: unknown }>): Promise<void> {
     await this.verify();
-    const path = locatePath(key);
-    const text = encodeValue(value);
-    await writeText(this.source, path, text);
-    this.remember(key, path, text);
+    await this.write(entries);
   }
 
-  async remove(key: string): Promise<void> {
-    await this.verify();
-    this.values.delete(key);
-    await deleteObject(this.source, locatePath(key));
-  }
-
-  private remember(key: string, path: string, text: string): void {
-    if (path.includes("/")) {
+  private async write(entries: Array<{ key: string; value?: unknown }>): Promise<void> {
+    const put: Array<{ path: string; body: string }> = [];
+    const del: string[] = [];
+    const texts = new Map<string, string | null>();
+    for (const { key, value } of entries) {
+      const path = locatePath(key);
+      if (value === undefined) {
+        del.push(path);
+        texts.set(key, null);
+      } else {
+        const body = encodeValue(value);
+        put.push({ path, body });
+        texts.set(key, body);
+      }
+    }
+    if (put.length === 0 && del.length === 0) {
       return;
     }
-    this.values.set(key, { text, at: Date.now() });
+    try {
+      await batch(this.source, { put, delete: del });
+    } catch (err) {
+      for (const key of texts.keys()) {
+        this.state.values.delete(key);
+      }
+      throw err;
+    }
+    for (const [key, text] of texts) {
+      this.remember(key, text);
+    }
+  }
+
+  /** 使い回せる値。無ければ undefined、ファイルが無いと分かっていれば null。 */
+  private cached(key: string): string | null | undefined {
+    const entry = this.state.values.get(key);
+    return entry && Date.now() - entry.at < VALUE_CACHE_MS ? entry.text : undefined;
+  }
+
+  /** 一番上のファイル（index・tree など）だけ覚える。item は大きいので覚えない。 */
+  private remember(key: string, text: string | null): void {
+    if (locatePath(key).includes("/")) {
+      return;
+    }
+    this.state.values.set(key, { text, at: Date.now() });
   }
 }
 
@@ -223,20 +257,20 @@ function safeDecode(text: string): unknown {
 }
 
 /**
- * Worker に届くか → d1-worker か → 合言葉が通るか → スペースに書けて読めるか、の順に確かめる。
+ * Worker に届くか → d1-worker（一括 API を持つ版）か → 合言葉が通るか → スペースに書けて読めるか、の順に確かめる。
  * テスト用のファイルは作ってすぐ消す。成功なら null、失敗なら理由。
  */
 export async function testD1Connection(source: D1Source): Promise<D1TestFailure | null> {
   try {
-    await ping(source);
+    await batch(source, {});
     const content = encodeValue({ test: true, at: new Date().toISOString() });
-    await writeText(source, TEST_FILE, content);
     try {
-      if ((await readText(source, TEST_FILE)) !== content) {
+      const objects = await batch(source, { put: [{ path: TEST_FILE, body: content }], get: [TEST_FILE] });
+      if (objects[TEST_FILE] !== content) {
         throw new StorageAccessError("folder");
       }
     } finally {
-      await deleteObject(source, TEST_FILE).catch(() => undefined);
+      await batch(source, { delete: [TEST_FILE] }).catch(() => undefined);
     }
     return null;
   } catch (err) {

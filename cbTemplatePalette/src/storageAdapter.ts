@@ -9,6 +9,11 @@ export interface StorageAdapter {
   get(key: string): Promise<unknown>;
   set(key: string, value: unknown): Promise<void>;
   remove(key: string): Promise<void>;
+  /**
+   * まとめて 1 回で書く（`value` が無いものは消す）。持っている保存先（D1）だけ。
+   * 無ければ storage.ts が set / remove を 1 つずつ呼ぶ。
+   */
+  setMany?(entries: Array<{ key: string; value?: unknown }>): Promise<void>;
   /** 保存できる上限。上限が無い保存先は null。 */
   readonly quotaBytes: number | null;
 }

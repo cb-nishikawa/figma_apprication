@@ -85,10 +85,14 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
 ### Cloudflare D1（[ADR-013](../ai/decisions/ADR-013-template-palette-d1.md)）
 
 - 各自（またはチーム）がデプロイする Worker（[`cbTemplatePalette/d1-worker/`](../../cbTemplatePalette/d1-worker/)）を経由する。プラグインには Worker の URL・アクセストークン・スペース名だけを入れ、Cloudflare の認証情報は置かない
-- API: `GET /v1/ping`（`{ ok: true, app: "cbTemplatePalette-d1" }`）、`GET` / `PUT` / `DELETE /v1/spaces/<space>/objects/<path>`。すべて `Authorization: Bearer <ACCESS_TOKEN>`
+- プラグインが使う API は一括 API `POST /v1/spaces/<space>/batch` だけ（[ADR-017](../ai/decisions/ADR-017-template-palette-d1-batch.md)）。本文 `{ token, get?, put?: { path, body }[], delete? }`、応答 `{ ok: true, app: "cbTemplatePalette-d1", api: 2, objects: { <path>: 本文 | null } }`。削除と上書きを 1 つのトランザクションで行い、そのあと `get` を読む。`Content-Type: text/plain`・トークンは本文なので、CORS の事前確認（OPTIONS）は出ない
+  - 1 回 45 文（SELECT を含む）・`get` 90 個・本文全体 30MB まで（超えたら 413 / 400）
+  - 旧 API（`GET /v1/ping`、`GET` / `PUT` / `DELETE /v1/spaces/<space>/objects/<path>`、`Authorization: Bearer <ACCESS_TOKEN>`）も残す。プラグインは使わない
+- Worker への呼び出しは、共有カテゴリを開くと 1 回（新しいスペースは 2 回）、保存・削除は 1 回（使い回しが切れていれば読み込みを足して 2 回）
 - テーブルは `objects (space, path, chunk, body, updated_at)`。1 つのファイル（下の表）を (space, path) の行で持ち、本文は UTF-8 で 1MB ごとの `chunk` に分ける。1 件 25MB まで
 - 書き込みは同じ chunk を上書き（UPSERT）し、余った chunk だけ消す（1 回の `batch`）。D1 の書き込み行数は 1 chunk あたり 1 行（[ADR-016](../ai/decisions/ADR-016-template-palette-d1-io.md)）
-- プラグインは保存先（URL・スペース名・トークン）ごとに、ping と `metadata.json` の確認を 1 回だけ行う（保存先を作り直してもやり直さない）。`index`・`tree`・`categories` の読み込み結果は 10 秒使い回す（自分が書いた値はすぐ反映。ほかの人の変更は最大 10 秒遅れて見える）
+- プラグインは保存先（URL・スペース名・トークン）ごとに、保存先の確認を 1 回だけ行う（保存先を作り直してもやり直さない）。確認は 1 回の呼び出しで `metadata.json`・`index.json`・`tree.json`・`categories.json` を読み、ping も兼ねる。`index`・`tree`・`categories` は 3 つまとめて読み、読み込み結果（無いことも含む）は 10 秒使い回す（自分が書いた値はすぐ反映。ほかの人の変更は最大 10 秒遅れて見える）
+- `StorageAdapter.setMany` があると、テンプレートの保存（item・index・tree）・削除・更新・カテゴリ名の変更を 1 回で書く。ローカルは 1 つずつ
 
 | ファイル | 対応するキー |
 | --- | --- |
@@ -101,14 +105,15 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
 - `Uint8Array` は `{"$u8": base64}` にして JSON にする。本文は ASCII だけ（それ以外は `\uXXXX`）
 - URL は `https://` か `http://localhost:<port>`。manifest が許しているのは `*.workers.dev`（独自ドメインは manifest への追加が要る）。開発中だけ `http://localhost:8787`
 - 届かない・トークンが違う: 「Cloudflare D1 に接続できませんでした。Worker の URL とアクセストークンを確認してください。」。スペース名が不正: 「保存先のスペースにアクセスできません。スペース名を確認してください。」
-- 接続テストは ping（`app` が `cbTemplatePalette-d1` か）→ テスト用ファイルの書き込み・読み込み・削除。接続テストのときだけ、原因に近い案内を出し分ける（一覧の操作中のエラーは上の 2 つの文言のまま）
+- 接続テストは一括 API の ping（`app` が `cbTemplatePalette-d1` か、`api: 2` があるか）→ テスト用ファイルの書き込みと読み込み（1 回）→ 削除。接続テストのときだけ、原因に近い案内を出し分ける（一覧の操作中のエラーは上の 2 つの文言のまま）
 
 | 失敗の理由 | 接続テストの案内 |
 | --- | --- |
 | 届かない（fetch の失敗、ping が 404・5xx） | 「Worker の URL に届いていません。URL と、Worker がデプロイされているかを確認してください。」 |
 | ping は通るが `app` が違う・無い（例: `{"ok":true,"service":"figma-storage-api"}`） | 「この URL はテンプレパレット用の D1 Worker ではありません。cbTemplatePalette/d1-worker をデプロイした URL を入れてください。」 |
 | `app` が `cbTemplatePalette-r2` | 「R2 用 Worker の URL です。D1 には cbTemplatePalette/d1-worker をデプロイしてください。」 |
-| 401 / 403 | 「アクセストークンが Worker の ACCESS_TOKEN と一致しません。トークンを確認してください。」 |
+| 401 / 403（応答に `api: 2` がある） | 「アクセストークンが Worker の ACCESS_TOKEN と一致しません。トークンを確認してください。」 |
+| 401 / 403（`api: 2` が無い。一括 API の無い古い Worker） | 「Worker が古い版です。cbTemplatePalette/d1-worker で npm run deploy を実行して更新してください。」 |
 | ping のあとの読み書きが 5xx | 「Worker 側で D1 の読み書きに失敗しました。migration（npm run migrate）と database_id、Cloudflare のログを確認してください。」 |
 | 400 | 「保存先のスペースにアクセスできません。スペース名を確認してください。」 |
 

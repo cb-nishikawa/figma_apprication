@@ -8,11 +8,26 @@
 
 ## API
 
-すべて `Authorization: Bearer <ACCESS_TOKEN>` が必要です。合わなければ 401 を返します。
+### 一括 API（プラグインが使う）
+
+`POST /v1/spaces/<space>/batch`。`Content-Type: text/plain` で、アクセストークンは本文に入れます（ヘッダーを付けないので、ブラウザの CORS の事前確認 OPTIONS が出ません）。
+
+```json
+{ "token": "<ACCESS_TOKEN>", "get": ["index.json"], "put": [{ "path": "items/a.json", "body": "{...}" }], "delete": ["items/b.json"] }
+```
+
+- 応答は `{ "ok": true, "app": "cbTemplatePalette-d1", "api": 2, "objects": { "index.json": "..." } }`。無いファイルは `null`
+- `delete` と `put` を 1 つのトランザクションで行い、そのあと `get` を読みます（書いた値を同じ呼び出しで読み返せます）。何も指定しなければ ping
+- トークンが違えば 401 `{ "error": "auth", "api": 2 }`。不正な path・スペース名は 400
+- 1 回 45 文まで（`put` 1 件は 1MB ごとに 1 文 + 1 文、`delete` は 90 件で 1 文、`get` があれば 1 文）。超えたら 413 `too_many`。`get` は 90 件まで。本文全体は 30MB、`put` 1 件は 25MB まで（超えたら 413 `too_large`）
+
+### 1 つずつの API（curl での確認用）
+
+`Authorization: Bearer <ACCESS_TOKEN>` が必要です。合わなければ 401 を返します。
 
 | メソッドとパス | 内容 |
 | --- | --- |
-| `GET /v1/ping` | `{ ok: true, app: "cbTemplatePalette-d1" }`。プラグインの接続テストが使う |
+| `GET /v1/ping` | `{ ok: true, app: "cbTemplatePalette-d1" }` |
 | `GET /v1/spaces/<space>/objects/<path>` | ファイルを読む。無ければ 404 |
 | `PUT /v1/spaces/<space>/objects/<path>` | ファイルを書く（上書き、25MB まで。超えたら 413） |
 | `DELETE /v1/spaces/<space>/objects/<path>` | ファイルを消す |
@@ -29,7 +44,7 @@
 
 ### 2026-10-14 より前にデプロイした人へ
 
-書き込みの方式を変えました（API は同じ）。このフォルダで `npm run deploy` し直すと、書き込み行数が減ります。再デプロイしなくても、プラグインはそのまま使えます。
+**このフォルダで `npm run deploy` し直してください（必須）。** 新しいプラグインは一括 API（`/batch`）だけを使うので、古い Worker のままでは共有カテゴリを読み書きできません（接続テストで「Worker が古い版です」と出ます）。再デプロイすると、書き込み行数も減ります（UPSERT）。テーブルとデータはそのままで、migration は要りません。
 
 ## 設定手順
 
@@ -56,7 +71,7 @@ npm run deploy
 - プラグインの `manifest.json` は `https://*.workers.dev` への通信だけを許可しています。独自ドメインで Worker を動かす場合は、`networkAccess.allowedDomains` にそのドメインを足してビルドし直してください
 - 同じスペースに複数の人が同時に保存すると、一覧（`index.json`）は後から書いた方が残ります。もう一方の追加が一覧から消えることがあります（データ自体は `items/` に残ります）
 - アクセストークンは、入力した人の Figma（clientStorage）に保存されます
-- 無料プランの D1 は 1 データベース 500MB まで、Worker の 1 回の呼び出しで使えるクエリは 50 までです（25MB の本文で 26 文）
+- 無料プランの D1 は 1 データベース 500MB まで、Worker の 1 回の呼び出しで使えるクエリは 50 までです（一括 API は 45 文までに抑えています）
 
 ## 接続テストが失敗するとき
 
@@ -73,11 +88,19 @@ curl -s -H "Authorization: Bearer <ACCESS_TOKEN>" "https://cb-template-palette-d
 | `{"ok":true,"service":"figma-storage-api"}` など、`app` が違う・無い | **別の Worker の URL**。このフォルダの Worker を `npm run deploy` して、表示された URL を入れる |
 | `{"ok":true,"app":"cbTemplatePalette-r2"}` | 削除した R2 用 Worker の URL。このフォルダの Worker をデプロイし直す |
 | 401 / `{"error":"auth"}` | トークンが `ACCESS_TOKEN` と違う（`wrangler secret put ACCESS_TOKEN` で入れた値を使う） |
+| プラグインで「Worker が古い版です」 | 一括 API の無い Worker。このフォルダで `npm run deploy` する |
 | 404・つながらない | URL の誤り、または未デプロイ。URL の末尾に `/v1/ping` やスラッシュを付けずにプラグインへ入れる |
 
 ping は通るのに接続テストで「D1 の読み書きに失敗しました」と出るときは、`wrangler.toml` の `database_id` が実際の ID になっているか、`npm run migrate` でテーブルを作ったかを確かめてください（`npx wrangler tail` でログを見られます）。
 
-プラグインの接続テストは、原因に近い案内（別の Worker・R2 用 Worker・トークン違い・届かない・D1 の失敗）を出し分けます。
+一括 API は次のように確かめられます（`"api":2` が出れば新しい Worker です）。
+
+```sh
+curl -s -X POST -H "Content-Type: text/plain" --data '{"token":"<ACCESS_TOKEN>"}' "https://cb-template-palette-d1.<サブドメイン>.workers.dev/v1/spaces/default/batch"
+# => {"ok":true,"app":"cbTemplatePalette-d1","objects":{},"api":2}
+```
+
+プラグインの接続テストは、原因に近い案内（別の Worker・R2 用 Worker・古い Worker・トークン違い・届かない・D1 の失敗）を出し分けます。
 
 ## ローカルで動かす
 
