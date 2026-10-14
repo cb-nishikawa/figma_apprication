@@ -66,6 +66,8 @@ export type UiToPluginMessage =
    * それ以外はローカルの一覧を返す（保存先が変わらなければ何も返さない）。
    */
   | { type: "VIEW_CATEGORY"; category: string }
+  /** COMPRESS_IMAGES の返事。圧縮できなかった画像は元のバイト列のまま入れる。 */
+  | { type: "IMAGES_COMPRESSED"; requestId: number; images: Record<string, Uint8Array> }
   /** 共有カテゴリを足す。`name` が空なら保存先の名前を使う。 */
   | { type: "ADD_LINKED_CATEGORY"; name: string; source: SourceConfig }
   /** 設定の「共有カテゴリを使用する」。すぐ反映して一覧を返す。 */
@@ -86,7 +88,7 @@ export type PluginToUiMessage =
       /** 設定の「共有カテゴリを使用する」。 */
       useSharedCategories: boolean;
       usedBytes: number;
-      /** 上限の無い保存先（D1）は null。 */
+      /** ローカルは約 5MB、共有カテゴリ（D1 のスペース）は 20MB。null は上限なし。 */
       quotaBytes: number | null;
     }
   | {
@@ -101,12 +103,14 @@ export type PluginToUiMessage =
       origin: "user" | "plugin";
     }
   | { type: "BUSY"; message: string | null }
+  /** 保存する画像を UI の canvas で縮小・再圧縮してもらう。キーは画像ハッシュ。 */
+  | { type: "COMPRESS_IMAGES"; requestId: number; images: Record<string, Uint8Array> }
   /** 保存対象に画像があるため、含めるか選ばせる。選ぶまで保存は始まらない。 */
   | {
       type: "ASK_IMAGES";
       /** 選択内で見た画像の種類数（同じ画像は 1 つに数える）。 */
       count: number;
-      /** その画像のバイト列合計。 */
+      /** その画像のバイト列合計（圧縮後）。 */
       bytes: number;
       /** 保存容量の残り。 */
       remaining: number;

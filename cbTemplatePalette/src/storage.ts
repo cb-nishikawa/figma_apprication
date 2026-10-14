@@ -136,8 +136,10 @@ export function estimateBytes(
 }
 
 export class QuotaExceededError extends Error {
-  constructor() {
-    super("保存容量の上限（約 5MB）を超えるため保存できません。不要なテンプレートを削除してください");
+  constructor(quotaBytes: number) {
+    super(
+      `保存容量の上限（約 ${Math.round(quotaBytes / (1024 * 1024))}MB）を超えるため保存できません。不要なテンプレートを削除してください`
+    );
   }
 }
 
@@ -145,7 +147,7 @@ export async function saveTemplate(meta: TemplateMeta, item: TemplateItem): Prom
   const index = await loadIndex();
   const quota = storage().quotaBytes;
   if (quota !== null && usedBytes(index) + meta.byteSize > quota) {
-    throw new QuotaExceededError();
+    throw new QuotaExceededError(quota);
   }
   await storage().set(itemKey(meta.id), item);
   const next = [meta, ...index];

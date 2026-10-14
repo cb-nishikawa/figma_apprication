@@ -136,16 +136,18 @@ async function putObject(request: Request, env: Env, target: Target): Promise<Re
     return json({ error: "invalid" }, 400);
   }
   const now = Date.now();
+  // 同じ chunk は上書きにする（消して入れ直すと、行と索引の書き込みが増えるため）。余った chunk だけ消す。
   const statements = [
-    env.DB.prepare("DELETE FROM objects WHERE space = ?1 AND path = ?2").bind(target.space, target.path),
     ...chunks.map((body, chunk) =>
-      env.DB.prepare("INSERT INTO objects (space, path, chunk, body, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)").bind(
-        target.space,
-        target.path,
-        chunk,
-        body,
-        now
-      )
+      env.DB.prepare(
+        "INSERT INTO objects (space, path, chunk, body, updated_at) VALUES (?1, ?2, ?3, ?4, ?5) " +
+          "ON CONFLICT (space, path, chunk) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at"
+      ).bind(target.space, target.path, chunk, body, now)
+    ),
+    env.DB.prepare("DELETE FROM objects WHERE space = ?1 AND path = ?2 AND chunk >= ?3").bind(
+      target.space,
+      target.path,
+      chunks.length
     ),
   ];
   // batch は 1 つのトランザクション。途中で失敗しても古い本文が残る。

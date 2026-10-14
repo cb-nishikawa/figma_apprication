@@ -1,5 +1,5 @@
 import { METADATA_FILE, TEST_FILE, decodeValue, encodeValue, isMetadata, locatePath, newMetadata } from "./jsonCodec";
-import { StorageAccessError, type StorageAdapter } from "./storageAdapter";
+import { SHARED_QUOTA_BYTES, StorageAccessError, type StorageAdapter } from "./storageAdapter";
 import type { D1Source, StorageErrorKind } from "./types";
 
 /**
@@ -12,8 +12,8 @@ const PING_APP = "cbTemplatePalette-d1";
 /** 削除した R2 用 Worker の ping。URL を取り違えたときの案内に使う。 */
 const R2_PING_APP = "cbTemplatePalette-r2";
 const SPACE_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
-/** 1 回の操作の中で何度も読む index や tree を、取りに行かずに返す時間。 */
-const VALUE_CACHE_MS = 5000;
+/** index や tree を取りに行かずに返す時間。ほかの人の変更は、見えるまでこれだけ遅れることがある。 */
+const VALUE_CACHE_MS = 10_000;
 
 /** 入力された D1 の設定を整える。使えない値なら null。 */
 export function normalizeD1Source(value: unknown): D1Source | null {
@@ -121,19 +121,46 @@ async function deleteObject(source: D1Source, path: string): Promise<void> {
   }
 }
 
+/**
+ * 保存先ごとの確認結果と読み込み結果。設定の切り替えなどで D1StorageAdapter を作り直しても、
+ * 同じ保存先なら確認（ping と metadata.json）をやり直さない。
+ */
+interface SourceState {
+  ready: Promise<void> | null;
+  values: Map<string, { text: string; at: number }>;
+}
+
+const sourceStates = new Map<string, SourceState>();
+
+function stateFor(source: D1Source): SourceState {
+  const key = `${source.endpoint}\n${source.space}\n${source.token}`;
+  let state = sourceStates.get(key);
+  if (!state) {
+    state = { ready: null, values: new Map() };
+    sourceStates.set(key, state);
+  }
+  return state;
+}
+
 export class D1StorageAdapter implements StorageAdapter {
   readonly type = "d1" as const;
-  readonly quotaBytes = null;
+  readonly quotaBytes = SHARED_QUOTA_BYTES;
 
-  private readonly values = new Map<string, { text: string; at: number }>();
-  private ready: Promise<void> | null = null;
+  private readonly state: SourceState;
 
-  constructor(readonly source: D1Source) {}
+  constructor(readonly source: D1Source) {
+    this.state = stateFor(source);
+  }
+
+  private get values(): Map<string, { text: string; at: number }> {
+    return this.state.values;
+  }
 
   /** Worker に届き、スペースに印（metadata.json）があるか確かめる。無ければ作る。 */
   verify(): Promise<void> {
-    if (!this.ready) {
-      this.ready = (async () => {
+    const state = this.state;
+    if (!state.ready) {
+      state.ready = (async () => {
         await ping(this.source);
         const text = await readText(this.source, METADATA_FILE);
         if (text === undefined) {
@@ -142,11 +169,11 @@ export class D1StorageAdapter implements StorageAdapter {
           throw new StorageAccessError("folder");
         }
       })().catch((err) => {
-        this.ready = null;
+        state.ready = null;
         throw err;
       });
     }
-    return this.ready;
+    return state.ready;
   }
 
   async get(key: string): Promise<unknown> {

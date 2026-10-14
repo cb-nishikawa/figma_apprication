@@ -32,6 +32,8 @@ export class StorageAccessError extends Error {
 
 /** clientStorage allows roughly 5MB per plugin. */
 export const LOCAL_QUOTA_BYTES = 5 * 1024 * 1024;
+/** 共有カテゴリ 1 つ（D1 のスペース 1 つ）の上限。Worker 側では見ていない。 */
+export const SHARED_QUOTA_BYTES = 20 * 1024 * 1024;
 
 /** これまでどおりの保存先。figma.clientStorage をそのまま呼ぶ。 */
 export class LocalStorageAdapter implements StorageAdapter {

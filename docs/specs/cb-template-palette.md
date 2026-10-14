@@ -60,12 +60,13 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
 ## 保存先
 
 - 「未設定」と通常のカテゴリは、常に `figma.clientStorage`（ユーザー単位・プラグイン単位。デバイス内に保存され、どのファイルからでも読める）。外部の保存先は共有カテゴリ（Cloudflare D1 のスペース）だけ（後述）
-- 容量の上限はプラグインごとに約 5MB（Figma の固定値で引き上げられない）。上限を超える保存は拒否する。共有カテゴリ（D1）では上限を持たない（バーは出さず「Cloudflare D1 に保存 3.2MB」と出す）
+- 容量の上限はプラグインごとに約 5MB（Figma の固定値で引き上げられない）。上限を超える保存は拒否する。共有カテゴリは 1 つ（D1 のスペース 1 つ）につき 20MB まで（[ADR-015](../ai/decisions/ADR-015-template-palette-image-compression-quota.md)）。超える保存・移動・読み込みはローカルと同じく断り、「保存容量の上限（約 20MB）を超えるため…」と出す。上限はプラグインの中だけで守る（Worker 側では見ない）
+- 使用量の文言は、ローカルが「使用量 3.2MB / 5.0MB」、共有カテゴリが「Cloudflare D1 使用量 3.2MB / 20.0MB」
 - 使用量はフッターに出し、選択中の件数（`◯件を選択中`）より下の行に置く。`使用量 3.2MB / 5.0MB` の下に高さ 2px の細いバーを添える
   - 80% 以上のときはバーの塗りだけを `#b00020`（`.error` と同じ危険色）に変える。文言は変えない
   - 上限を超えたときは 100.0% に留める（超過したことは別のエラーで知らせる）
   - 処理中（`保存しています…` など）は同じ行がメッセージに置き換わり、バーも一緒に隠す。進捗用の行は別に増やさない
-  - 使用量は `TEMPLATES` メッセージの `usedBytes` / `quotaBytes` で受け取る。保存・削除・読み込み・並べ替えのたびに送り返されるので、そのつど反映される
+  - 使用量は `TEMPLATES` メッセージの `usedBytes` / `quotaBytes`（ローカルは約 5MB、D1 は 20MB）で受け取る。保存・削除・読み込み・並べ替えのたびに送り返されるので、そのつど反映される
 - ノードツリーは gzip で圧縮し、サムネイルは長辺 120px の JPG にする
 - 画像のバイト列は「画像を含める」を選んだときだけ、item の中へ JSON と別に持つ（`StoredTemplateV3.images`）。これがあると保存体積とサムネイル作成の時間が増える
 
@@ -79,12 +80,15 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
 | `cbTemplatePalette.categories` | カテゴリ名の配列。まだ誰も使っていないものも残る |
 | `cbTemplatePalette.linkedCategories` | 共有カテゴリ `{ id, name, source }[]`。`source` は D1 のスペース `{ provider: "d1", endpoint, token, space }`。読めない登録（以前の R2・Dropbox のもの）は読み飛ばし、保存し直すときもそのまま残す |
 | `cbTemplatePalette.useSharedCategories` | 設定の「共有カテゴリを使用する」（`true` / `false`。保存されていなければオフ） |
+| `cbTemplatePalette.linkedCollapsed` | 共有カテゴリのグループの開閉 `Record<共有カテゴリの id, たたんでいるグループの id[]>`。D1 の `tree.json` には書かない |
 
 ### Cloudflare D1（[ADR-013](../ai/decisions/ADR-013-template-palette-d1.md)）
 
 - 各自（またはチーム）がデプロイする Worker（[`cbTemplatePalette/d1-worker/`](../../cbTemplatePalette/d1-worker/)）を経由する。プラグインには Worker の URL・アクセストークン・スペース名だけを入れ、Cloudflare の認証情報は置かない
 - API: `GET /v1/ping`（`{ ok: true, app: "cbTemplatePalette-d1" }`）、`GET` / `PUT` / `DELETE /v1/spaces/<space>/objects/<path>`。すべて `Authorization: Bearer <ACCESS_TOKEN>`
 - テーブルは `objects (space, path, chunk, body, updated_at)`。1 つのファイル（下の表）を (space, path) の行で持ち、本文は UTF-8 で 1MB ごとの `chunk` に分ける。1 件 25MB まで
+- 書き込みは同じ chunk を上書き（UPSERT）し、余った chunk だけ消す（1 回の `batch`）。D1 の書き込み行数は 1 chunk あたり 1 行（[ADR-016](../ai/decisions/ADR-016-template-palette-d1-io.md)）
+- プラグインは保存先（URL・スペース名・トークン）ごとに、ping と `metadata.json` の確認を 1 回だけ行う（保存先を作り直してもやり直さない）。`index`・`tree`・`categories` の読み込み結果は 10 秒使い回す（自分が書いた値はすぐ反映。ほかの人の変更は最大 10 秒遅れて見える）
 
 | ファイル | 対応するキー |
 | --- | --- |
@@ -155,7 +159,7 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
   - index に無い id を落とし、`tree` が知らない id をルート先頭に足す。同じ id は最初の 1 箇所だけ残す
   - グループ機能より前に保存したテンプレートも、自動でルート先頭に出る
 - グループの作成・名前変更・削除・並べ替え・カテゴリ変更・開閉は、`MOVE` / `ADD_GROUP` / `RENAME_GROUP` / `DELETE_GROUP` / `SET_GROUP_CATEGORY` / `TOGGLE_GROUP` メッセージでプラグインに送り、`TEMPLATES` で一覧とツリーごと受け直す
-- **開閉状態（`collapsed`）は `cbTemplatePalette.tree` にだけ保存し、ファイルには書かない**。読み込んだグループは全部開いた状態で出る（書き出しは構成と並び順を持つファイル）
+- **開閉状態（`collapsed`）は `cbTemplatePalette.tree` にだけ保存し、ファイルには書かない**。共有カテゴリでは D1 の `tree.json` にも書かず、端末の `cbTemplatePalette.linkedCollapsed` に置く（開閉で D1 に書き込まない。ほかの人の開閉も変えない）。読み込んだグループは全部開いた状態で出る（書き出しは構成と並び順を持つファイル）
 - 一覧の選択はテンプレートとグループのどちらでも保持する。Figma 側で選択を変えたとき（プラグイン自身が複製で選択を変えたときを除く）は両方解除する
 
 ## 一覧の表示モード（[ADR-006](../ai/decisions/ADR-006-template-palette-view-modes.md)）
@@ -217,12 +221,17 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
   - 文言: 「この選択には画像が N 個あります。画像を一緒に保存しますか？」
   - `画像を含める` / `画像を含めない` / `キャンセル` の 3 つのボタン。Esc とカードの外を押すのは `キャンセル` と同じで、保存自体をやめる
   - 画像が同じハッシュなら 1 件として数える（塗った回数ではなく種類数）
-- `含める`: バイト列を `figma.getImageByHash(hash).getBytesAsync()` で取得して保存する
+- `含める`: バイト列を `figma.getImageByHash(hash).getBytesAsync()` で取得し、圧縮してから保存する（[ADR-015](../ai/decisions/ADR-015-template-palette-image-compression-quota.md)）
+  - 圧縮は確認ダイアログを出す前に行い、ダイアログの容量（「圧縮後 ◯MB」）と `tooLarge` の判定も圧縮後の大きさを使う。処理中は「画像を圧縮しています…」
+  - main から UI に `COMPRESS_IMAGES` で送り、UI の canvas で作り直して `IMAGES_COMPRESSED` で返す（30 秒返事が無ければ元のまま）
+  - 長辺が 1920px を超える画像は 1920px に縮める（1920px 以下は大きさを変えない）。透明が無ければ JPEG（品質 80%）、透明がある PNG は PNG で作り直す
+  - 作り直した方が元以上の大きさなら元のまま。GIF と、読めない画像も元のまま
+  - 保存のキーは元の画像ハッシュのまま（復元時に新しいハッシュへ付け替えるので問題ない）
   - 復元時は `figma.createImage(bytes)` を作り、同じハッシュの塗りに貼る
   - 取得できないハッシュ、4096px 超、PNG / JPEG / GIF 以外、読めないバイト列は、保存できた範囲だけ貼り、できなかった分は単色の枠線にする（同じ扱い）
   - component.json には入れず、`StoredTemplateV3.images` として JSON と並べる
   - 容量が足りないときは `含める` を無効にする。残量 −（画像の合計 + サムネイル余力 64KB）が 0 未満なら、`ASK_IMAGES.tooLarge` で「画像を入れると容量が足りません」
-  - 取得済みのバイト列はハッシュで 8MB まで保持する。同じ画像を 2 つ選んでも 1 回しか取得しない
+  - 取得して圧縮したバイト列はハッシュで 8MB まで保持する。同じ画像を 2 つ選んでも 1 回しか取得・圧縮しない
 - `含めない`: バイト列は取らない。次のプレースホルダに置き換える
   - 中身が無い図形（図形・グループ）は `FRAME(name="image")` を作り、塗りを `0` の単色線（`#C4C4C4`）だけにし、`text("image")`（`#D9D9D9`、中央、サイズ 12）を中央に置く
   - 中身があるノード（子を持つ、または TEXT）は `FRAME(name="image")` の中に元のノードを置き、**枠線だけ**を足す
@@ -329,7 +338,7 @@ Figma で選択した frame / section / group や基本シェイプのまとま�
     - 「キャンセル」と Esc、背面のクリックで読み込まない
   - テンプレートごとに新しい `id` を振る（同じファイルを 2 回読み込むと別のテンプレートになる）。並び順とグループはファイルの `tree` に従う
   - 一覧の名前は 1. ファイルの `meta.name` → 2. 保存データの中の要素名 → 3.「テンプレート」の順で決める。「読み込んだ〜」のような言い回しは使わない
-  - 5MB を超える分は保存せず「容量の上限のため N 件は読み込めませんでした」と出す
+  - 上限（ローカルは約 5MB、共有カテゴリは 20MB）を超える分は保存せず「容量の上限のため N 件は読み込めませんでした」と出す
   - 読み込みが終わったら「N 件を読み込みました」（カテゴリにして追加のときは「N 件を「追加されたカテゴリ」に読み込みました」）
 
 ## 関連

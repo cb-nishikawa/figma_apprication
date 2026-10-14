@@ -42,6 +42,7 @@ import {
   updateTemplate,
   usedBytes,
 } from "./storage";
+import { loadLinkedCollapsed, saveLinkedCollapsed } from "./settings";
 import { StorageAccessError, storage } from "./storageAdapter";
 import {
   activeStore,
@@ -109,7 +110,17 @@ const FILE_SUFFIX = ".cbtemplate.json";
 const THUMBNAIL_RESERVE_BYTES = 64 * 1024;
 /** 画像バイト列のキャッシュ上限。ハッシュは内容アドレスなので古いまま使える。 */
 const IMAGE_CACHE_BYTES = 8 * 1024 * 1024;
+/** 圧縮した後のバイト列。キーは元の画像ハッシュ。 */
 const imageBytesCache = new Map<string, Uint8Array>();
+/** UI からの圧縮の返事を待つ時間。過ぎたら元の画像を使う。 */
+const COMPRESS_TIMEOUT_MS = 30_000;
+let compressRequestId = 0;
+/** 共有カテゴリのグループの開閉（端末に置く）。null はまだ読んでいない。 */
+let linkedCollapsed: Record<string, string[]> | null = null;
+const pendingCompress = new Map<
+  number,
+  { original: Record<string, Uint8Array>; finish: (images: Record<string, Uint8Array>) => void }
+>();
 /** Set on a saved component so a template can tell whether its original is in the current file. */
 const STAMP_DATA = "cbTemplatePalette.stamp";
 
@@ -175,9 +186,7 @@ async function postTemplatesWithTree(index: TemplateMeta[], tree: Promise<ListNo
   postToUi({
     type: "TEMPLATES",
     templates: link ? index.map((meta) => ({ ...meta, category: link.name })) : index,
-    tree: link
-      ? resolvedTree.map((node) => (isGroup(node) ? { ...node, category: link.name } : node))
-      : resolvedTree,
+    tree: link ? await withLinkedCollapsed(link.id, link.name, resolvedTree) : resolvedTree,
     viewMode: await loadViewMode(),
     categories: [...new Set([...homeCategories.filter((name) => !linkedNames.includes(name)), ...linkedNames])],
     linked: linkedCategoryInfo(),
@@ -185,6 +194,28 @@ async function postTemplatesWithTree(index: TemplateMeta[], tree: Promise<ListNo
     usedBytes: usedBytes(index),
     quotaBytes: storage().quotaBytes,
   });
+}
+
+async function collapsedGroups(linkId: string): Promise<Set<string>> {
+  linkedCollapsed ??= await loadLinkedCollapsed();
+  return new Set(linkedCollapsed[linkId] ?? []);
+}
+
+/** 共有カテゴリのグループにカテゴリ名と、この端末での開閉を付ける（tree.json の開閉は使わない）。 */
+async function withLinkedCollapsed(linkId: string, name: string, tree: ListNode[]): Promise<ListNode[]> {
+  const collapsed = await collapsedGroups(linkId);
+  return tree.map((node) => (isGroup(node) ? { ...node, category: name, collapsed: collapsed.has(node.id) } : node));
+}
+
+async function setLinkedGroupCollapsed(linkId: string, groupId: string, collapsed: boolean): Promise<void> {
+  const ids = await collapsedGroups(linkId);
+  if (collapsed) {
+    ids.add(groupId);
+  } else {
+    ids.delete(groupId);
+  }
+  linkedCollapsed = { ...linkedCollapsed, [linkId]: [...ids] };
+  await saveLinkedCollapsed(linkedCollapsed);
 }
 
 /** Applies a list change to the tree, saves it, and sends the whole list back. */
@@ -292,9 +323,48 @@ function ensureStamp(node: ComponentNode | ComponentSetNode): string {
   return stamp;
 }
 
-/** 保存対象の画像ハッシュのバイト列を取り出す。取れなかった画像は省略する。 */
+/**
+ * UI の canvas で画像を縮小・再圧縮してもらう。返事が無ければ元のまま。
+ * 返事を受ける IMAGES_COMPRESSED はキューを通さない（待っているのがキューの中の処理なので）。
+ */
+function compressImages(images: Record<string, Uint8Array>): Promise<Record<string, Uint8Array>> {
+  if (Object.keys(images).length === 0) {
+    return Promise.resolve(images);
+  }
+  compressRequestId += 1;
+  const requestId = compressRequestId;
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => finish(images), COMPRESS_TIMEOUT_MS);
+    const finish = (result: Record<string, Uint8Array>) => {
+      clearTimeout(timer);
+      pendingCompress.delete(requestId);
+      resolve(result);
+    };
+    pendingCompress.set(requestId, { original: images, finish });
+    postToUi({ type: "COMPRESS_IMAGES", requestId, images });
+  });
+}
+
+/** 圧縮の返事を受ける。元より小さくなった画像だけを使う。 */
+function receiveCompressedImages(requestId: number, compressed: unknown): void {
+  const pending = pendingCompress.get(requestId);
+  if (!pending) {
+    return;
+  }
+  const received = compressed && typeof compressed === "object" ? (compressed as Record<string, unknown>) : {};
+  const result: Record<string, Uint8Array> = {};
+  for (const [hash, original] of Object.entries(pending.original)) {
+    const bytes = received[hash];
+    result[hash] =
+      bytes instanceof Uint8Array && bytes.byteLength > 0 && bytes.byteLength < original.byteLength ? bytes : original;
+  }
+  pending.finish(result);
+}
+
+/** 保存対象の画像ハッシュのバイト列を取り出し、圧縮する。取れなかった画像は省略する。 */
 async function collectImageBytes(hashes: string[]): Promise<Record<string, Uint8Array>> {
   const images: Record<string, Uint8Array> = {};
+  const fresh: Record<string, Uint8Array> = {};
   for (const hash of hashes) {
     const cached = imageBytesCache.get(hash);
     if (cached) {
@@ -306,15 +376,23 @@ async function collectImageBytes(hashes: string[]): Promise<Record<string, Uint8
       continue;
     }
     try {
-      const bytes = await image.getBytesAsync();
-      images[hash] = bytes;
-      if (imageBytesCache.size > 0 && cachedBytes() + bytes.byteLength > IMAGE_CACHE_BYTES) {
-        imageBytesCache.clear();
-      }
-      imageBytesCache.set(hash, bytes);
+      fresh[hash] = await image.getBytesAsync();
     } catch {
       // 読めない画像は単色のプレースホルダに任せる。
     }
+  }
+  if (Object.keys(fresh).length === 0) {
+    return images;
+  }
+  postToUi({ type: "BUSY", message: "画像を圧縮しています…" });
+  const compressed = await compressImages(fresh);
+  postToUi({ type: "BUSY", message: "保存しています…" });
+  for (const [hash, bytes] of Object.entries(compressed)) {
+    images[hash] = bytes;
+    if (imageBytesCache.size > 0 && cachedBytes() + bytes.byteLength > IMAGE_CACHE_BYTES) {
+      imageBytesCache.clear();
+    }
+    imageBytesCache.set(hash, bytes);
   }
   return images;
 }
@@ -1208,7 +1286,7 @@ async function moveAcross(
     const quota = storage().quotaBytes;
     const adding = entries.reduce((sum, entry) => sum + (entry.meta.byteSize || 0), 0);
     if (quota !== null && usedBytes(index) + adding > quota) {
-      throw new QuotaExceededError();
+      throw new QuotaExceededError(quota);
     }
     const taken = new Set(index.map((meta) => meta.id));
     const movedIds: string[] = [];
@@ -1263,6 +1341,9 @@ async function handleDirect(msg: UiToPluginMessage): Promise<boolean> {
   switch (msg.type) {
     case "STORAGE_TEST":
       await handleStorageTest(msg.source);
+      return true;
+    case "IMAGES_COMPRESSED":
+      receiveCompressedImages(msg.requestId, msg.images);
       return true;
     case "CLEAR_CANVAS_SELECTION":
       // Assigning an already empty selection fires no selectionchange, which would
@@ -1415,6 +1496,12 @@ async function handleStorageMessage(msg: UiToPluginMessage): Promise<void> {
       break;
     }
     case "TOGGLE_GROUP": {
+      // 共有カテゴリの開閉は端末だけに置く。UI は押した時点で反映済みなので送り返さない。
+      const link = activeStore().link;
+      if (link) {
+        await setLinkedGroupCollapsed(link.id, msg.id, msg.collapsed);
+        break;
+      }
       await commitTree(await loadIndex(), (tree) => setGroupCollapsed(tree, msg.id, msg.collapsed));
       break;
     }

@@ -119,7 +119,7 @@ let categoryInput:
 let pendingImport: { files: Array<{ name: string; text: string }>; confirm: boolean } | null = null;
 let savableCount = 0;
 let canvasSelectionCount = 0;
-/** `quota: null` は上限の無い保存先（共有カテゴリの D1）。 */
+/** `quota: null` は上限の無い保存先（今は無い）。 */
 let usage: { used: number; quota: number | null } = { used: 0, quota: 0 };
 /** 共有カテゴリ。名前はこの人の一覧での表示名（TEMPLATES で受け取る）。 */
 let linkedCategories: LinkedCategoryInfo[] = [];
@@ -191,10 +191,8 @@ function renderStatus(): void {
   statusText.textContent =
     busyMessage ??
     (showUsage
-      ? `使用量 ${formatBytes(usage.used)} / ${formatBytes(quota)}`
-      : quota === null
-        ? `Cloudflare D1 に保存 ${formatBytes(usage.used)}`
-        : "");
+      ? `${linkedInfo(viewedCategory) ? "Cloudflare D1 使用量" : "使用量"} ${formatBytes(usage.used)} / ${formatBytes(quota)}`
+      : "");
   usageBar.hidden = !showUsage;
   if (showUsage) {
     const ratio = usage.used / quota;
@@ -1549,6 +1547,102 @@ function renderSelectionHint(count: number, isComponent: boolean, unsupported: n
 
 /* --------------------------------- イベント --------------------------------- */
 
+/* -------------------------------- 画像の圧縮 -------------------------------- */
+
+/** 長辺がこれを超える画像だけ縮める。 */
+const IMAGE_MAX_SIDE = 1920;
+const IMAGE_JPEG_QUALITY = 0.8;
+
+function imageFormat(bytes: Uint8Array): "png" | "jpeg" | "gif" | null {
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) {
+    return "png";
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "jpeg";
+  }
+  if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) {
+    return "gif";
+  }
+  return null;
+}
+
+function hasTransparency(context: CanvasRenderingContext2D, width: number, height: number): boolean {
+  const data = context.getImageData(0, 0, width, height).data;
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 255) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function canvasBytes(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Uint8Array | null> {
+  return new Promise((resolve) => {
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          resolve(null);
+          return;
+        }
+        blob.arrayBuffer().then(
+          (buffer) => resolve(new Uint8Array(buffer)),
+          () => resolve(null)
+        );
+      },
+      type,
+      quality
+    );
+  });
+}
+
+/**
+ * 長辺 1920px までに縮め、透明が無ければ JPEG、あれば PNG にする。
+ * GIF（動くことがある）・読めない画像・小さくならなかった画像は元のまま返す。
+ */
+async function compressImage(bytes: Uint8Array): Promise<Uint8Array> {
+  const format = imageFormat(bytes);
+  if (format !== "png" && format !== "jpeg") {
+    return bytes;
+  }
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(new Blob([bytes.slice()], { type: `image/${format}` }));
+  } catch {
+    return bytes;
+  }
+  try {
+    const scale = Math.min(1, IMAGE_MAX_SIDE / Math.max(bitmap.width, bitmap.height));
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) {
+      return bytes;
+    }
+    context.drawImage(bitmap, 0, 0, width, height);
+    const transparent = format === "png" && hasTransparency(context, width, height);
+    const result = transparent
+      ? await canvasBytes(canvas, "image/png")
+      : await canvasBytes(canvas, "image/jpeg", IMAGE_JPEG_QUALITY);
+    return result && result.byteLength < bytes.byteLength ? result : bytes;
+  } catch {
+    return bytes;
+  } finally {
+    bitmap.close();
+  }
+}
+
+/** 1 枚ずつ圧縮して返す（大きな画像を同時に展開しないため）。 */
+async function handleCompressImages(requestId: number, images: Record<string, Uint8Array>): Promise<void> {
+  const result: Record<string, Uint8Array> = {};
+  for (const [hash, bytes] of Object.entries(images ?? {})) {
+    result[hash] = bytes instanceof Uint8Array ? await compressImage(bytes) : bytes;
+  }
+  postToPlugin({ type: "IMAGES_COMPRESSED", requestId, images: result });
+}
+
 /** 画像の確認ダイアログを出す。選ぶまで保存は始まらない。 */
 function askImages(question: {
   count: number;
@@ -1558,7 +1652,7 @@ function askImages(question: {
 }): void {
   imageQuestion = question;
   imageDialogBody.textContent =
-    `選択に画像が ${question.count} 個（${formatBytes(question.bytes)}）含まれています。\n` +
+    `選択に画像が ${question.count} 個（圧縮後 ${formatBytes(question.bytes)}）含まれています。\n` +
     "画像を含めると容量を使うため、複製時にそのまま表示されます。";
   imageDialogNote.hidden = !question.tooLarge;
   imageDialogNote.textContent = question.tooLarge
@@ -2075,6 +2169,9 @@ window.onmessage = (event: MessageEvent) => {
       break;
     case "ASK_IMAGES":
       askImages(msg);
+      break;
+    case "COMPRESS_IMAGES":
+      void handleCompressImages(msg.requestId, msg.images);
       break;
     case "BUSY":
       busyMessage = msg.message;
