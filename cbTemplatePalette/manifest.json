@@ -7,8 +7,8 @@
   "editorType": ["figma"],
   "documentAccess": "dynamic-page",
   "networkAccess": {
-    "allowedDomains": ["https://api.dropboxapi.com", "https://content.dropboxapi.com", "https://*.workers.dev"],
-    "reasoning": "共有カテゴリを使うときだけ接続します。Dropbox のフォルダなら Dropbox の認証と選んだフォルダのファイルの読み書きのために Dropbox API に、Cloudflare D1 ならユーザーが自分でデプロイした Worker（*.workers.dev）に接続します。",
+    "allowedDomains": ["https://*.workers.dev"],
+    "reasoning": "設定で共有カテゴリを使うようにしたときだけ、ユーザーが自分でデプロイした Cloudflare D1 用の Worker（*.workers.dev）に接続します。",
     "devAllowedDomains": ["http://localhost:8787"]
   }
 }

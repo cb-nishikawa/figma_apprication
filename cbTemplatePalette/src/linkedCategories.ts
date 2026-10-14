@@ -3,7 +3,7 @@ import type { LinkedCategory, LinkedCategoryInfo } from "./types";
 
 /**
  * 共有カテゴリの登録。端末ごとの設定なので clientStorage に置く。
- * Dropbox のフォルダとしても D1 のスペースとしても読めない登録（以前の R2 のものなど）は読み飛ばす。
+ * D1 のスペースとして読めない登録（以前の別の保存先のものなど）は読み飛ばす（消しはしない）。
  */
 const LINKED_KEY = "cbTemplatePalette.linkedCategories";
 
@@ -23,8 +23,13 @@ export async function loadLinkedCategories(): Promise<LinkedCategory[]> {
   return result;
 }
 
+/** 読み飛ばした登録はそのまま残して保存する。 */
 export async function saveLinkedCategories(links: LinkedCategory[]): Promise<void> {
-  await figma.clientStorage.setAsync(LINKED_KEY, links);
+  const stored = await figma.clientStorage.getAsync(LINKED_KEY);
+  const unreadable = Array.isArray(stored)
+    ? (stored as Array<Partial<LinkedCategory>>).filter((entry) => !normalizeSource(entry?.source))
+    : [];
+  await figma.clientStorage.setAsync(LINKED_KEY, [...unreadable, ...links]);
 }
 
 export function linkedInfo(links: LinkedCategory[]): LinkedCategoryInfo[] {

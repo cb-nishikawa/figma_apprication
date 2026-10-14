@@ -1,8 +1,10 @@
 # ADR-012: 共有カテゴリの保存先を Dropbox（OAuth 2.0 PKCE）にする
 
-- ステータス: 採用（Dropbox のアプリキーを入れたあと、実機での確認が必要）
+- ステータス: 廃止（[ADR-014](ADR-014-template-palette-shared-settings.md)。Dropbox の接続は丸ごと削除した）
 - 日付: 2026-10-14
-- 関連: [ADR-011](ADR-011-template-palette-shared-categories.md)（R2 の部分をこの ADR で置き換える）、[ADR-013](ADR-013-template-palette-d1.md)
+- 関連: [ADR-011](ADR-011-template-palette-shared-categories.md)（R2 の部分をこの ADR で置き換える）、[ADR-013](ADR-013-template-palette-d1.md)、[ADR-014](ADR-014-template-palette-shared-settings.md)
+
+> 2026-10-14 追記（廃止）: ユーザーの求めで Dropbox の接続を削除し、共有カテゴリは Cloudflare D1 だけにした（[ADR-014](ADR-014-template-palette-shared-settings.md)）。以下は当時の記録として残す。
 
 > 2026-10-14 追記: 共有カテゴリの保存先として、Dropbox と並べて Cloudflare D1（自分で立てる Worker 経由）も選べるようになった（[ADR-013](ADR-013-template-palette-d1.md)）。Dropbox の決定はそのまま有効。
 

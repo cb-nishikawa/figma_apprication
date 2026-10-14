@@ -14,7 +14,6 @@
   },
   "include": [
     "src/ui.ts",
-    "src/pkce.ts",
     "src/messages.ts",
     "src/tree.ts",
     "src/global.d.ts",

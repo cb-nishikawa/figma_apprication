@@ -100,7 +100,7 @@
                   <button id="add-category" class="row-menu-item" type="button" role="menuitem">
                     カテゴリを追加
                   </button>
-                  <button id="add-linked-category" class="row-menu-item" type="button" role="menuitem">
+                  <button id="add-linked-category" class="row-menu-item" type="button" role="menuitem" hidden>
                     共有カテゴリを追加…
                   </button>
                   <button id="add-group" class="row-menu-item" type="button" role="menuitem">
@@ -113,6 +113,9 @@
                     role="menuitem"
                   >
                     カテゴリを削除
+                  </button>
+                  <button id="open-settings" class="row-menu-item" type="button" role="menuitem">
+                    設定…
                   </button>
                 </div>
                 <div id="delete-category-confirm" class="row-menu-confirm" hidden>
@@ -134,7 +137,6 @@
         <p id="error" class="error" hidden></p>
         <div id="storage-error" class="error storage-error" role="alert" hidden>
           <p id="storage-error-text" class="storage-error-text"></p>
-          <button id="storage-error-connect" class="btn-secondary" type="button" hidden>Dropbox の接続を確認</button>
         </div>
         <ul id="list" class="template-list" role="tree" aria-label="保存した要素"></ul>
       </section>
@@ -265,62 +267,7 @@
         aria-labelledby="linked-dialog-title"
       >
         <p id="linked-dialog-title" class="image-dialog-title">共有カテゴリを追加</p>
-        <div class="settings-provider" role="radiogroup" aria-label="保存先">
-          <label><input type="radio" name="linked-provider" value="dropbox" checked /> Dropbox</label>
-          <label><input type="radio" name="linked-provider" value="d1" /> Cloudflare D1</label>
-        </div>
-        <div id="linked-dropbox" class="settings-section">
-          <p class="settings-line">
-            Dropbox のフォルダを 1 つのカテゴリとして足します。フォルダを Dropbox で共有し、ほかの人も同じフォルダを選ぶと、同じテンプレートを使えます。
-          </p>
-          <div class="settings-section">
-            <div class="settings-row">
-              <span id="dropbox-account" class="settings-path">Dropbox に接続していません</span>
-              <button id="dropbox-connect" class="btn-secondary" type="button">Dropbox に接続</button>
-              <button id="dropbox-disconnect" class="btn-secondary is-quiet" type="button" hidden>接続を解除</button>
-            </div>
-            <div id="dropbox-code-area" class="settings-section" hidden>
-              <p class="settings-line">ブラウザで「許可」を押したあと、表示されたコードを貼り付けてください。</p>
-              <div class="settings-row">
-                <input
-                  id="dropbox-code"
-                  class="text-input"
-                  type="text"
-                  placeholder="コード"
-                  spellcheck="false"
-                  autocomplete="off"
-                />
-                <button id="dropbox-code-submit" class="btn-primary" type="button">接続</button>
-              </div>
-            </div>
-            <span id="dropbox-message" class="settings-message" role="status"></span>
-          </div>
-          <div id="folder-section" class="settings-section" hidden>
-            <span class="settings-label">保存先フォルダ</span>
-            <div class="settings-row">
-              <button id="folder-up" class="btn-secondary" type="button">上へ</button>
-              <span id="folder-path" class="settings-path">/</span>
-            </div>
-            <ul id="folder-list" class="folder-list" aria-label="フォルダ"></ul>
-            <div class="settings-row">
-              <input
-                id="folder-new-name"
-                class="text-input"
-                type="text"
-                placeholder="新しいフォルダ名"
-                spellcheck="false"
-                autocomplete="off"
-              />
-              <button id="folder-create" class="btn-secondary" type="button">作成</button>
-            </div>
-            <div class="settings-row">
-              <button id="folder-choose" class="btn-secondary" type="button">このフォルダを選ぶ</button>
-              <span id="folder-chosen" class="settings-path">未選択</span>
-            </div>
-            <span id="folder-message" class="settings-message" role="status"></span>
-          </div>
-        </div>
-        <div id="linked-d1" class="settings-section" hidden>
+        <div class="settings-section">
           <p class="settings-line">
             自分（チーム）でデプロイした Worker の D1 に置きます。同じ URL・アクセストークン・スペース名を入れた人どうしで、同じテンプレートを使えます。
           </p>
@@ -369,6 +316,24 @@
         <div class="image-dialog-actions">
           <button id="linked-cancel" class="btn-secondary" type="button">キャンセル</button>
           <button id="linked-add" class="btn-primary" type="button">追加</button>
+        </div>
+      </div>
+    </div>
+    <div id="settings-dialog" class="image-dialog" hidden>
+      <div
+        class="image-dialog-card settings-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-dialog-title"
+      >
+        <p id="settings-dialog-title" class="image-dialog-title">設定</p>
+        <label class="settings-check">
+          <input id="use-shared-categories" type="checkbox" />
+          <span>共有カテゴリを使用する</span>
+        </label>
+        <p class="settings-note">オフのときは共有カテゴリを一覧に出しません。登録と保存先のデータは消えません。</p>
+        <div class="image-dialog-actions">
+          <button id="settings-close" class="btn-secondary" type="button">閉じる</button>
         </div>
       </div>
     </div>

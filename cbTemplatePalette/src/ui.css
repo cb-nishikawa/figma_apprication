@@ -606,6 +606,10 @@ body.is-dragging {
   cursor: pointer;
 }
 
+.row-menu-item[hidden] {
+  display: none;
+}
+
 .row-menu-item:hover:not(:disabled) {
   background: #f3f3f3;
 }
@@ -1041,85 +1045,18 @@ body.is-resizing * {
   line-height: 1.5;
 }
 
-.settings-provider {
-  display: flex;
-  gap: 16px;
-}
-
-.settings-provider label {
+.settings-check {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   cursor: pointer;
 }
 
-.settings-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.settings-row .text-input {
-  flex: 1;
-  min-width: 0;
-}
-
-.settings-path {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  color: #555;
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.settings-message {
-  color: #b00020;
-  font-size: 11px;
-  line-height: 1.4;
-  white-space: pre-line;
-}
-
-.settings-message:empty,
-.settings-section[hidden],
-.settings-row [hidden] {
-  display: none;
-}
-
-.folder-list {
-  max-height: 140px;
+.settings-note {
   margin: 0;
-  padding: 0;
-  overflow: auto;
-  border: 1px solid #e5e5e5;
-  border-radius: 4px;
-  list-style: none;
-}
-
-.folder-item {
-  display: block;
-  width: 100%;
-  padding: 5px 8px;
-  overflow: hidden;
-  border: 0;
-  background: none;
-  font: inherit;
-  font-size: 11px;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.folder-item:hover {
-  background: #f2f2f2;
-}
-
-.folder-empty {
-  padding: 5px 8px;
   color: #767676;
   font-size: 11px;
+  line-height: 1.5;
 }
 
 .storage-error {

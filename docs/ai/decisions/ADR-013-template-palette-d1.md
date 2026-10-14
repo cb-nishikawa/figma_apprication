@@ -2,7 +2,9 @@
 
 - ステータス: 採用（Worker のデプロイ後に Figma の実機で確認が必要）
 - 日付: 2026-10-14
-- 関連: [ADR-011](ADR-011-template-palette-shared-categories.md)、[ADR-012](ADR-012-template-palette-dropbox.md)
+- 関連: [ADR-011](ADR-011-template-palette-shared-categories.md)、[ADR-012](ADR-012-template-palette-dropbox.md)、[ADR-014](ADR-014-template-palette-shared-settings.md)
+
+> 2026-10-14 追記: Dropbox を削除し、共有カテゴリの保存先は D1 だけになった。ダイアログの切り替え・「Dropbox の接続を確認」ボタン・`STORAGE_ERROR` の `provider` は無くなり、`SourceConfig = D1Source`。また、設定の「共有カテゴリを使用する」（初期値オフ）がオンのときだけ共有カテゴリを使う（[ADR-014](ADR-014-template-palette-shared-settings.md)）。下の「Dropbox と並べる」は当時の記録。
 
 ## コンテキスト
 

@@ -1,6 +1,5 @@
-import { DropboxTokens } from "./dropboxAuth";
-import { loadDropboxSession, saveDropboxSession } from "./dropboxSession";
 import { linkedInfo, loadLinkedCategories, saveLinkedCategories } from "./linkedCategories";
+import { loadUseSharedCategories, saveUseSharedCategories } from "./settings";
 import { adapterForSource } from "./sources";
 import { LocalStorageAdapter, StorageAccessError, useAdapter, type StorageAdapter } from "./storageAdapter";
 import type { LinkedCategory, LinkedCategoryInfo } from "./types";
@@ -10,6 +9,7 @@ import type { LinkedCategory, LinkedCategoryInfo } from "./types";
  *
  * - 「未設定」と普通のカテゴリは、常に端末の clientStorage（ローカル）に入る
  * - 共有カテゴリは 1 つが外部の保存先 1 つ。中身はその保存先に入る
+ * - 「共有カテゴリを使用する」がオフのときは、登録は持ったまま、無いものとして扱う
  *
  * storage.ts は `storage()` の 1 つだけを見るので、ストレージを触る処理は `enqueue` で 1 つずつ流し、
  * 処理中だけ `useStore` / `withStore` で差し替える（並行して走ると別の保存先に書いてしまうため）。
@@ -23,8 +23,7 @@ export interface Store {
 }
 
 let linked: LinkedCategory[] = [];
-/** Dropbox との接続。Dropbox の共有カテゴリはすべてこの 1 つの接続で読み書きする（D1 は登録ごとのトークン）。 */
-let dropbox: DropboxTokens | null = null;
+let sharedEnabled = false;
 const home: Store = { key: "home", adapter: new LocalStorageAdapter(), link: null };
 const linkStores = new Map<string, Store>();
 /** UI で今選んでいるカテゴリ。空文字は「未設定」。 */
@@ -32,43 +31,50 @@ let viewCategory = "";
 let active: Store = home;
 let queue: Promise<void> = Promise.resolve();
 
-/** 共有カテゴリや接続が変わったら作り直す。走っている処理の保存先は差し替えない。 */
+/** 共有カテゴリが変わったら作り直す。走っている処理の保存先は差し替えない。 */
 function rebuild(): void {
   linkStores.clear();
-  for (const link of linked) {
-    linkStores.set(link.id, { key: `link:${link.id}`, adapter: adapterForSource(link.source, dropbox), link });
+  for (const link of linkedCategories()) {
+    linkStores.set(link.id, { key: `link:${link.id}`, adapter: adapterForSource(link.source), link });
   }
 }
 
 export async function initStores(): Promise<void> {
   try {
     linked = await loadLinkedCategories();
-    const session = await loadDropboxSession();
-    dropbox = session ? new DropboxTokens(session) : null;
   } catch {
     linked = [];
-    dropbox = null;
+  }
+  try {
+    sharedEnabled = await loadUseSharedCategories();
+  } catch {
+    sharedEnabled = false;
   }
   rebuild();
 }
 
-export function dropboxTokens(): DropboxTokens | null {
-  return dropbox;
+export function useSharedCategories(): boolean {
+  return sharedEnabled;
 }
 
-/** 接続・解除。null で解除（clientStorage からも消す）。 */
-export async function setDropboxTokens(next: DropboxTokens | null): Promise<void> {
-  await saveDropboxSession(next ? next.session : null);
-  dropbox = next;
+export async function setUseSharedCategories(enabled: boolean): Promise<void> {
+  await saveUseSharedCategories(enabled);
+  sharedEnabled = enabled;
   rebuild();
 }
 
+/** 使える共有カテゴリ。設定がオフなら空。 */
 export function linkedCategories(): LinkedCategory[] {
+  return sharedEnabled ? linked : [];
+}
+
+/** 設定に関係なく、登録してある共有カテゴリすべて（名前の重なりや登録の変更に使う）。 */
+export function registeredLinkedCategories(): LinkedCategory[] {
   return linked;
 }
 
 export function linkedCategoryInfo(): LinkedCategoryInfo[] {
-  return linkedInfo(linked);
+  return linkedInfo(linkedCategories());
 }
 
 export async function setLinkedCategories(next: LinkedCategory[]): Promise<void> {
@@ -83,7 +89,7 @@ export function homeStore(): Store {
 
 export function linkByName(name: string | null | undefined): LinkedCategory | undefined {
   const trimmed = name?.trim();
-  return trimmed ? linked.find((link) => link.name === trimmed) : undefined;
+  return trimmed ? linkedCategories().find((link) => link.name === trimmed) : undefined;
 }
 
 /** そのカテゴリのテンプレートを置く保存先。共有カテゴリでなければローカル。 */

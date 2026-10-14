@@ -41,9 +41,8 @@ const readmeTxt = `テンプレパレットくん（共有パック）
 - ui.html ……… UI（CSS/JS をインライン）
 
 保存したテンプレートは、この端末の Figma に保存されます（ファイルをまたいで使えます）。
-「⋯」→「共有カテゴリを追加…」で、Dropbox のフォルダか Cloudflare D1 のスペースをカテゴリとして、ほかの人と共有することもできます。
-- Dropbox: Dropbox に接続し、Dropbox で共有したフォルダを選びます（Dropbox のパスワードはプラグインに入力しません）
-- Cloudflare D1: チームでデプロイした Worker の URL・アクセストークン・スペース名を入れます
+「⋯」→「設定…」で「共有カテゴリを使用する」をオンにすると、Cloudflare D1 の共有カテゴリを使えます。
+「⋯」→「共有カテゴリを追加…」で、チームでデプロイした Worker の URL・アクセストークン・スペース名を入れると、そのスペースをカテゴリとしてほかの人と共有できます。
 `;
 
 rmSync(shareRoot, { recursive: true, force: true });
