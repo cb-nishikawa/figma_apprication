@@ -168,3 +168,120 @@ export function indexItemNodeIds(
   }
   return out
 }
+
+export type SearchScope = { components: boolean; instances: boolean }
+
+/**
+ * Filter items by the search scope and query.
+ * Rows of an unchecked kind are removed together with their contents.
+ * A matched row keeps its children filtered by scope only; a non-matched row stays only for matched descendants.
+ * `expandedKeys` (only with a query) lists rows/headings that should be opened to reveal the matches.
+ */
+export function filterLayerItems(
+  items: readonly LayerItem[],
+  query: string,
+  scope: SearchScope = { components: true, instances: true },
+): { items: LayerItem[]; expandedKeys: string[] } {
+  const q = query.trim().toLowerCase()
+  const expandedKeys: string[] = []
+  const matches = (text: string) => text.toLowerCase().includes(q)
+
+  const scopeOnly = (list: readonly LayerItem[]): LayerItem[] => {
+    const out: LayerItem[] = []
+    for (const item of list) {
+      if (item.kind === 'group') {
+        const children = scopeOnly(item.children)
+        if (children.length > 0) {
+          out.push({ ...item, children })
+        }
+      } else if (item.kind === 'instance') {
+        if (scope.instances) {
+          out.push({ ...item, children: scopeOnly(item.children) })
+        }
+      } else if (item.kind === 'component') {
+        if (scope.components) {
+          out.push({ ...item, children: scopeOnly(item.children) })
+        }
+      } else if (scope.components) {
+        out.push({ ...item, children: scopeOnlyVariants(item.children) })
+      }
+    }
+    return out
+  }
+
+  const scopeOnlyVariants = (list: readonly ComponentItem[]): ComponentItem[] =>
+    list.map((child) => ({ ...child, children: scopeOnly(child.children) }))
+
+  const filterRow = <T extends InstanceItem | ComponentItem>(
+    item: T,
+    matched: boolean,
+  ): T | null => {
+    if (matched) {
+      return { ...item, children: scopeOnly(item.children) }
+    }
+    const children = filter(item.children)
+    if (children.length === 0) {
+      return null
+    }
+    expandedKeys.push(item.key)
+    return { ...item, children }
+  }
+
+  const filter = (list: readonly LayerItem[]): LayerItem[] => {
+    const out: LayerItem[] = []
+    for (const item of list) {
+      if (item.kind === 'group') {
+        const children = filter(item.children)
+        if (children.length > 0) {
+          expandedKeys.push(item.key)
+          out.push({ ...item, children })
+        }
+        continue
+      }
+      if (item.kind === 'instance') {
+        if (!scope.instances) {
+          continue
+        }
+        const row = filterRow(item, matches(item.name) || matches(item.component.name))
+        if (row) {
+          out.push(row)
+        }
+        continue
+      }
+      if (item.kind === 'component') {
+        if (!scope.components) {
+          continue
+        }
+        const row = filterRow(item, matches(item.component.name))
+        if (row) {
+          out.push(row)
+        }
+        continue
+      }
+      if (!scope.components) {
+        continue
+      }
+      if (matches(item.name)) {
+        out.push({ ...item, children: scopeOnlyVariants(item.children) })
+        continue
+      }
+      const variants: ComponentItem[] = []
+      for (const child of item.children) {
+        const row = filterRow(
+          child,
+          matches(child.component.variantName) || matches(child.component.name),
+        )
+        if (row) {
+          variants.push(row)
+        }
+      }
+      if (variants.length > 0) {
+        expandedKeys.push(item.key)
+        out.push({ ...item, children: variants })
+      }
+    }
+    return out
+  }
+
+  return { items: q ? filter(items) : scopeOnly(items), expandedKeys }
+}

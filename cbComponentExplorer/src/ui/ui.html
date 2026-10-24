@@ -18,10 +18,45 @@
 
         <section
           class="section section-fill"
-          aria-labelledby="components-label"
+          aria-label="Components"
         >
           <div class="components-header">
-            <h2 id="components-label">Components</h2>
+            <div class="component-search">
+              <button
+                id="component-search-toggle"
+                class="btn-icon"
+                type="button"
+                title="検索"
+                aria-label="検索"
+                aria-expanded="false"
+                aria-controls="component-search-popover"
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.2" />
+                  <line x1="9.5" y1="9.5" x2="12" y2="12" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+                </svg>
+              </button>
+              <div id="component-search-popover" class="ignore-popover" hidden>
+                <input
+                  id="component-search-input"
+                  class="ignore-input"
+                  type="text"
+                  placeholder="名前で絞り込み"
+                  spellcheck="false"
+                  autocomplete="off"
+                />
+                <div class="ignore-categories" role="group" aria-label="検索対象">
+                  <label class="ignore-check">
+                    <input type="checkbox" id="search-scope-components" checked />
+                    <span>コンポーネント</span>
+                  </label>
+                  <label class="ignore-check">
+                    <input type="checkbox" id="search-scope-instances" checked />
+                    <span>インスタンス</span>
+                  </label>
+                </div>
+              </div>
+            </div>
             <div class="mode-row" role="radiogroup" aria-label="並び替え">
               <label class="radio">
                 <input type="radio" name="sort" value="layer" checked />
@@ -34,6 +69,7 @@
             </div>
           </div>
           <div id="components" class="list list-scroll"></div>
+          <p id="components-empty" class="empty" hidden>一致する項目がありません</p>
         </section>
       </div>
 

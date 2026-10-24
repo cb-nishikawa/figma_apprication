@@ -8,6 +8,7 @@ import {
   type InstanceItem,
   type LayerItem,
   type SetItem,
+  filterLayerItems,
 } from './layerItems'
 import type {
   ComponentInfo,
@@ -31,6 +32,12 @@ const viewInstancesEl = document.getElementById(
   'view-instances',
 ) as HTMLDivElement
 const componentsEl = document.getElementById('components') as HTMLDivElement
+const componentsEmptyEl = document.getElementById('components-empty') as HTMLParagraphElement
+const componentSearchToggle = document.getElementById('component-search-toggle') as HTMLButtonElement
+const componentSearchPopover = document.getElementById('component-search-popover') as HTMLDivElement
+const componentSearchInput = document.getElementById('component-search-input') as HTMLInputElement
+const searchScopeComponentsEl = document.getElementById('search-scope-components') as HTMLInputElement
+const searchScopeInstancesEl = document.getElementById('search-scope-instances') as HTMLInputElement
 const instancesEl = document.getElementById('instances') as HTMLDivElement
 const instancesEmptyEl = document.getElementById(
   'instances-empty',
@@ -49,6 +56,7 @@ let sortMode: ComponentSortMode = 'layer'
 let view: View = 'components'
 let components: ComponentInfo[] = []
 let layerItems: LayerItem[] = []
+let allLayerItems: LayerItem[] = []
 /** Row key (`item:<path>`) to the canvas node ids that the row's toggle selects. */
 let itemNodeIds = new Map<string, string[]>()
 let activeSelectKeys = new Set<string>()
@@ -57,6 +65,9 @@ const expandedGroupIds = new Set<string>()
 let selectedComponentId: string | null = null
 /** Instances shown in the Instance view; null shows all instances of the component. */
 let selectedInstanceIds: string[] | null = null
+let componentSearchQuery = ""
+let searchScopeComponents = true
+let searchScopeInstances = true
 let pinTargets: PinTarget[] = []
 let pinnedNodeId: string | null = null
 let recentTargets: RecentTarget[] = []
@@ -65,6 +76,28 @@ let highlightedInstanceIds = new Set<string>()
 
 function post(message: UiToPluginMessage): void {
   parent.postMessage({ pluginMessage: message }, '*')
+}
+
+function isSearchFilterActive(): boolean {
+  return (
+    componentSearchQuery.trim() !== '' ||
+    !searchScopeComponents ||
+    !searchScopeInstances
+  )
+}
+
+function setSearchPopoverOpen(open: boolean): void {
+  componentSearchPopover.hidden = !open
+  componentSearchToggle.setAttribute('aria-expanded', open ? 'true' : 'false')
+  if (open) {
+    componentSearchInput.focus()
+  }
+}
+
+function applyComponentSearch(): void {
+  componentSearchQuery = componentSearchInput.value
+  componentSearchToggle.classList.toggle('is-active', isSearchFilterActive())
+  renderComponents()
 }
 
 function setStatus(text: string | null): void {
@@ -266,10 +299,29 @@ type SetEntry = {
   variants: ComponentInfo[]
 }
 
-type ListEntry = { kind: 'component'; component: ComponentInfo } | SetEntry
+type ListEntry =
+  | { kind: 'component'; component: ComponentInfo }
+  | SetEntry
+  | { kind: 'instance'; item: InstanceItem }
 
 function entryName(entry: ListEntry): string {
-  return entry.kind === 'set' ? entry.name : entry.component.name
+  if (entry.kind === 'set') {
+    return entry.name
+  }
+  return entry.kind === 'instance' ? entry.item.name : entry.component.name
+}
+
+function nameOrderInstanceItems(): InstanceItem[] {
+  return components.flatMap((component) =>
+    component.instances.map((instance) => ({
+      kind: 'instance' as const,
+      key: `name/n:${instance.id}`,
+      id: instance.id,
+      name: instance.name,
+      component,
+      children: [],
+    })),
+  )
 }
 
 /** Name order: group variants by their COMPONENT_SET and sort everything by name. */
@@ -317,7 +369,7 @@ type AccordionHeaderOptions = {
   expanded: boolean
   label: string
   count?: number
-  onToggle: () => void
+  onToggle: (event?: MouseEvent) => void
   onLabelClick?: () => void
   labelDisabled?: boolean
   labelTitle?: string
@@ -341,7 +393,7 @@ function createAccordionHeader(
   expandBtn.setAttribute('aria-label', options.expanded ? '閉じる' : '開く')
   expandBtn.addEventListener('click', (event) => {
     event.stopPropagation()
-    options.onToggle()
+    options.onToggle(event)
   })
 
   const label = document.createElement('button')
@@ -383,7 +435,7 @@ type RowOptions = {
   instanceIds?: string[]
   toggleKey: string
   isDefinition?: boolean
-  expand?: { expanded: boolean; onToggle: () => void } | 'spacer'
+  expand?: { expanded: boolean; onToggle: (event?: MouseEvent) => void } | 'spacer'
 }
 
 function createBadge(text: string, className = ''): HTMLSpanElement {
@@ -453,7 +505,7 @@ function createComponentRow(
     expandBtn.setAttribute('aria-label', expanded ? '閉じる' : '開く')
     expandBtn.addEventListener('click', (event) => {
       event.stopPropagation()
-      onToggle()
+      onToggle(event)
     })
     row.append(expandBtn)
   }
@@ -531,7 +583,7 @@ function createLayerInstanceElement(item: InstanceItem): HTMLElement {
     expandBtn.setAttribute('aria-label', expandable ? '閉じる' : '開く')
     expandBtn.addEventListener('click', (event) => {
       event.stopPropagation()
-      toggleExpanded(expandedGroupIds, item.key)
+      toggleExpanded(expandedGroupIds, item.key, event)
     })
     row.append(expandBtn)
   }
@@ -591,7 +643,62 @@ function createLayerInstanceElement(item: InstanceItem): HTMLElement {
   return row
 }
 
-function toggleExpanded(ids: Set<string>, id: string): void {
+function collectDescendantKeys(
+  items: readonly LayerItem[],
+  targetKey: string,
+): string[] {
+  const result: string[] = []
+  const find = (list: readonly LayerItem[]): boolean => {
+    for (const item of list) {
+      if (item.key === targetKey) {
+        const collect = (list2: readonly LayerItem[]) => {
+          for (const child of list2) {
+            result.push(child.key)
+            if ('children' in child && Array.isArray(child.children)) {
+              collect(child.children)
+            }
+          }
+        }
+        if ('children' in item && Array.isArray(item.children)) {
+          collect(item.children)
+        }
+        return true
+      }
+      if ('children' in item && Array.isArray(item.children)) {
+        if (find(item.children)) {
+          return true
+        }
+      }
+    }
+    return false
+  }
+  find(items)
+  return result
+}
+
+function toggleExpanded(
+  ids: Set<string>,
+  id: string,
+  event?: MouseEvent,
+): void {
+  if (event?.shiftKey) {
+    const isExpanded = ids.has(id)
+    if (isExpanded) {
+      ids.delete(id)
+      const descendants = collectDescendantKeys(layerItems, id)
+      for (const key of descendants) {
+        ids.delete(key)
+      }
+    } else {
+      ids.add(id)
+      const descendants = collectDescendantKeys(layerItems, id)
+      for (const key of descendants) {
+        ids.add(key)
+      }
+    }
+    renderComponents()
+    return
+  }
   if (ids.has(id)) {
     ids.delete(id)
   } else {
@@ -600,13 +707,13 @@ function toggleExpanded(ids: Set<string>, id: string): void {
   renderComponents()
 }
 
-function attachHeaderToggle(header: HTMLElement, onToggle: () => void): void {
+function attachHeaderToggle(header: HTMLElement, onToggle: (event?: MouseEvent) => void): void {
   header.addEventListener('click', (event) => {
     const target = event.target
     if (target instanceof Element && target.closest('button, label')) {
       return
     }
-    onToggle()
+    onToggle(event)
   })
 }
 
@@ -676,11 +783,15 @@ function createSetGroup(entry: SetEntry): HTMLDivElement {
 }
 
 function createEntryElement(entry: ListEntry): HTMLElement {
-  return entry.kind === 'set'
-    ? createSetGroup(entry)
-    : createComponentRow(entry.component, {
-        toggleKey: `component:${entry.component.id}`,
-      })
+  if (entry.kind === 'set') {
+    return createSetGroup(entry)
+  }
+  if (entry.kind === 'instance') {
+    return createLayerInstanceElement(entry.item)
+  }
+  return createComponentRow(entry.component, {
+    toggleKey: `component:${entry.component.id}`,
+  })
 }
 
 function createLayerList(items: readonly LayerItem[], inSet = false): HTMLDivElement {
@@ -839,26 +950,99 @@ function createLayerGroupElement(item: GroupItem): HTMLDivElement {
   return group
 }
 
+function getFilteredLayerItemsForRender(): LayerItem[] {
+  if (!isSearchFilterActive()) {
+    return allLayerItems
+  }
+  const result = filterLayerItems(allLayerItems, componentSearchQuery, {
+    components: searchScopeComponents,
+    instances: searchScopeInstances,
+  })
+  for (const key of result.expandedKeys) {
+    expandedGroupIds.add(key)
+  }
+  return result.items
+}
+
+function getFilteredSortedEntriesForRender(): ListEntry[] {
+  const q = componentSearchQuery.trim().toLowerCase()
+  const matches = (text: string) => !q || text.toLowerCase().includes(q)
+  const entries: ListEntry[] = []
+
+  if (searchScopeComponents) {
+    for (const entry of getSortedEntries()) {
+      if (entry.kind === 'component') {
+        if (matches(entry.component.name)) {
+          entries.push(entry)
+        }
+        continue
+      }
+      if (entry.kind !== 'set') {
+        continue
+      }
+      if (matches(entry.name)) {
+        entries.push(entry)
+        continue
+      }
+      const variants = entry.variants.filter(
+        (v) => matches(v.variantName) || matches(v.name),
+      )
+      if (variants.length > 0) {
+        expandedSetIds.add(entry.id)
+        entries.push({ ...entry, variants })
+      }
+    }
+  }
+
+  if (searchScopeInstances) {
+    for (const item of nameOrderInstanceItems()) {
+      if (matches(item.name) || matches(item.component.name)) {
+        entries.push({ kind: 'instance', item })
+      }
+    }
+  }
+
+  entries.sort((a, b) => entryName(a).localeCompare(entryName(b), 'ja'))
+  return entries
+}
+
 function renderComponents(): void {
   post({ type: 'clear-hover-highlight' })
   post({ type: 'hide-target-overlay' })
   componentsEl.replaceChildren()
+  if (componentsEmptyEl) {
+    componentsEmptyEl.hidden = true
+  }
 
   if (components.length === 0) {
     return
   }
 
   if (sortMode === 'name') {
+    const entries = getFilteredSortedEntriesForRender()
+    if (entries.length === 0) {
+      if (isSearchFilterActive() && componentsEmptyEl) {
+        componentsEmptyEl.hidden = false
+      }
+      return
+    }
     const items = document.createElement('div')
     items.className = 'list'
-    for (const entry of getSortedEntries()) {
+    for (const entry of entries) {
       items.append(createEntryElement(entry))
     }
     componentsEl.append(items)
     return
   }
 
-  componentsEl.append(createLayerList(layerItems))
+  const itemsToShow = getFilteredLayerItemsForRender()
+  if (itemsToShow.length === 0) {
+    if (isSearchFilterActive() && componentsEmptyEl) {
+      componentsEmptyEl.hidden = false
+    }
+    return
+  }
+  componentsEl.append(createLayerList(itemsToShow))
 }
 
 function renderInstances(): void {
@@ -947,7 +1131,11 @@ function applyResult(next: ComponentInfo[], layerTree: LayerNode[]): void {
     layerTree,
     new Map(components.map((component) => [component.id, component])),
   )
+  allLayerItems = layerItems
   itemNodeIds = indexItemNodeIds(layerItems)
+  for (const item of nameOrderInstanceItems()) {
+    itemNodeIds.set(item.key, [item.id])
+  }
   pruneActiveSelectKeys()
   if (
     selectedComponentId &&
@@ -973,6 +1161,13 @@ document.addEventListener('click', (event) => {
     return
   }
   pinPicker.closePopover()
+  if (
+    target instanceof Node &&
+    (componentSearchPopover.contains(target) || componentSearchToggle.contains(target))
+  ) {
+    return
+  }
+  setSearchPopoverOpen(false)
 })
 
 let resizingUi = false
@@ -1037,6 +1232,46 @@ for (const input of document.querySelectorAll<HTMLInputElement>(
     renderComponents()
   })
 }
+
+componentSearchToggle.addEventListener('click', (event) => {
+  event.stopPropagation()
+  if (componentSearchPopover.hidden) {
+    setSearchPopoverOpen(true)
+  } else {
+    setSearchPopoverOpen(false)
+  }
+})
+
+componentSearchInput.addEventListener('input', () => {
+  applyComponentSearch()
+})
+
+if (searchScopeComponentsEl) {
+  searchScopeComponentsEl.checked = true
+  searchScopeComponents = true
+  searchScopeComponentsEl.addEventListener('change', () => {
+    searchScopeComponents = searchScopeComponentsEl.checked
+    applyComponentSearch()
+  })
+}
+if (searchScopeInstancesEl) {
+  searchScopeInstancesEl.checked = true
+  searchScopeInstances = true
+  searchScopeInstancesEl.addEventListener('change', () => {
+    searchScopeInstances = searchScopeInstancesEl.checked
+    applyComponentSearch()
+  })
+}
+
+componentSearchPopover.addEventListener('click', (event) => {
+  event.stopPropagation()
+})
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    setSearchPopoverOpen(false)
+  }
+})
 
 window.onmessage = (event: MessageEvent) => {
   const msg = event.data?.pluginMessage as PluginToUiMessage | undefined
