@@ -1,5 +1,3 @@
-export type SearchMode = 'selection' | 'page' | 'pinned'
-
 export type ComponentSortMode = 'layer' | 'name'
 
 export interface GroupPathNode {
@@ -36,17 +34,26 @@ export interface ComponentInfo {
   groupPath: GroupPathNode[]
 }
 
+export type PinKind = 'SECTION' | 'FRAME' | 'INSTANCE' | 'GROUP'
+
 export interface PinTarget {
   id: string
   name: string
-  kind: 'SECTION' | 'FRAME'
+  kind: PinKind
+  label: string
+}
+
+/** 過去に選択した対象フレーム（clientStorage に保存する履歴）。 */
+export interface RecentTarget {
+  id: string
+  name: string
+  kind: PinKind
   label: string
 }
 
 export type UiToPluginMessage =
-  | { type: 'set-mode'; mode: SearchMode; pinnedNodeId?: string | null }
   | { type: 'set-pinned-node'; pinnedNodeId: string | null }
-  | { type: 'list-pin-targets' }
+  | { type: 'set-pinned-from-selection' }
   | { type: 'set-selection'; nodeIds: string[]; zoom?: boolean }
   | { type: 'clear-selection' }
   | { type: 'jump-node'; nodeId: string }
@@ -56,17 +63,22 @@ export type UiToPluginMessage =
       style: 'component' | 'instance'
     }
   | { type: 'clear-hover-highlight' }
+  | { type: 'show-target-overlay'; nodeId: string }
+  | { type: 'hide-target-overlay' }
+  | { type: 'resize-ui'; height: number }
   | { type: 'ready' }
 
 export type PluginToUiMessage =
-  | { type: 'scanning'; mode: SearchMode }
+  | { type: 'scanning' }
+  | { type: 'result'; components: ComponentInfo[] }
+  | { type: 'no-selection' }
   | {
-      type: 'result'
-      mode: SearchMode
-      components: ComponentInfo[]
+      type: 'pin-targets'
+      targets: PinTarget[]
+      pinnedNodeId: string | null
+      recent: RecentTarget[]
     }
-  | { type: 'no-selection'; mode: SearchMode; message?: string }
-  | { type: 'pin-targets'; targets: PinTarget[]; pinnedNodeId: string | null }
+  | { type: 'selection-empty' }
   | {
       type: 'selection-sync'
       componentIds: string[]

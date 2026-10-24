@@ -1,23 +1,49 @@
-import { collectPinTargets } from './pinTargets'
-import { clearHoverHighlight, showHoverHighlight } from './hoverHighlight'
+import { collectPinTargets, isPinTargetNode } from './pinTargets'
+import {
+  clearHoverHighlight,
+  hideTargetOverlay,
+  removeTargetOverlay,
+  showHoverHighlight,
+  showTargetOverlay,
+} from './hoverHighlight'
 import { scanRoots } from './scan'
 import type {
   ComponentInfo,
   PluginToUiMessage,
-  SearchMode,
+  RecentTarget,
   UiToPluginMessage,
 } from './types'
+
+const UI_WIDTH = 360
+const DEFAULT_UI_HEIGHT = 560
+const MIN_UI_HEIGHT = 320
+const MAX_UI_HEIGHT = 900
+const UI_HEIGHT_STORAGE_KEY = 'uiHeight'
+const RECENT_TARGETS_KEY = 'cbComponentExplorer.recentTargets'
+const MAX_RECENT_TARGETS = 20
+
+function clampUiHeight(height: number): number {
+  return Math.min(MAX_UI_HEIGHT, Math.max(MIN_UI_HEIGHT, Math.round(height)))
+}
 
 figma.skipInvisibleInstanceChildren = true
 
 figma.showUI(__html__, {
-  width: 360,
-  height: 560,
+  width: UI_WIDTH,
+  height: DEFAULT_UI_HEIGHT,
   themeColors: true,
 })
 
-let mode: SearchMode = 'selection'
+void (async () => {
+  const saved = await figma.clientStorage.getAsync(UI_HEIGHT_STORAGE_KEY)
+  if (typeof saved === 'number') {
+    figma.ui.resize(UI_WIDTH, clampUiHeight(saved))
+  }
+})()
+
 let pinnedNodeId: string | null = null
+/** 過去に選択した対象フレームの履歴（clientStorage に永続化）。 */
+let recentTargets: RecentTarget[] = []
 let ignoreNextSelectionChange = false
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 let scanGeneration = 0
@@ -30,6 +56,65 @@ function post(message: PluginToUiMessage): void {
 
 function isCurrentGeneration(generation: number): boolean {
   return generation === scanGeneration
+}
+
+// ---- 対象フレームの履歴（clientStorage 永続化） ----
+
+function isRecentTarget(value: unknown): value is RecentTarget {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+  const entry = value as Partial<RecentTarget>
+  return (
+    typeof entry.id === 'string' &&
+    typeof entry.name === 'string' &&
+    typeof entry.kind === 'string' &&
+    typeof entry.label === 'string'
+  )
+}
+
+async function loadRecentTargets(): Promise<RecentTarget[]> {
+  let stored: unknown
+  try {
+    stored = await figma.clientStorage.getAsync(RECENT_TARGETS_KEY)
+  } catch {
+    return []
+  }
+  if (!Array.isArray(stored)) {
+    return []
+  }
+  const targets = stored.filter(isRecentTarget).slice(0, MAX_RECENT_TARGETS)
+  // 起動時クリーンアップ: 見つからない・対象外ノードを履歴から除去
+  const kept: RecentTarget[] = []
+  for (const entry of targets) {
+    const node = await figma.getNodeByIdAsync(entry.id)
+    if (!node || !isPinTargetNode(node)) {
+      continue
+    }
+    kept.push(entry)
+  }
+  if (kept.length !== targets.length) {
+    void figma.clientStorage.setAsync(RECENT_TARGETS_KEY, kept)
+  }
+  return kept
+}
+
+/** 対象確定時に履歴へ追加する（現在ページ内のピン対象のみ）。 */
+function recordRecentTarget(nodeId: string): void {
+  const target = collectPinTargets().find((t) => t.id === nodeId)
+  if (!target) {
+    return
+  }
+  recentTargets = [
+    {
+      id: target.id,
+      name: target.name,
+      kind: target.kind,
+      label: target.label,
+    },
+    ...recentTargets.filter((existing) => existing.id !== target.id),
+  ].slice(0, MAX_RECENT_TARGETS)
+  void figma.clientStorage.setAsync(RECENT_TARGETS_KEY, recentTargets)
 }
 
 function setSelection(nodes: SceneNode[]): void {
@@ -139,16 +224,11 @@ function postPinTargets(): void {
     type: 'pin-targets',
     targets,
     pinnedNodeId,
+    recent: recentTargets,
   })
 }
 
-function isPinTargetNode(
-  node: BaseNode,
-): node is SectionNode | FrameNode {
-  return node.type === 'SECTION' || node.type === 'FRAME'
-}
-
-/** Prefer selected SECTION/FRAME, else nearest SECTION/FRAME ancestor. */
+/** Prefer a selected target node, else the nearest target ancestor. */
 function resolvePinTargetFromSelection(): string | null {
   const selection = figma.currentPage.selection
   for (const node of selection) {
@@ -176,87 +256,30 @@ async function runScan(): Promise<void> {
   clearHoverHighlight()
   const generation = ++scanGeneration
 
-  if (mode === 'selection') {
-    const selection = figma.currentPage.selection
-    if (selection.length === 0) {
-      latestComponents = []
-      post({
-        type: 'no-selection',
-        mode,
-        message: 'Nodeが選択されていません',
-      })
-      syncSelectionHighlight()
-      return
-    }
-
-    post({ type: 'scanning', mode })
-    const components = await scanRoots(selection, generation, isCurrentGeneration)
-    if (components === null || !isCurrentGeneration(generation)) {
-      return
-    }
-    latestComponents = components
-    post({ type: 'result', mode, components })
+  if (!pinnedNodeId) {
+    latestComponents = []
+    post({ type: 'no-selection' })
     syncSelectionHighlight()
     return
   }
 
-  if (mode === 'pinned') {
-    if (!pinnedNodeId) {
-      latestComponents = []
-      post({
-        type: 'no-selection',
-        mode,
-        message: '固定先が未選択です',
-      })
-      syncSelectionHighlight()
-      return
-    }
-
-    const node = await figma.getNodeByIdAsync(pinnedNodeId)
-    if (
-      !node ||
-      !('visible' in node) ||
-      (node.type !== 'SECTION' && node.type !== 'FRAME')
-    ) {
-      pinnedNodeId = null
-      latestComponents = []
-      postPinTargets()
-      post({
-        type: 'no-selection',
-        mode,
-        message: '固定先が見つかりません',
-      })
-      syncSelectionHighlight()
-      return
-    }
-
-    post({ type: 'scanning', mode })
-    const components = await scanRoots(
-      [node as SceneNode],
-      generation,
-      isCurrentGeneration,
-    )
-    if (components === null || !isCurrentGeneration(generation)) {
-      return
-    }
-    latestComponents = components
-    post({ type: 'result', mode, components })
+  const node = await figma.getNodeByIdAsync(pinnedNodeId)
+  if (!node || !isPinTargetNode(node)) {
+    pinnedNodeId = null
+    latestComponents = []
+    postPinTargets()
+    post({ type: 'no-selection' })
     syncSelectionHighlight()
     return
   }
 
-  // Page mode
-  post({ type: 'scanning', mode })
-  const components = await scanRoots(
-    [figma.currentPage],
-    generation,
-    isCurrentGeneration,
-  )
+  post({ type: 'scanning' })
+  const components = await scanRoots([node], generation, isCurrentGeneration)
   if (components === null || !isCurrentGeneration(generation)) {
     return
   }
   latestComponents = components
-  post({ type: 'result', mode, components })
+  post({ type: 'result', components })
   syncSelectionHighlight()
 }
 
@@ -274,26 +297,15 @@ function handleSelectionOrPageChange(): void {
   const fromPlugin = ignoreNextSelectionChange
   // Always sync highlight; clear toggles only on user-driven selection changes.
   syncSelectionHighlight(!fromPlugin)
-
-  if (ignoreNextSelectionChange) {
-    ignoreNextSelectionChange = false
-    return
-  }
+  ignoreNextSelectionChange = false
 
   const pageId = figma.currentPage.id
-  const pageChanged = pageId !== lastPageId
-  lastPageId = pageId
-
-  if (pageChanged) {
-    postPinTargets()
-    scheduleScan()
+  if (pageId === lastPageId) {
     return
   }
-
-  // Same-page selection changes only rescan in selection mode.
-  if (mode === 'selection') {
-    scheduleScan()
-  }
+  lastPageId = pageId
+  postPinTargets()
+  scheduleScan()
 }
 
 function selectionFingerprint(): string {
@@ -323,59 +335,42 @@ try {
   startSelectionPolling()
 }
 
+async function commitPinnedNode(nodeId: string | null): Promise<void> {
+  pinnedNodeId = nodeId
+  if (nodeId) {
+    recordRecentTarget(nodeId)
+  }
+  postPinTargets()
+  await runScan()
+}
+
 figma.ui.onmessage = (msg: UiToPluginMessage) => {
   void (async () => {
     switch (msg.type) {
       case 'ready':
+        recentTargets = await loadRecentTargets()
         postPinTargets()
         await runScan()
         break
-
-      case 'list-pin-targets':
-        postPinTargets()
-        break
-
-      case 'set-mode': {
-        const previousMode = mode
-        mode = msg.mode
-
-        if (mode === 'pinned') {
-          // Refresh candidates first.
-          const targets = collectPinTargets()
-
-          if (previousMode === 'selection') {
-            const fromSelection = resolvePinTargetFromSelection()
-            pinnedNodeId =
-              fromSelection && targets.some((t) => t.id === fromSelection)
-                ? fromSelection
-                : null
-          } else if (msg.pinnedNodeId !== undefined) {
-            pinnedNodeId = msg.pinnedNodeId
-          }
-
-          if (pinnedNodeId && !targets.some((t) => t.id === pinnedNodeId)) {
-            pinnedNodeId = null
-          }
-
-          post({
-            type: 'pin-targets',
-            targets,
-            pinnedNodeId,
-          })
-        }
-
-        await runScan()
-        break
-      }
 
       case 'set-pinned-node':
-        pinnedNodeId = msg.pinnedNodeId
-        if (mode === 'pinned') {
-          await runScan()
-        } else {
-          postPinTargets()
-        }
+        await commitPinnedNode(msg.pinnedNodeId)
         break
+
+      case 'set-pinned-from-selection': {
+        if (figma.currentPage.selection.length === 0) {
+          post({ type: 'selection-empty' })
+          break
+        }
+        const fromSelection = resolvePinTargetFromSelection()
+        const targets = collectPinTargets()
+        if (!fromSelection || !targets.some((t) => t.id === fromSelection)) {
+          post({ type: 'error', message: '選択からターゲットを解決できません' })
+          break
+        }
+        await commitPinnedNode(fromSelection)
+        break
+      }
 
       case 'set-selection':
         await selectNodes(msg.nodeIds, msg.zoom ?? true)
@@ -397,6 +392,27 @@ figma.ui.onmessage = (msg: UiToPluginMessage) => {
         clearHoverHighlight()
         break
 
+      case 'show-target-overlay': {
+        const node = await figma.getNodeByIdAsync(msg.nodeId)
+        if (node && 'absoluteBoundingBox' in node) {
+          showTargetOverlay(node as SceneNode)
+        } else {
+          hideTargetOverlay()
+        }
+        break
+      }
+
+      case 'hide-target-overlay':
+        hideTargetOverlay()
+        break
+
+      case 'resize-ui': {
+        const height = clampUiHeight(msg.height)
+        figma.ui.resize(UI_WIDTH, height)
+        void figma.clientStorage.setAsync(UI_HEIGHT_STORAGE_KEY, height)
+        break
+      }
+
       default:
         break
     }
@@ -405,4 +421,5 @@ figma.ui.onmessage = (msg: UiToPluginMessage) => {
 
 figma.on('close', () => {
   clearHoverHighlight()
+  removeTargetOverlay()
 })

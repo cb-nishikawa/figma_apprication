@@ -1,15 +1,21 @@
-import type { PinTarget } from './types'
+import { OVERLAY_NAME_PREFIX } from './hoverHighlight'
+import type { PinKind, PinTarget } from './types'
 
-type PinKind = 'SECTION' | 'FRAME'
-
-function kindLabel(kind: PinKind): string {
-  return kind === 'SECTION' ? 'Section' : 'Frame'
+export function isPinTargetNode(
+  node: BaseNode,
+): node is SceneNode & { type: PinKind } {
+  return (
+    node.type === 'SECTION' ||
+    node.type === 'FRAME' ||
+    node.type === 'INSTANCE' ||
+    node.type === 'GROUP'
+  )
 }
 
 function parentContextName(node: BaseNode): string | null {
   let current: BaseNode | null = node.parent
   while (current && current.type !== 'PAGE' && current.type !== 'DOCUMENT') {
-    if (current.type === 'SECTION' || current.type === 'FRAME') {
+    if (isPinTargetNode(current)) {
       return current.name
     }
     current = current.parent
@@ -21,8 +27,8 @@ function buildLabel(
   node: SceneNode & { type: PinKind },
   duplicateNames: Set<string>,
 ): string {
-  const base = `${kindLabel(node.type)}: ${node.name}`
-  if (!duplicateNames.has(`${node.type}:${node.name}`)) {
+  const base = node.name
+  if (!duplicateNames.has(node.name)) {
     return base
   }
   const parentName = parentContextName(node)
@@ -33,20 +39,21 @@ function buildLabel(
 }
 
 export function collectPinTargets(): PinTarget[] {
-  const nodes = figma.currentPage.findAllWithCriteria({
-    types: ['SECTION', 'FRAME'],
-  }) as Array<SceneNode & { type: PinKind }>
+  const nodes = (
+    figma.currentPage.findAllWithCriteria({
+      types: ['SECTION', 'FRAME', 'INSTANCE', 'GROUP'],
+    }) as Array<SceneNode & { type: PinKind }>
+  ).filter((node) => !node.name.startsWith(OVERLAY_NAME_PREFIX))
 
   const nameCounts = new Map<string, number>()
   for (const node of nodes) {
-    const key = `${node.type}:${node.name}`
-    nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1)
+    nameCounts.set(node.name, (nameCounts.get(node.name) ?? 0) + 1)
   }
 
   const duplicateNames = new Set<string>()
-  for (const [key, count] of nameCounts) {
+  for (const [name, count] of nameCounts) {
     if (count > 1) {
-      duplicateNames.add(key)
+      duplicateNames.add(name)
     }
   }
 

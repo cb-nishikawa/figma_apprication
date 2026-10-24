@@ -1,13 +1,17 @@
+import { createTargetPicker } from '../targetPicker'
 import type {
   ComponentInfo,
   ComponentSortMode,
   PinTarget,
   PluginToUiMessage,
-  SearchMode,
+  RecentTarget,
   UiToPluginMessage,
 } from '../types'
 
 type View = 'components' | 'instances'
+
+const MIN_UI_HEIGHT = 320
+const MAX_UI_HEIGHT = 900
 
 const viewComponentsEl = document.getElementById(
   'view-components',
@@ -25,16 +29,11 @@ const instanceHeadingEl = document.getElementById(
 ) as HTMLParagraphElement
 const statusEl = document.getElementById('status') as HTMLParagraphElement
 const backBtn = document.getElementById('back-btn') as HTMLButtonElement
-const pinRowEl = document.getElementById('pin-row') as HTMLDivElement
-const pinComboboxEl = document.querySelector('.pin-combobox') as HTMLDivElement
-const pinInputEl = document.getElementById(
-  'pin-combobox-input',
-) as HTMLInputElement
-const pinListEl = document.getElementById(
-  'pin-combobox-list',
-) as HTMLUListElement
+const pinPickerRoot = document.getElementById(
+  'pin-picker-root',
+) as HTMLDivElement
+const resizeHandle = document.getElementById('resize-handle') as HTMLDivElement
 
-let mode: SearchMode = 'selection'
 let sortMode: ComponentSortMode = 'layer'
 let view: View = 'components'
 let components: ComponentInfo[] = []
@@ -42,9 +41,7 @@ let selectedComponentId: string | null = null
 let activeSelectKeys = new Set<string>()
 let pinTargets: PinTarget[] = []
 let pinnedNodeId: string | null = null
-let pinFilterQuery = ''
-let pinListOpen = false
-let pinActiveIndex = -1
+let recentTargets: RecentTarget[] = []
 let highlightedComponentIds = new Set<string>()
 let highlightedInstanceIds = new Set<string>()
 
@@ -73,10 +70,6 @@ function showView(next: View): void {
   view = next
   viewComponentsEl.hidden = next !== 'components'
   viewInstancesEl.hidden = next !== 'instances'
-}
-
-function updatePinRowVisibility(): void {
-  pinRowEl.hidden = mode !== 'pinned'
 }
 
 function goToComponents(): void {
@@ -167,19 +160,6 @@ function pruneActiveSelectKeys(): void {
   }
 }
 
-function filteredPinTargets(): PinTarget[] {
-  const query = pinFilterQuery.trim().toLowerCase()
-  if (!query) {
-    return pinTargets
-  }
-  return pinTargets.filter((target) => {
-    return (
-      target.label.toLowerCase().includes(query) ||
-      target.name.toLowerCase().includes(query)
-    )
-  })
-}
-
 function getPinnedTarget(): PinTarget | null {
   if (!pinnedNodeId) {
     return null
@@ -187,108 +167,37 @@ function getPinnedTarget(): PinTarget | null {
   return pinTargets.find((t) => t.id === pinnedNodeId) ?? null
 }
 
-function syncPinnedFromTargets(): void {
-  if (pinnedNodeId && !getPinnedTarget()) {
-    pinnedNodeId = null
-  }
-}
-
-function setPinInputToSelection(): void {
-  const selected = getPinnedTarget()
-  pinFilterQuery = ''
-  pinInputEl.value = selected ? selected.label : ''
-}
-
-function commitPinnedNode(nextId: string | null): void {
+function commitPinnedNode(nextId: string): void {
   pinnedNodeId = nextId
-  setPinInputToSelection()
-  closePinList()
+  pinPicker.refresh()
   post({ type: 'set-pinned-node', pinnedNodeId })
 }
 
-function openPinList(): void {
-  pinListOpen = true
-  pinListEl.hidden = false
-  pinInputEl.setAttribute('aria-expanded', 'true')
-  renderPinList()
-}
-
-function closePinList(): void {
-  pinListOpen = false
-  pinActiveIndex = -1
-  pinListEl.hidden = true
-  pinInputEl.setAttribute('aria-expanded', 'false')
-}
-
-function renderPinList(): void {
-  syncPinnedFromTargets()
-  pinListEl.replaceChildren()
-
-  if (pinTargets.length === 0) {
-    const empty = document.createElement('li')
-    empty.className = 'pin-combobox-empty'
-    empty.textContent = '候補がありません'
-    pinListEl.append(empty)
-    return
-  }
-
-  const filtered = filteredPinTargets()
-  if (filtered.length === 0) {
-    const empty = document.createElement('li')
-    empty.className = 'pin-combobox-empty'
-    empty.textContent = '該当なし'
-    pinListEl.append(empty)
-    pinActiveIndex = -1
-    return
-  }
-
-  if (pinActiveIndex >= filtered.length) {
-    pinActiveIndex = filtered.length - 1
-  }
-
-  filtered.forEach((target, index) => {
-    const item = document.createElement('li')
-    item.setAttribute('role', 'option')
-    item.id = `pin-option-${target.id}`
-
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = 'pin-combobox-option'
-    if (target.id === pinnedNodeId) {
-      button.classList.add('is-selected')
+const pinPicker = createTargetPicker({
+  emptyLabel: 'ターゲット未選択',
+  ariaLabel: '検索ターゲット',
+  getLabel: () => getPinnedTarget()?.label ?? '',
+  getSelectedId: () => pinnedNodeId,
+  getTargets: () => pinTargets,
+  getRecent: () => recentTargets,
+  onHoverTarget: (nodeId) => {
+    if (nodeId) {
+      post({ type: 'show-target-overlay', nodeId })
+    } else {
+      post({ type: 'hide-target-overlay' })
     }
-    if (index === pinActiveIndex) {
-      button.classList.add('is-active')
-    }
-    button.textContent = target.label
-    button.title = target.label
-    button.addEventListener('mousedown', (event) => {
-      // Prevent input blur before click commits.
-      event.preventDefault()
-    })
-    button.addEventListener('click', () => {
-      commitPinnedNode(target.id)
-    })
-
-    item.append(button)
-    pinListEl.append(item)
-  })
-
-  if (pinActiveIndex >= 0) {
-    const active = pinListEl.children[pinActiveIndex] as HTMLElement | undefined
-    active?.scrollIntoView({ block: 'nearest' })
-  }
-}
-
-function refreshPinCombobox(preserveInput = false): void {
-  syncPinnedFromTargets()
-  if (!preserveInput) {
-    setPinInputToSelection()
-  }
-  if (pinListOpen) {
-    renderPinList()
-  }
-}
+  },
+  onApplySelection: () => {
+    post({ type: 'set-pinned-from-selection' })
+  },
+  onPick: (id) => {
+    commitPinnedNode(id)
+  },
+  onPickRecent: (id) => {
+    commitPinnedNode(id)
+  },
+})
+pinPickerRoot.append(pinPicker.root)
 
 function isComponentHighlighted(componentId: string): boolean {
   return (
@@ -304,26 +213,10 @@ function isInstanceHighlighted(instanceId: string): boolean {
   )
 }
 
-function pathSortKey(path: { name: string }[]): string {
-  if (path.length === 0) {
-    return '\uffff'
-  }
-  return path.map((p) => p.name).join('\0')
-}
-
 function getSortedComponents(): ComponentInfo[] {
   const sorted = [...components]
   if (sortMode === 'name') {
-    sorted.sort((a, b) => {
-      const byPath = pathSortKey(a.groupPath).localeCompare(
-        pathSortKey(b.groupPath),
-        'ja',
-      )
-      if (byPath !== 0) {
-        return byPath
-      }
-      return a.name.localeCompare(b.name, 'ja')
-    })
+    sorted.sort((a, b) => a.name.localeCompare(b.name, 'ja'))
   } else {
     sorted.sort((a, b) => {
       const byLayer = a.layerIndex - b.layerIndex
@@ -500,6 +393,17 @@ function renderComponents(): void {
     return
   }
 
+  if (sortMode === 'name') {
+    const items = document.createElement('div')
+    items.className = 'group-items'
+    items.style.setProperty('--group-depth', '0')
+    for (const component of getSortedComponents()) {
+      items.append(createComponentRow(component))
+    }
+    componentsEl.append(items)
+    return
+  }
+
   const { roots, rootComponents } = buildPathTree(getSortedComponents())
 
   for (const root of roots) {
@@ -612,128 +516,64 @@ backBtn.addEventListener('click', () => {
   goToComponents()
 })
 
-pinInputEl.addEventListener('focus', () => {
-  pinFilterQuery = pinInputEl.value
-  // When focusing a committed value, start with full list unless user edits.
-  const selected = getPinnedTarget()
-  if (selected && pinInputEl.value === selected.label) {
-    pinFilterQuery = ''
-  }
-  openPinList()
-})
-
-pinInputEl.addEventListener('input', () => {
-  pinFilterQuery = pinInputEl.value
-  pinActiveIndex = 0
-  if (!pinInputEl.value.trim()) {
-    if (pinnedNodeId) {
-      pinnedNodeId = null
-      post({ type: 'set-pinned-node', pinnedNodeId: null })
-    }
-  }
-  openPinList()
-})
-
-pinInputEl.addEventListener('keydown', (event) => {
-  const filtered = filteredPinTargets()
-
-  if (event.key === 'ArrowDown') {
-    event.preventDefault()
-    if (!pinListOpen) {
-      openPinList()
-    }
-    pinActiveIndex = Math.min(pinActiveIndex + 1, filtered.length - 1)
-    renderPinList()
-    return
-  }
-
-  if (event.key === 'ArrowUp') {
-    event.preventDefault()
-    if (!pinListOpen) {
-      openPinList()
-    }
-    pinActiveIndex = Math.max(pinActiveIndex - 1, 0)
-    renderPinList()
-    return
-  }
-
-  if (event.key === 'Enter') {
-    event.preventDefault()
-    if (!pinListOpen) {
-      openPinList()
-      return
-    }
-    const target = filtered[pinActiveIndex] ?? filtered[0]
-    if (target) {
-      commitPinnedNode(target.id)
-    }
-    return
-  }
-
-  if (event.key === 'Escape') {
-    event.preventDefault()
-    if (pinListOpen) {
-      setPinInputToSelection()
-      closePinList()
-      return
-    }
-    if (pinnedNodeId) {
-      commitPinnedNode(null)
-    }
-  }
-})
-
-pinInputEl.addEventListener('blur', () => {
-  // Defer so option click can commit first.
-  window.setTimeout(() => {
-    if (!pinComboboxEl.contains(document.activeElement)) {
-      setPinInputToSelection()
-      closePinList()
-    }
-  }, 0)
-})
-
-document.addEventListener('mousedown', (event) => {
+document.addEventListener('click', (event) => {
   const target = event.target
-  if (!(target instanceof Node)) {
+  if (target instanceof Node && pinPicker.root.contains(target)) {
     return
   }
-  if (!pinComboboxEl.contains(target)) {
-    if (pinListOpen) {
-      setPinInputToSelection()
-      closePinList()
-    }
-  }
+  pinPicker.closePopover()
 })
 
-for (const input of document.querySelectorAll<HTMLInputElement>(
-  'input[name="mode"]',
-)) {
-  input.addEventListener('change', () => {
-    if (!input.checked) {
-      return
-    }
-    const previousMode = mode
-    mode = input.value as SearchMode
-    activeSelectKeys.clear()
-    updatePinRowVisibility()
-    goToComponents()
+let resizingUi = false
+let resizePointerId: number | null = null
 
-    // selection → pinned: let the plugin pick from current canvas selection
-    const nextPinnedNodeId =
-      mode === 'pinned'
-        ? previousMode === 'selection'
-          ? undefined
-          : pinnedNodeId
-        : null
-
-    post({
-      type: 'set-mode',
-      mode,
-      pinnedNodeId: nextPinnedNodeId,
-    })
-  })
+function clampUiHeightLocal(height: number): number {
+  return Math.min(MAX_UI_HEIGHT, Math.max(MIN_UI_HEIGHT, Math.round(height)))
 }
+
+function endUiResize(event?: PointerEvent): void {
+  if (!resizingUi) {
+    return
+  }
+  resizingUi = false
+  document.body.classList.remove('is-resizing')
+  if (
+    event &&
+    resizePointerId !== null &&
+    resizeHandle.hasPointerCapture(resizePointerId)
+  ) {
+    resizeHandle.releasePointerCapture(resizePointerId)
+  }
+  resizePointerId = null
+}
+
+resizeHandle.addEventListener('pointerdown', (event) => {
+  resizingUi = true
+  resizePointerId = event.pointerId
+  document.body.classList.add('is-resizing')
+  resizeHandle.setPointerCapture(event.pointerId)
+  event.preventDefault()
+})
+
+resizeHandle.addEventListener('pointermove', (event) => {
+  if (!resizingUi) {
+    return
+  }
+  post({ type: 'resize-ui', height: clampUiHeightLocal(event.clientY) })
+})
+
+resizeHandle.addEventListener('pointerup', (event) => {
+  endUiResize(event)
+})
+resizeHandle.addEventListener('pointercancel', (event) => {
+  endUiResize(event)
+})
+window.addEventListener('pointerup', () => {
+  endUiResize()
+})
+window.addEventListener('pointercancel', () => {
+  endUiResize()
+})
 
 for (const input of document.querySelectorAll<HTMLInputElement>(
   'input[name="sort"]',
@@ -755,21 +595,15 @@ window.onmessage = (event: MessageEvent) => {
 
   switch (msg.type) {
     case 'scanning':
-      mode = msg.mode
-      updatePinRowVisibility()
       setStatus('検索中…')
       break
 
     case 'no-selection':
-      mode = msg.mode
-      updatePinRowVisibility()
-      setStatus(msg.message ?? 'Nodeが選択されていません')
+      setStatus(null)
       applyResult([])
       break
 
     case 'result':
-      mode = msg.mode
-      updatePinRowVisibility()
       setStatus(
         msg.components.length === 0
           ? 'Component / Instance が見つかりませんでした'
@@ -781,8 +615,12 @@ window.onmessage = (event: MessageEvent) => {
     case 'pin-targets':
       pinTargets = msg.targets
       pinnedNodeId = msg.pinnedNodeId
-      refreshPinCombobox(false)
-      updatePinRowVisibility()
+      recentTargets = msg.recent
+      pinPicker.refresh()
+      break
+
+    case 'selection-empty':
+      pinPicker.openHistoryPopover()
       break
 
     case 'selection-sync':
@@ -807,5 +645,4 @@ window.onmessage = (event: MessageEvent) => {
 }
 
 showView('components')
-updatePinRowVisibility()
 post({ type: 'ready' })
