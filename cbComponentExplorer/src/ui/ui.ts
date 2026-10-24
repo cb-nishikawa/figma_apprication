@@ -1,7 +1,18 @@
 import { createTargetPicker } from '../targetPicker'
+import {
+  buildLayerItems,
+  countGroupRows,
+  indexItemNodeIds,
+  type ComponentItem,
+  type GroupItem,
+  type InstanceItem,
+  type LayerItem,
+  type SetItem,
+} from './layerItems'
 import type {
   ComponentInfo,
   ComponentSortMode,
+  LayerNode,
   PinTarget,
   PluginToUiMessage,
   RecentTarget,
@@ -37,8 +48,15 @@ const resizeHandle = document.getElementById('resize-handle') as HTMLDivElement
 let sortMode: ComponentSortMode = 'layer'
 let view: View = 'components'
 let components: ComponentInfo[] = []
-let selectedComponentId: string | null = null
+let layerItems: LayerItem[] = []
+/** Row key (`item:<path>`) to the canvas node ids that the row's toggle selects. */
+let itemNodeIds = new Map<string, string[]>()
 let activeSelectKeys = new Set<string>()
+const expandedSetIds = new Set<string>()
+const expandedGroupIds = new Set<string>()
+let selectedComponentId: string | null = null
+/** Instances shown in the Instance view; null shows all instances of the component. */
+let selectedInstanceIds: string[] | null = null
 let pinTargets: PinTarget[] = []
 let pinnedNodeId: string | null = null
 let recentTargets: RecentTarget[] = []
@@ -74,13 +92,15 @@ function showView(next: View): void {
 
 function goToComponents(): void {
   selectedComponentId = null
+  selectedInstanceIds = null
   post({ type: 'clear-hover-highlight' })
   showView('components')
   renderComponents()
 }
 
-function goToInstances(componentId: string): void {
+function goToInstances(componentId: string, instanceIds?: string[]): void {
   selectedComponentId = componentId
+  selectedInstanceIds = instanceIds ?? null
   post({ type: 'clear-hover-highlight' })
   showView('instances')
   renderComponents()
@@ -90,10 +110,28 @@ function goToInstances(componentId: string): void {
 function nodeIdsForActiveKeys(): string[] {
   const ids = new Set<string>()
   for (const key of activeSelectKeys) {
+    if (key.startsWith('item:')) {
+      for (const id of itemNodeIds.get(key.slice('item:'.length)) ?? []) {
+        ids.add(id)
+      }
+      continue
+    }
     if (key.startsWith('component:')) {
       const componentId = key.slice('component:'.length)
       const component = components.find((c) => c.id === componentId)
       if (component) {
+        for (const instance of component.instances) {
+          ids.add(instance.id)
+        }
+      }
+      continue
+    }
+    if (key.startsWith('set:')) {
+      const setId = key.slice('set:'.length)
+      for (const component of components) {
+        if (component.componentSet?.id !== setId) {
+          continue
+        }
         for (const instance of component.instances) {
           ids.add(instance.id)
         }
@@ -149,9 +187,15 @@ function pruneActiveSelectKeys(): void {
   const valid = new Set<string>()
   for (const component of components) {
     valid.add(`component:${component.id}`)
+    if (component.componentSet) {
+      valid.add(`set:${component.componentSet.id}`)
+    }
     for (const instance of component.instances) {
       valid.add(`instance:${instance.id}`)
     }
+  }
+  for (const key of itemNodeIds.keys()) {
+    valid.add(`item:${key}`)
   }
   for (const key of Array.from(activeSelectKeys)) {
     if (!valid.has(key)) {
@@ -213,86 +257,165 @@ function isInstanceHighlighted(instanceId: string): boolean {
   )
 }
 
-function getSortedComponents(): ComponentInfo[] {
-  const sorted = [...components]
-  if (sortMode === 'name') {
-    sorted.sort((a, b) => a.name.localeCompare(b.name, 'ja'))
-  } else {
-    sorted.sort((a, b) => {
-      const byLayer = a.layerIndex - b.layerIndex
-      if (byLayer !== 0) {
-        return byLayer
-      }
-      return a.name.localeCompare(b.name, 'ja')
-    })
-  }
-  return sorted
-}
-
-type PathTreeNode = {
+type SetEntry = {
+  kind: 'set'
   id: string
   name: string
-  kind: 'SECTION' | 'FRAME'
-  children: Map<string, PathTreeNode>
-  childOrder: string[]
-  components: ComponentInfo[]
+  canJump: boolean
+  isLocal: boolean
+  variants: ComponentInfo[]
 }
 
-function buildPathTree(sorted: ComponentInfo[]): {
-  roots: PathTreeNode[]
-  rootComponents: ComponentInfo[]
-} {
-  const rootMap = new Map<string, PathTreeNode>()
-  const rootOrder: string[] = []
-  const rootComponents: ComponentInfo[] = []
+type ListEntry = { kind: 'component'; component: ComponentInfo } | SetEntry
 
-  for (const component of sorted) {
-    if (component.groupPath.length === 0) {
-      rootComponents.push(component)
+function entryName(entry: ListEntry): string {
+  return entry.kind === 'set' ? entry.name : entry.component.name
+}
+
+/** Name order: group variants by their COMPONENT_SET and sort everything by name. */
+function getSortedEntries(): ListEntry[] {
+  const entries: ListEntry[] = []
+  const sets = new Map<string, SetEntry>()
+
+  for (const component of components) {
+    const set = component.componentSet
+    if (!set) {
+      entries.push({ kind: 'component', component })
       continue
     }
-
-    let map = rootMap
-    let order = rootOrder
-    let node: PathTreeNode | undefined
-
-    for (const segment of component.groupPath) {
-      node = map.get(segment.id)
-      if (!node) {
-        node = {
-          id: segment.id,
-          name: segment.name,
-          kind: segment.kind,
-          children: new Map(),
-          childOrder: [],
-          components: [],
-        }
-        map.set(segment.id, node)
-        order.push(segment.id)
+    let entry = sets.get(set.id)
+    if (!entry) {
+      entry = {
+        kind: 'set',
+        id: set.id,
+        name: set.name,
+        canJump: set.canJump,
+        isLocal: component.isLocal,
+        variants: [],
       }
-      map = node.children
-      order = node.childOrder
+      sets.set(set.id, entry)
+      entries.push(entry)
     }
-
-    node?.components.push(component)
+    entry.variants.push(component)
   }
 
-  return {
-    roots: rootOrder
-      .map((id) => rootMap.get(id))
-      .filter((n): n is PathTreeNode => Boolean(n)),
-    rootComponents,
+  for (const entry of sets.values()) {
+    entry.variants.sort((a, b) =>
+      a.variantName.localeCompare(b.variantName, 'ja'),
+    )
   }
+
+  entries.sort((a, b) => entryName(a).localeCompare(entryName(b), 'ja'))
+  return entries
 }
 
 function headingLabel(kind: 'SECTION' | 'FRAME', name: string): string {
   return kind === 'SECTION' ? `#${name}` : name
 }
 
-function createComponentRow(component: ComponentInfo): HTMLDivElement {
+type AccordionHeaderOptions = {
+  expanded: boolean
+  label: string
+  count?: number
+  onToggle: () => void
+  onLabelClick?: () => void
+  labelDisabled?: boolean
+  labelTitle?: string
+  selected?: boolean
+  meta?: HTMLElement[]
+  actions?: HTMLElement[]
+}
+
+function createAccordionHeader(
+  options: AccordionHeaderOptions,
+): HTMLDivElement {
+  const header = document.createElement('div')
+  header.className =
+    'acc-header' + (options.selected ? ' is-selected' : '')
+
+  const expandBtn = document.createElement('button')
+  expandBtn.type = 'button'
+  expandBtn.className = 'acc-expand'
+  expandBtn.textContent = options.expanded ? '▾' : '▸'
+  expandBtn.setAttribute('aria-expanded', String(options.expanded))
+  expandBtn.setAttribute('aria-label', options.expanded ? '閉じる' : '開く')
+  expandBtn.addEventListener('click', (event) => {
+    event.stopPropagation()
+    options.onToggle()
+  })
+
+  const label = document.createElement('button')
+  label.type = 'button'
+  label.className = 'acc-label'
+  label.textContent = options.label
+  label.title = options.labelTitle ?? options.label
+  label.disabled = options.labelDisabled ?? false
+  if (options.onLabelClick) {
+    label.addEventListener('click', options.onLabelClick)
+  }
+
+  header.append(expandBtn, label)
+
+  if (options.count !== undefined) {
+    const count = document.createElement('span')
+    count.className = 'acc-count'
+    count.textContent = `${options.count}件`
+    header.append(count)
+  }
+
+  for (const element of options.meta ?? []) {
+    header.append(element)
+  }
+
+  if (options.actions && options.actions.length > 0) {
+    const actions = document.createElement('div')
+    actions.className = 'actions'
+    actions.append(...options.actions)
+    header.append(actions)
+  }
+
+  return header
+}
+
+type RowOptions = {
+  label?: string
+  /** Instances represented by this row; undefined means all instances of the component. */
+  instanceIds?: string[]
+  toggleKey: string
+  isDefinition?: boolean
+  expand?: { expanded: boolean; onToggle: () => void } | 'spacer'
+}
+
+function createBadge(text: string, className = ''): HTMLSpanElement {
+  const badge = document.createElement('span')
+  badge.className = 'badge' + (className ? ` ${className}` : '')
+  badge.textContent = text
+  return badge
+}
+
+function createLocalBadge(isLocal: boolean): HTMLSpanElement {
+  return createBadge(isLocal ? 'local' : 'library', isLocal ? '' : 'is-library')
+}
+
+function createComponentRow(
+  component: ComponentInfo,
+  options: RowOptions,
+): HTMLDivElement {
+  const label = options.label ?? component.name
+  const rowInstanceIds =
+    options.instanceIds ?? component.instances.map((instance) => instance.id)
+  const selected =
+    activeSelectKeys.has(options.toggleKey) ||
+    (options.instanceIds
+      ? options.instanceIds.some((id) => isInstanceHighlighted(id))
+      : isComponentHighlighted(component.id) ||
+        component.instances.some((i) => isInstanceHighlighted(i.id)))
+
   const row = document.createElement('div')
   row.className =
-    'row' + (isComponentHighlighted(component.id) ? ' is-selected' : '')
+    'row' +
+    (options.expand ? ' has-expand' : '') +
+    (selected ? ' is-selected' : '')
 
   const highlightComponent = () => {
     post({
@@ -305,15 +428,35 @@ function createComponentRow(component: ComponentInfo): HTMLDivElement {
   const highlightInstances = () => {
     post({
       type: 'hover-highlight',
-      nodeIds: component.instances.map((instance) => instance.id),
+      nodeIds: rowInstanceIds,
       style: 'instance',
     })
   }
 
-  row.addEventListener('mouseenter', highlightComponent)
+  row.addEventListener('mouseenter', options.instanceIds ? highlightInstances : highlightComponent)
   row.addEventListener('mouseleave', () => {
     post({ type: 'clear-hover-highlight' })
   })
+
+  if (options.expand === 'spacer') {
+    const spacer = document.createElement('span')
+    spacer.className = 'acc-expand'
+    spacer.setAttribute('aria-hidden', 'true')
+    row.append(spacer)
+  } else if (options.expand) {
+    const { expanded, onToggle } = options.expand
+    const expandBtn = document.createElement('button')
+    expandBtn.type = 'button'
+    expandBtn.className = 'acc-expand'
+    expandBtn.textContent = expanded ? '▾' : '▸'
+    expandBtn.setAttribute('aria-expanded', String(expanded))
+    expandBtn.setAttribute('aria-label', expanded ? '閉じる' : '開く')
+    expandBtn.addEventListener('click', (event) => {
+      event.stopPropagation()
+      onToggle()
+    })
+    row.append(expandBtn)
+  }
 
   const main = document.createElement('div')
   main.className = 'row-main'
@@ -321,7 +464,7 @@ function createComponentRow(component: ComponentInfo): HTMLDivElement {
   const nameBtn = document.createElement('button')
   nameBtn.type = 'button'
   nameBtn.className = 'name-btn'
-  nameBtn.textContent = component.name
+  nameBtn.textContent = label
   nameBtn.title = component.name
   if (component.canJump) {
     nameBtn.addEventListener('click', () => {
@@ -334,59 +477,371 @@ function createComponentRow(component: ComponentInfo): HTMLDivElement {
 
   const meta = document.createElement('div')
   meta.className = 'meta'
+  meta.append(createLocalBadge(component.isLocal))
+  if (options.isDefinition) {
+    meta.append(createBadge('定義', 'is-definition'))
+  }
 
-  const badge = document.createElement('span')
-  badge.className = 'badge' + (component.isLocal ? '' : ' is-library')
-  badge.textContent = component.isLocal ? 'local' : 'library'
-
-  const countBtn = document.createElement('button')
-  countBtn.type = 'button'
-  countBtn.className = 'link-btn'
-  countBtn.textContent = `${component.instances.length} instances`
-  countBtn.addEventListener('click', () => {
-    goToInstances(component.id)
-  })
-  countBtn.addEventListener('mouseenter', highlightInstances)
-  countBtn.addEventListener('mouseleave', highlightComponent)
-
-  meta.append(badge, countBtn)
+  if (!options.instanceIds) {
+    const countBtn = document.createElement('button')
+    countBtn.type = 'button'
+    countBtn.className = 'link-btn'
+    countBtn.textContent = `${rowInstanceIds.length} instances`
+    countBtn.addEventListener('click', () => {
+      goToInstances(component.id, options.instanceIds)
+    })
+    countBtn.addEventListener('mouseenter', highlightInstances)
+    countBtn.addEventListener('mouseleave', highlightComponent)
+    meta.append(countBtn)
+  }
   main.append(nameBtn, meta)
 
   const actions = document.createElement('div')
   actions.className = 'actions'
-  actions.append(createSelectToggle(`component:${component.id}`))
+  actions.append(createSelectToggle(options.toggleKey))
 
   row.append(main, actions)
   return row
 }
 
-function renderPathTreeNode(node: PathTreeNode, depth: number): void {
-  const heading = document.createElement('div')
-  heading.className = 'group-heading'
-  heading.style.setProperty('--group-depth', String(depth))
-  heading.textContent = headingLabel(node.kind, node.name)
-  componentsEl.append(heading)
+function createLayerInstanceElement(item: InstanceItem): HTMLElement {
+  const component = item.component
+  const selected = activeSelectKeys.has(`item:${item.key}`) || isInstanceHighlighted(item.id)
+  const row = document.createElement('div')
+  row.className = 'row' + (item.children.length > 0 ? ' has-expand' : '') + (selected ? ' is-selected' : '')
 
-  if (node.components.length > 0) {
-    const items = document.createElement('div')
-    items.className = 'group-items'
-    items.style.setProperty('--group-depth', String(depth + 1))
-    for (const component of node.components) {
-      items.append(createComponentRow(component))
-    }
-    componentsEl.append(items)
+  const highlightInstance = () => {
+    post({ type: 'hover-highlight', nodeIds: [item.id], style: 'instance' })
+  }
+  const highlightMain = () => {
+    post({ type: 'hover-highlight', nodeIds: [component.id], style: 'component' })
+  }
+  row.addEventListener('mouseenter', highlightInstance)
+  row.addEventListener('mouseleave', () => {
+    post({ type: 'clear-hover-highlight' })
+  })
+
+  if (item.children.length > 0) {
+    const expandable = expandedGroupIds.has(item.key)
+    const expandBtn = document.createElement('button')
+    expandBtn.type = 'button'
+    expandBtn.className = 'acc-expand'
+    expandBtn.textContent = expandable ? '▾' : '▸'
+    expandBtn.setAttribute('aria-expanded', String(expandable))
+    expandBtn.setAttribute('aria-label', expandable ? '閉じる' : '開く')
+    expandBtn.addEventListener('click', (event) => {
+      event.stopPropagation()
+      toggleExpanded(expandedGroupIds, item.key)
+    })
+    row.append(expandBtn)
   }
 
-  for (const childId of node.childOrder) {
-    const child = node.children.get(childId)
-    if (child) {
-      renderPathTreeNode(child, depth + 1)
-    }
+  const main = document.createElement('div')
+  main.className = 'row-main'
+
+  const nameBtn = document.createElement('button')
+  nameBtn.type = 'button'
+  nameBtn.className = 'name-btn'
+  nameBtn.textContent = item.name
+  nameBtn.title = item.name
+  nameBtn.addEventListener('click', () => {
+    post({ type: 'jump-node', nodeId: item.id })
+  })
+
+  const meta = document.createElement('div')
+  meta.className = 'meta'
+  const mainLabel = component.name
+  const mainEl = document.createElement('span')
+  mainEl.textContent = mainLabel
+  mainEl.title = mainLabel
+  meta.append(mainEl)
+  meta.append(createLocalBadge(component.isLocal))
+
+  if (component.canJump) {
+    const mainLink = document.createElement('button')
+    mainLink.type = 'button'
+    mainLink.className = 'link-btn'
+    mainLink.textContent = 'メインへ'
+    mainLink.addEventListener('click', () => {
+      post({ type: 'jump-node', nodeId: component.id })
+    })
+    mainLink.addEventListener('mouseenter', highlightMain)
+    mainLink.addEventListener('mouseleave', highlightInstance)
+    meta.append(mainLink)
   }
+
+  main.append(nameBtn, meta)
+
+  const actions = document.createElement('div')
+  actions.className = 'actions'
+  actions.append(createSelectToggle(`item:${item.key}`))
+  row.append(main, actions)
+
+  if (item.children.length > 0 && expandedGroupIds.has(item.key)) {
+    const group = document.createElement('div')
+    group.className = 'acc-group'
+    group.append(row)
+    const children = document.createElement('div')
+    children.className = 'acc-children'
+    children.append(createLayerList(item.children))
+    group.append(children)
+    return group
+  }
+
+  return row
+}
+
+function toggleExpanded(ids: Set<string>, id: string): void {
+  if (ids.has(id)) {
+    ids.delete(id)
+  } else {
+    ids.add(id)
+  }
+  renderComponents()
+}
+
+function attachHeaderToggle(header: HTMLElement, onToggle: () => void): void {
+  header.addEventListener('click', (event) => {
+    const target = event.target
+    if (target instanceof Element && target.closest('button, label')) {
+      return
+    }
+    onToggle()
+  })
+}
+
+function attachComponentHover(header: HTMLElement, nodeId: string): void {
+  header.addEventListener('mouseenter', () => {
+    post({ type: 'hover-highlight', nodeIds: [nodeId], style: 'component' })
+  })
+  header.addEventListener('mouseleave', () => {
+    post({ type: 'clear-hover-highlight' })
+  })
+}
+
+function createSetGroup(entry: SetEntry): HTMLDivElement {
+  const group = document.createElement('div')
+  group.className = 'acc-group'
+
+  const expanded = expandedSetIds.has(entry.id)
+  const toggle = () => toggleExpanded(expandedSetIds, entry.id)
+
+  const instanceCount = entry.variants.reduce(
+    (sum, variant) => sum + variant.instances.length,
+    0,
+  )
+  const counts = document.createElement('span')
+  counts.className = 'acc-count'
+  counts.textContent = `${entry.variants.length} variants · ${instanceCount} instances`
+
+  const header = createAccordionHeader({
+    expanded,
+    label: entry.name,
+    labelTitle: entry.canJump ? entry.name : `${entry.name}（ジャンプ不可）`,
+    labelDisabled: !entry.canJump,
+    selected:
+      activeSelectKeys.has(`set:${entry.id}`) ||
+      entry.variants.some((variant) => isComponentHighlighted(variant.id)),
+    onToggle: toggle,
+    onLabelClick: entry.canJump
+      ? () => {
+          post({ type: 'jump-node', nodeId: entry.id })
+        }
+      : undefined,
+    meta: [createLocalBadge(entry.isLocal), counts],
+    actions: [createSelectToggle(`set:${entry.id}`)],
+  })
+  attachComponentHover(header, entry.id)
+  attachHeaderToggle(header, toggle)
+  group.append(header)
+
+  if (expanded) {
+    const variants = document.createElement('div')
+    variants.className = 'acc-children'
+    const list = document.createElement('div')
+    list.className = 'list'
+    for (const variant of entry.variants) {
+      list.append(
+        createComponentRow(variant, {
+          label: variant.variantName,
+          toggleKey: `component:${variant.id}`,
+        }),
+      )
+    }
+    variants.append(list)
+    group.append(variants)
+  }
+
+  return group
+}
+
+function createEntryElement(entry: ListEntry): HTMLElement {
+  return entry.kind === 'set'
+    ? createSetGroup(entry)
+    : createComponentRow(entry.component, {
+        toggleKey: `component:${entry.component.id}`,
+      })
+}
+
+function createLayerList(items: readonly LayerItem[], inSet = false): HTMLDivElement {
+  const list = document.createElement('div')
+  list.className = 'list'
+  const hasExpandable = items.some(
+    (item) =>
+      (item.kind === 'component' && item.children.length > 0) ||
+      (item.kind === 'instance' && item.children.length > 0),
+  )
+  for (const item of items) {
+    list.append(createLayerItemElement(item, inSet, hasExpandable))
+  }
+  return list
+}
+
+function createLayerItemElement(
+  item: LayerItem,
+  inSet: boolean,
+  alignWithExpandable: boolean,
+): HTMLElement {
+  if (item.kind === 'group') {
+    return createLayerGroupElement(item)
+  }
+  if (item.kind === 'set') {
+    return createLayerSetElement(item)
+  }
+  if (item.kind === 'instance') {
+    return createLayerInstanceElement(item)
+  }
+  return createLayerComponentElement(item, inSet, alignWithExpandable)
+}
+
+function createLayerComponentElement(
+  item: ComponentItem,
+  inSet: boolean,
+  alignWithExpandable: boolean,
+): HTMLElement {
+  const expandable = item.children.length > 0
+  const expanded = expandable && expandedGroupIds.has(item.key)
+  const row = createComponentRow(item.component, {
+    label: inSet ? item.component.variantName : item.component.name,
+    instanceIds: undefined,
+    toggleKey: `item:${item.key}`,
+    isDefinition: true,
+    expand: expandable
+      ? {
+          expanded,
+          onToggle: () => toggleExpanded(expandedGroupIds, item.key),
+        }
+      : alignWithExpandable
+        ? 'spacer'
+        : undefined,
+  })
+  if (!expandable) {
+    return row
+  }
+
+  const group = document.createElement('div')
+  group.className = 'acc-group'
+  group.append(row)
+  if (expanded) {
+    const children = document.createElement('div')
+    children.className = 'acc-children'
+    children.append(createLayerList(item.children))
+    group.append(children)
+  }
+  return group
+}
+
+function createLayerSetElement(item: SetItem): HTMLDivElement {
+  const group = document.createElement('div')
+  group.className = 'acc-group'
+
+  const expanded = expandedGroupIds.has(item.key)
+  const toggle = () => toggleExpanded(expandedGroupIds, item.key)
+  const toggleKey = `item:${item.key}`
+
+  const instanceCount = item.children.reduce(
+    (sum, child) => sum + child.component.instances.length,
+    0,
+  )
+  const counts = document.createElement('span')
+  counts.className = 'acc-count'
+  counts.textContent = `${item.children.length} variants · ${instanceCount} instances`
+
+  const meta: HTMLElement[] = [createLocalBadge(item.isLocal)]
+  meta.push(createBadge('定義', 'is-definition'))
+  meta.push(counts)
+
+  const header = createAccordionHeader({
+    expanded,
+    label: item.name,
+    labelTitle: item.canJump ? item.name : `${item.name}（ジャンプ不可）`,
+    labelDisabled: !item.canJump,
+    selected:
+      activeSelectKeys.has(toggleKey) ||
+      item.children.some((child) => isComponentHighlighted(child.component.id)),
+    onToggle: toggle,
+    onLabelClick: item.canJump
+      ? () => {
+          post({ type: 'jump-node', nodeId: item.id })
+        }
+      : undefined,
+    meta,
+    actions: [createSelectToggle(toggleKey)],
+  })
+  attachComponentHover(header, item.id)
+  attachHeaderToggle(header, toggle)
+  group.append(header)
+
+  if (expanded) {
+    const children = document.createElement('div')
+    children.className = 'acc-children'
+    children.append(createLayerList(item.children, true))
+    group.append(children)
+  }
+
+  return group
+}
+
+function createLayerGroupElement(item: GroupItem): HTMLDivElement {
+  const group = document.createElement('div')
+  group.className = 'acc-group'
+
+  const expanded = expandedGroupIds.has(item.key)
+  const toggle = () => toggleExpanded(expandedGroupIds, item.key)
+
+  const header = createAccordionHeader({
+    expanded,
+    label: headingLabel(item.nodeKind, item.name),
+    count: countGroupRows(item),
+    onToggle: toggle,
+    onLabelClick: () => {
+      post({ type: 'jump-node', nodeId: item.id })
+    },
+  })
+
+  header.addEventListener('mouseenter', () => {
+    post({ type: 'show-target-overlay', nodeId: item.id })
+  })
+  header.addEventListener('mouseleave', () => {
+    post({ type: 'hide-target-overlay' })
+  })
+  attachHeaderToggle(header, toggle)
+
+  group.append(header)
+
+  if (expanded) {
+    const children = document.createElement('div')
+    children.className = 'acc-children'
+    children.append(createLayerList(item.children))
+    group.append(children)
+  }
+
+  return group
 }
 
 function renderComponents(): void {
   post({ type: 'clear-hover-highlight' })
+  post({ type: 'hide-target-overlay' })
   componentsEl.replaceChildren()
 
   if (components.length === 0) {
@@ -395,30 +850,15 @@ function renderComponents(): void {
 
   if (sortMode === 'name') {
     const items = document.createElement('div')
-    items.className = 'group-items'
-    items.style.setProperty('--group-depth', '0')
-    for (const component of getSortedComponents()) {
-      items.append(createComponentRow(component))
+    items.className = 'list'
+    for (const entry of getSortedEntries()) {
+      items.append(createEntryElement(entry))
     }
     componentsEl.append(items)
     return
   }
 
-  const { roots, rootComponents } = buildPathTree(getSortedComponents())
-
-  for (const root of roots) {
-    renderPathTreeNode(root, 0)
-  }
-
-  if (rootComponents.length > 0) {
-    const items = document.createElement('div')
-    items.className = 'group-items'
-    items.style.setProperty('--group-depth', '0')
-    for (const component of rootComponents) {
-      items.append(createComponentRow(component))
-    }
-    componentsEl.append(items)
-  }
+  componentsEl.append(createLayerList(layerItems))
 }
 
 function renderInstances(): void {
@@ -433,10 +873,15 @@ function renderInstances(): void {
     return
   }
 
+  const scopeIds = selectedInstanceIds ? new Set(selectedInstanceIds) : null
+  const list = scopeIds
+    ? selected.instances.filter((i) => scopeIds.has(i.id))
+    : selected.instances
+
   instanceHeadingEl.textContent = selected.name
   instanceHeadingEl.title = selected.name
 
-  if (selected.instances.length === 0) {
+  if (list.length === 0) {
     instancesEmptyEl.hidden = false
     instancesEmptyEl.textContent = 'Instanceがありません'
     return
@@ -444,7 +889,7 @@ function renderInstances(): void {
 
   instancesEmptyEl.hidden = true
 
-  for (const instance of selected.instances) {
+  for (const instance of list) {
     const row = document.createElement('div')
     row.className =
       'row' + (isInstanceHighlighted(instance.id) ? ' is-selected' : '')
@@ -496,14 +941,20 @@ function renderInstances(): void {
   }
 }
 
-function applyResult(next: ComponentInfo[]): void {
+function applyResult(next: ComponentInfo[], layerTree: LayerNode[]): void {
   components = next
+  layerItems = buildLayerItems(
+    layerTree,
+    new Map(components.map((component) => [component.id, component])),
+  )
+  itemNodeIds = indexItemNodeIds(layerItems)
   pruneActiveSelectKeys()
   if (
     selectedComponentId &&
     !components.some((c) => c.id === selectedComponentId)
   ) {
     selectedComponentId = null
+    selectedInstanceIds = null
     showView('components')
   }
   renderComponents()
@@ -600,7 +1051,7 @@ window.onmessage = (event: MessageEvent) => {
 
     case 'no-selection':
       setStatus(null)
-      applyResult([])
+      applyResult([], [])
       break
 
     case 'result':
@@ -609,7 +1060,7 @@ window.onmessage = (event: MessageEvent) => {
           ? 'Component / Instance が見つかりませんでした'
           : null,
       )
-      applyResult(msg.components)
+      applyResult(msg.components, msg.layerTree)
       break
 
     case 'pin-targets':

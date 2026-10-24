@@ -1,9 +1,13 @@
 export type ComponentSortMode = 'layer' | 'name'
 
-export interface GroupPathNode {
+/** Layer tree node in Layers panel order (top to bottom). Other node types are flattened into their parent. */
+export interface LayerNode {
   id: string
   name: string
-  kind: 'SECTION' | 'FRAME'
+  type: 'SECTION' | 'FRAME' | 'COMPONENT_SET' | 'COMPONENT' | 'INSTANCE'
+  /** Main component id (INSTANCE only). */
+  mainId?: string
+  children: LayerNode[]
 }
 
 export interface InstanceInfo {
@@ -15,7 +19,6 @@ export interface InstanceInfo {
   parentSectionName: string | null
   parentFrameId: string | null
   parentFrameName: string | null
-  ancestorPath: GroupPathNode[]
   layerIndex: number
 }
 
@@ -28,10 +31,12 @@ export interface ComponentInfo {
   /** Whether the main component node lives on the current page and can be jumped to. */
   canJump: boolean
   instances: InstanceInfo[]
-  /** Min layerIndex among instances (representative). */
+  /** First appearance (definition or instance) in Layers panel order. */
   layerIndex: number
-  /** Ancestor SECTION/FRAME path of the representative instance (root → leaf). */
-  groupPath: GroupPathNode[]
+  /** Parent COMPONENT_SET when this component is a variant. */
+  componentSet: { id: string; name: string; canJump: boolean } | null
+  /** Variant property string (e.g. "Size=Large"); the component name otherwise. */
+  variantName: string
 }
 
 export type PinKind = 'SECTION' | 'FRAME' | 'INSTANCE' | 'GROUP'
@@ -70,7 +75,7 @@ export type UiToPluginMessage =
 
 export type PluginToUiMessage =
   | { type: 'scanning' }
-  | { type: 'result'; components: ComponentInfo[] }
+  | { type: 'result'; components: ComponentInfo[]; layerTree: LayerNode[] }
   | { type: 'no-selection' }
   | {
       type: 'pin-targets'

@@ -407,23 +407,75 @@ body.is-resizing * {
   display: none !important;
 }
 
-.group-heading {
-  margin: 6px 0 4px;
-  padding-left: calc(var(--group-depth, 0) * 10px);
-  font-size: 11px;
-  font-weight: 600;
-  color: #666;
-}
-
-.group-heading:first-child {
-  margin-top: 0;
-}
-
-.group-items {
+.acc-group {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding-left: calc(var(--group-depth, 0) * 10px);
+}
+
+.acc-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+
+.acc-header:hover {
+  background: #f3f3f3;
+}
+
+.acc-header.is-selected {
+  background: #eaf6ff;
+}
+
+.acc-expand {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #666;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.acc-label {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.acc-label:hover:not(:disabled) {
+  color: #18a0fb;
+}
+
+.acc-label:disabled {
+  cursor: default;
+}
+
+.acc-count {
+  flex-shrink: 0;
+  color: #555;
+  font-variant-numeric: tabular-nums;
+}
+
+.acc-children {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 14px;
 }
 
 .back-btn {
@@ -478,6 +530,11 @@ body.is-resizing * {
   background: #fafafa;
 }
 
+.row.has-expand {
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  padding-left: 4px;
+}
+
 .row:hover {
   border-color: #18a0fb;
 }
@@ -485,6 +542,16 @@ body.is-resizing * {
 .row.is-selected {
   border-color: #18a0fb;
   background: #eaf6ff;
+}
+
+.set-group,
+.set-row,
+.set-chevron,
+.set-chevron::before,
+.set-chevron.is-expanded,
+.set-chevron:hover,
+.set-variants {
+  all: unset;
 }
 
 .row-main {
@@ -542,6 +609,11 @@ body.is-resizing * {
 .badge.is-library {
   background: #efe9ff;
   color: #7b61ff;
+}
+
+.badge.is-definition {
+  background: #e6f6ec;
+  color: #14ae5c;
 }
 
 .link-btn {

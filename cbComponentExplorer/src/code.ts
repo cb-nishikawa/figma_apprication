@@ -6,7 +6,7 @@ import {
   showHoverHighlight,
   showTargetOverlay,
 } from './hoverHighlight'
-import { scanRoots } from './scan'
+import { scanRoot } from './scan'
 import type {
   ComponentInfo,
   PluginToUiMessage,
@@ -197,7 +197,10 @@ async function jumpToNode(nodeId: string): Promise<void> {
 
   const sceneNode = node as SceneNode
 
-  if (sceneNode.type === 'COMPONENT' && sceneNode.remote) {
+  if (
+    (sceneNode.type === 'COMPONENT' || sceneNode.type === 'COMPONENT_SET') &&
+    sceneNode.remote
+  ) {
     figma.notify('ライブラリ由来のComponentにはジャンプできません')
     return
   }
@@ -274,12 +277,12 @@ async function runScan(): Promise<void> {
   }
 
   post({ type: 'scanning' })
-  const components = await scanRoots([node], generation, isCurrentGeneration)
-  if (components === null || !isCurrentGeneration(generation)) {
+  const result = await scanRoot(node, generation, isCurrentGeneration)
+  if (result === null || !isCurrentGeneration(generation)) {
     return
   }
-  latestComponents = components
-  post({ type: 'result', components })
+  latestComponents = result.components
+  post({ type: 'result', components: result.components, layerTree: result.layerTree })
   syncSelectionHighlight()
 }
 
