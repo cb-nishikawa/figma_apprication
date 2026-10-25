@@ -232,10 +232,26 @@ export async function scanRoot(
     ancestors = { ...ancestors, frame: { id: root.id, name: root.name } }
   }
 
-  const layerTree =
-    root.type === 'INSTANCE' || root.type === 'COMPONENT' || root.type === 'COMPONENT_SET'
-      ? await walkNode(root, false, ancestors, ctx)
-      : await walkChildren(root, false, ancestors, ctx)
+  let layerTree: LayerNode[] | null
+  if (
+    root.type === 'INSTANCE' ||
+    root.type === 'COMPONENT' ||
+    root.type === 'COMPONENT_SET'
+  ) {
+    layerTree = await walkNode(root, false, ancestors, ctx)
+  } else if (
+    root.type === 'SECTION' ||
+    root.type === 'FRAME' ||
+    root.type === 'GROUP'
+  ) {
+    const children = await walkChildren(root, false, ancestors, ctx)
+    if (children === null) {
+      return null
+    }
+    layerTree = [{ id: root.id, name: root.name, type: root.type as LayerNode['type'], children }]
+  } else {
+    layerTree = await walkChildren(root, false, ancestors, ctx)
+  }
   if (layerTree === null || !isCurrent(generation)) {
     return null
   }

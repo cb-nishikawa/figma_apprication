@@ -57,6 +57,7 @@ let view: View = 'components'
 let components: ComponentInfo[] = []
 let layerItems: LayerItem[] = []
 let allLayerItems: LayerItem[] = []
+let autoOpenedTargetId: string | null = null
 /** Row key (`item:<path>`) to the canvas node ids that the row's toggle selects. */
 let itemNodeIds = new Map<string, string[]>()
 let activeSelectKeys = new Set<string>()
@@ -361,13 +362,17 @@ function getSortedEntries(): ListEntry[] {
   return entries
 }
 
-function headingLabel(kind: 'SECTION' | 'FRAME', name: string): string {
-  return kind === 'SECTION' ? `#${name}` : name
+function headingLabel(kind: 'SECTION' | 'FRAME' | 'GROUP', name: string): string {
+  if (kind === 'SECTION') {
+    return `#${name}`
+  }
+  return name
 }
 
 type AccordionHeaderOptions = {
   expanded: boolean
   label: string
+  icon?: HTMLElement
   count?: number
   onToggle: (event?: MouseEvent) => void
   onLabelClick?: () => void
@@ -399,7 +404,10 @@ function createAccordionHeader(
   const label = document.createElement('button')
   label.type = 'button'
   label.className = 'acc-label'
-  label.textContent = options.label
+  if (options.icon) {
+    label.append(options.icon)
+  }
+  label.append(document.createTextNode(options.label))
   label.title = options.labelTitle ?? options.label
   label.disabled = options.labelDisabled ?? false
   if (options.onLabelClick) {
@@ -434,7 +442,6 @@ type RowOptions = {
   /** Instances represented by this row; undefined means all instances of the component. */
   instanceIds?: string[]
   toggleKey: string
-  isDefinition?: boolean
   expand?: { expanded: boolean; onToggle: (event?: MouseEvent) => void } | 'spacer'
 }
 
@@ -443,6 +450,13 @@ function createBadge(text: string, className = ''): HTMLSpanElement {
   badge.className = 'badge' + (className ? ` ${className}` : '')
   badge.textContent = text
   return badge
+}
+
+function createSquareIcon(kind: 'filled' | 'empty'): HTMLSpanElement {
+  const icon = document.createElement('span')
+  icon.className = 'sq-icon' + (kind === 'filled' ? ' is-filled' : ' is-empty')
+  icon.setAttribute('aria-hidden', 'true')
+  return icon
 }
 
 function createLocalBadge(isLocal: boolean): HTMLSpanElement {
@@ -516,7 +530,7 @@ function createComponentRow(
   const nameBtn = document.createElement('button')
   nameBtn.type = 'button'
   nameBtn.className = 'name-btn'
-  nameBtn.textContent = label
+  nameBtn.append(createSquareIcon('filled'), document.createTextNode(label))
   nameBtn.title = component.name
   if (component.canJump) {
     nameBtn.addEventListener('click', () => {
@@ -530,15 +544,13 @@ function createComponentRow(
   const meta = document.createElement('div')
   meta.className = 'meta'
   meta.append(createLocalBadge(component.isLocal))
-  if (options.isDefinition) {
-    meta.append(createBadge('定義', 'is-definition'))
-  }
 
   if (!options.instanceIds) {
     const countBtn = document.createElement('button')
     countBtn.type = 'button'
     countBtn.className = 'link-btn'
-    countBtn.textContent = `${rowInstanceIds.length} instances`
+    countBtn.title = `${rowInstanceIds.length} instances`
+    countBtn.append(createSquareIcon('empty'), document.createTextNode(String(rowInstanceIds.length)))
     countBtn.addEventListener('click', () => {
       goToInstances(component.id, options.instanceIds)
     })
@@ -594,7 +606,7 @@ function createLayerInstanceElement(item: InstanceItem): HTMLElement {
   const nameBtn = document.createElement('button')
   nameBtn.type = 'button'
   nameBtn.className = 'name-btn'
-  nameBtn.textContent = item.name
+  nameBtn.append(createSquareIcon('empty'), document.createTextNode(item.name))
   nameBtn.title = item.name
   nameBtn.addEventListener('click', () => {
     post({ type: 'jump-node', nodeId: item.id })
@@ -739,11 +751,18 @@ function createSetGroup(entry: SetEntry): HTMLDivElement {
   )
   const counts = document.createElement('span')
   counts.className = 'acc-count'
-  counts.textContent = `${entry.variants.length} variants · ${instanceCount} instances`
+  counts.title = `${entry.variants.length} variants · ${instanceCount} instances`
+  counts.append(
+    createSquareIcon('filled'),
+    document.createTextNode(` ${entry.variants.length} `),
+    createSquareIcon('empty'),
+    document.createTextNode(` ${instanceCount}`),
+  )
 
   const header = createAccordionHeader({
     expanded,
     label: entry.name,
+    icon: createSquareIcon('filled'),
     labelTitle: entry.canJump ? entry.name : `${entry.name}（ジャンプ不可）`,
     labelDisabled: !entry.canJump,
     selected:
@@ -836,7 +855,6 @@ function createLayerComponentElement(
     label: inSet ? item.component.variantName : item.component.name,
     instanceIds: undefined,
     toggleKey: `item:${item.key}`,
-    isDefinition: true,
     expand: expandable
       ? {
           expanded,
@@ -876,15 +894,21 @@ function createLayerSetElement(item: SetItem): HTMLDivElement {
   )
   const counts = document.createElement('span')
   counts.className = 'acc-count'
-  counts.textContent = `${item.children.length} variants · ${instanceCount} instances`
+  counts.title = `${item.children.length} variants · ${instanceCount} instances`
+  counts.append(
+    createSquareIcon('filled'),
+    document.createTextNode(` ${item.children.length} `),
+    createSquareIcon('empty'),
+    document.createTextNode(` ${instanceCount}`),
+  )
 
   const meta: HTMLElement[] = [createLocalBadge(item.isLocal)]
-  meta.push(createBadge('定義', 'is-definition'))
   meta.push(counts)
 
   const header = createAccordionHeader({
     expanded,
     label: item.name,
+    icon: createSquareIcon('filled'),
     labelTitle: item.canJump ? item.name : `${item.name}（ジャンプ不可）`,
     labelDisabled: !item.canJump,
     selected:
@@ -1133,6 +1157,11 @@ function applyResult(next: ComponentInfo[], layerTree: LayerNode[]): void {
   )
   allLayerItems = layerItems
   itemNodeIds = indexItemNodeIds(layerItems)
+  const root = layerItems[0]
+  if (root && root.kind === 'group' && autoOpenedTargetId !== root.id) {
+    expandedGroupIds.add(root.key)
+    autoOpenedTargetId = root.id
+  }
   for (const item of nameOrderInstanceItems()) {
     itemNodeIds.set(item.key, [item.id])
   }

@@ -1,4 +1,4 @@
-# Component Explorer
+# コンポーネント一覧くん
 
 Figma 上で選んだターゲット（Section / Frame / Instance / Group）内の Component / Instance 使用状況を確認するプラグインです。
 

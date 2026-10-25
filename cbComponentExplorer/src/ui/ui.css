@@ -773,3 +773,22 @@ body.is-resizing * {
   white-space: nowrap;
   color: #666;
 }
+
+.sq-icon {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border: 1px solid currentColor;
+  border-radius: 1px;
+  vertical-align: -0.5px;
+  flex-shrink: 0;
+}
+
+.sq-icon.is-filled {
+  background: currentColor;
+}
+
+.sq-icon.is-empty {
+  background: transparent;
+}

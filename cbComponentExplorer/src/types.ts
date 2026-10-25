@@ -4,7 +4,7 @@ export type ComponentSortMode = 'layer' | 'name'
 export interface LayerNode {
   id: string
   name: string
-  type: 'SECTION' | 'FRAME' | 'COMPONENT_SET' | 'COMPONENT' | 'INSTANCE'
+  type: 'SECTION' | 'FRAME' | 'GROUP' | 'COMPONENT_SET' | 'COMPONENT' | 'INSTANCE'
   /** Main component id (INSTANCE only). */
   mainId?: string
   children: LayerNode[]

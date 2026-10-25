@@ -1,5 +1,5 @@
 {
-  "name": "Component Explorer",
+  "name": "コンポーネント一覧くん",
   "id": "cb-component-explorer",
   "api": "1.0.0",
   "main": "dist/code.js",

@@ -5,7 +5,7 @@ export type GroupItem = {
   key: string
   id: string
   name: string
-  nodeKind: 'SECTION' | 'FRAME'
+  nodeKind: 'SECTION' | 'FRAME' | 'GROUP'
   children: LayerItem[]
 }
 
@@ -50,23 +50,24 @@ export function buildLayerItems(
 
   for (const node of nodes) {
     switch (node.type) {
-      case 'SECTION':
-      case 'FRAME': {
-        const key = `${parentKey}/g:${node.id}`
-        const children = buildLayerItems(node.children, componentsById, key)
-        if (children.length === 0) {
-          break
-        }
-        items.push({
-          kind: 'group',
-          key,
-          id: node.id,
-          name: node.name,
-          nodeKind: node.type,
-          children,
-        })
+    case 'SECTION':
+    case 'FRAME':
+    case 'GROUP': {
+      const key = `${parentKey}/g:${node.id}`
+      const children = buildLayerItems(node.children, componentsById, key)
+      if (children.length === 0) {
         break
       }
+      items.push({
+        kind: 'group',
+        key,
+        id: node.id,
+        name: node.name,
+        nodeKind: node.type,
+        children,
+      })
+      break
+    }
       case 'COMPONENT_SET': {
         const key = `${parentKey}/cs:${node.id}`
         const children = buildLayerItems(node.children, componentsById, key).filter(

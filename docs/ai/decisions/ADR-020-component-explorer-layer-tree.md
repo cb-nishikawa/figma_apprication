@@ -24,7 +24,7 @@
 - 走査は `findAllWithCriteria` をやめ、ターゲットを深さ優先で自前でたどる。子は末尾から回し、**レイヤーパネルの上から下の順**にする
 - 走査結果に `layerTree`（`LayerNode` の木）を足す。残すノードは SECTION / FRAME / COMPONENT_SET / COMPONENT / INSTANCE だけで、それ以外（GROUP など）は子を親に繰り上げる
   - インスタンス・メインコンポーネントの中の FRAME は残さない（見出しにしない）
-  - ターゲット自身は木に含めない。INSTANCE / COMPONENT / COMPONENT_SET をターゲットにしたときだけ、そのノード自身を根にする
+  - ターゲット自身を根の見出しにする（SECTION / FRAME / GROUP / INSTANCE / COMPONENT / COMPONENT_SET）
 - UI は `layerTree` を `buildLayerItems`（Figma に依存しない関数、`src/ui/layerItems.ts`）で表示用の項目の木に変える
   - SECTION / FRAME は見出し（中身が空なら出さない）
   - メインコンポーネント（定義）は「定義」バッジ付きの行。子は中のインスタンス
