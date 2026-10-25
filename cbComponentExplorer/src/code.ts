@@ -356,6 +356,10 @@ figma.ui.onmessage = (msg: UiToPluginMessage) => {
         await runScan()
         break
 
+      case 'reload':
+        await runScan()
+        break
+
       case 'set-pinned-node':
         await commitPinnedNode(msg.pinnedNodeId)
         break
@@ -388,7 +392,7 @@ figma.ui.onmessage = (msg: UiToPluginMessage) => {
         break
 
       case 'hover-highlight':
-        await showHoverHighlight(msg.nodeIds, msg.style)
+        await showHoverHighlight(msg.nodeIds, msg.style, msg.color)
         break
 
       case 'clear-hover-highlight':

@@ -66,12 +66,14 @@ export type UiToPluginMessage =
       type: 'hover-highlight'
       nodeIds: string[]
       style: 'component' | 'instance'
+      color?: 'red' | 'yellow' | 'green' | 'purple'
     }
   | { type: 'clear-hover-highlight' }
   | { type: 'show-target-overlay'; nodeId: string }
   | { type: 'hide-target-overlay' }
   | { type: 'resize-ui'; height: number }
   | { type: 'ready' }
+  | { type: 'reload' }
 
 export type PluginToUiMessage =
   | { type: 'scanning' }

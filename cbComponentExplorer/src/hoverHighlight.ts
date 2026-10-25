@@ -52,11 +52,21 @@ function applyHighlightStyle(
   rect.dashPattern = [10, 10]
 }
 
+const HIGHLIGHT_COLOR_HEX: Record<string, { r: number; g: number; b: number }> = {
+  red: { r: 1, g: 59 / 255, b: 48 / 255 },
+  yellow: { r: 1, g: 204 / 255, b: 0 },
+  green: { r: 0, g: 1, b: 64 / 255 },
+  purple: { r: 161 / 255, g: 84 / 255, b: 242 / 255 },
+}
+
 export async function showHoverHighlight(
   nodeIds: string[],
   style: HoverHighlightStyle,
+  color?: string,
 ): Promise<void> {
   clearHoverHighlight()
+
+  const override = color ? HIGHLIGHT_COLOR_HEX[color] : null
 
   for (const nodeId of nodeIds) {
     const node = await figma.getNodeByIdAsync(nodeId)
@@ -78,7 +88,14 @@ export async function showHoverHighlight(
     rect.resize(box.width, box.height)
     rect.x = box.x
     rect.y = box.y
-    applyHighlightStyle(rect, style)
+    if (override) {
+      rect.fills = [{ type: 'SOLID', color: override, opacity: 0.4 }]
+      rect.strokes = [{ type: 'SOLID', color: override }]
+      rect.strokeWeight = 1
+      rect.dashPattern = [10, 10]
+    } else {
+      applyHighlightStyle(rect, style)
+    }
     rect.locked = true
     rect.visible = true
     figma.currentPage.appendChild(rect)

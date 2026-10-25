@@ -36,6 +36,7 @@ const componentsEmptyEl = document.getElementById('components-empty') as HTMLPar
 const componentSearchToggle = document.getElementById('component-search-toggle') as HTMLButtonElement
 const componentSearchPopover = document.getElementById('component-search-popover') as HTMLDivElement
 const componentSearchInput = document.getElementById('component-search-input') as HTMLInputElement
+const reloadListBtn = document.getElementById('reload-list') as HTMLButtonElement
 const searchScopeComponentsEl = document.getElementById('search-scope-components') as HTMLInputElement
 const searchScopeInstancesEl = document.getElementById('search-scope-instances') as HTMLInputElement
 const instancesEl = document.getElementById('instances') as HTMLDivElement
@@ -69,6 +70,8 @@ let selectedInstanceIds: string[] | null = null
 let componentSearchQuery = ""
 let searchScopeComponents = true
 let searchScopeInstances = true
+const pinnedHighlightKeys = new Set<string>()
+const highlightColorByKey = new Map<string, 'red' | 'yellow' | 'green' | 'purple'>()
 let pinTargets: PinTarget[] = []
 let pinnedNodeId: string | null = null
 let recentTargets: RecentTarget[] = []
@@ -188,23 +191,131 @@ function syncCanvasSelection(): void {
   post({ type: 'set-selection', nodeIds, zoom: true })
 }
 
-function createSelectToggle(key: string): HTMLLabelElement {
-  const label = document.createElement('label')
-  label.className = 'toggle'
-  label.title = 'キャンバス上で選択 / 解除'
+const SELECT_ICON = `<svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M6 7.0005C6.26522 7.0005 6.51957 6.89514 6.70711 6.70761C6.89464 6.52007 7 6.26572 7 6.0005C7 5.73528 6.89464 5.48093 6.70711 5.29339C6.51957 5.10586 6.26522 5.0005 6 5.0005C5.73478 5.0005 5.48043 5.10586 5.29289 5.29339C5.10536 5.48093 5 5.73528 5 6.0005C5 6.26572 5.10536 6.52007 5.29289 6.70761C5.48043 6.89514 5.73478 7.0005 6 7.0005ZM2.5 6.0005C2.5 5.07224 2.86875 4.182 3.52513 3.52563C4.1815 2.86925 5.07174 2.5005 6 2.5005C6.92826 2.5005 7.8185 2.86925 8.47487 3.52563C9.13125 4.182 9.5 5.07224 9.5 6.0005C9.5 6.92876 9.13125 7.819 8.47487 8.47537C7.8185 9.13175 6.92826 9.5005 6 9.5005C5.07174 9.5005 4.1815 9.13175 3.52513 8.47537C2.86875 7.819 2.5 6.92876 2.5 6.0005ZM6 3.5005C5.33696 3.5005 4.70107 3.76389 4.23223 4.23273C3.76339 4.70157 3.5 5.33746 3.5 6.0005C3.5 6.66354 3.76339 7.29943 4.23223 7.76827C4.70107 8.23711 5.33696 8.5005 6 8.5005C6.66304 8.5005 7.29893 8.23711 7.76777 7.76827C8.23661 7.29943 8.5 6.66354 8.5 6.0005C8.5 5.33746 8.23661 4.70157 7.76777 4.23273C7.29893 3.76389 6.66304 3.5005 6 3.5005ZM0 6.0005C0 4.40907 0.632194 2.88282 1.75751 1.75751C2.88282 0.632194 4.40907 0 6.0005 0C7.59193 0 9.11818 0.632194 10.2435 1.75751C11.3688 2.88282 12.001 4.40907 12.001 6.0005C12.001 7.59193 11.3688 9.11818 10.2435 10.2435C9.11818 11.3688 7.59193 12.001 6.0005 12.001C4.40907 12.001 2.88282 11.3688 1.75751 10.2435C0.632194 9.11818 0 7.59193 0 6.0005ZM6 1.0005C4.67378 1.0005 3.40189 1.52734 2.46411 2.46511C1.52634 3.40289 0.9995 4.67478 0.9995 6.001C0.9995 7.32721 1.52634 8.59911 2.46411 9.53689C3.40189 10.4747 4.67378 11.0015 6 11.0015C7.32622 11.0015 8.59811 10.4747 9.53589 9.53689C10.4737 8.59911 11.0005 7.32721 11.0005 6.001C11.0005 4.67478 10.4737 3.40289 9.53589 2.46511C8.59811 1.52734 7.32622 1.0005 6 1.0005Z" fill="currentColor"/></svg>`
 
-  const input = document.createElement('input')
-  input.type = 'checkbox'
-  input.checked = activeSelectKeys.has(key)
+const PIN_ICON = `<svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7.052 0.439332C6.88682 0.274156 6.68535 0.149841 6.46363 0.0762917C6.24192 0.00274231 6.00609 -0.0180083 5.77494 0.0156933C5.54379 0.0493949 5.3237 0.136617 5.13222 0.27041C4.94073 0.404203 4.78314 0.580869 4.672 0.786332L3.145 3.61133L0.815 4.53933C0.738051 4.56993 0.669905 4.61915 0.616682 4.68259C0.563459 4.74603 0.526826 4.8217 0.510071 4.90279C0.493317 4.98389 0.496966 5.06787 0.520691 5.14721C0.544417 5.22655 0.587475 5.29875 0.646 5.35733L2.293 7.00433L0.147 9.15033L0 10.0043L0.854 9.85733L3 7.71133L4.646 9.35733C4.70451 9.41588 4.77665 9.45899 4.85593 9.48278C4.93522 9.50658 5.01917 9.51032 5.10025 9.49366C5.18134 9.47701 5.25702 9.44049 5.32051 9.38737C5.38399 9.33425 5.4333 9.26621 5.464 9.18933L6.397 6.85733L9.218 5.33133C9.42346 5.22019 9.60013 5.0626 9.73392 4.87112C9.86772 4.67963 9.95494 4.45955 9.98864 4.22839C10.0223 3.99724 10.0016 3.76141 9.92804 3.5397C9.85449 3.31798 9.73018 3.11651 9.565 2.95133L7.052 0.439332Z" fill="currentColor"/></svg>`
 
-  const track = document.createElement('span')
-  track.className = 'toggle-track'
-
-  input.addEventListener('change', () => {
-    if (input.checked) {
-      activeSelectKeys.add(key)
+function createHoverPinButton(
+  key: string,
+  nodeIds: string[],
+  style: 'component' | 'instance',
+): HTMLButtonElement {
+  const btn = document.createElement('button')
+  btn.type = 'button'
+  btn.className = 'hover-pin' + (pinnedHighlightKeys.has(key) ? ' is-on' : '')
+  btn.title = pinnedHighlightKeys.has(key) ? 'ハイライト固定を解除' : 'ハイライトを固定'
+  btn.innerHTML = PIN_ICON
+  btn.addEventListener('click', (event) => {
+    event.stopPropagation()
+    if (pinnedHighlightKeys.has(key)) {
+      pinnedHighlightKeys.delete(key)
+      btn.classList.remove('is-on')
+      btn.title = 'ハイライトを固定'
+      post({ type: 'clear-hover-highlight' })
     } else {
+      pinnedHighlightKeys.add(key)
+      btn.classList.add('is-on')
+      btn.title = 'ハイライト固定を解除'
+      post({
+        type: 'hover-highlight',
+        nodeIds,
+        style,
+        color: highlightColorByKey.get(key),
+      })
+    }
+  })
+  return btn
+}
+
+function createHoverColorSelect(
+  key: string,
+  nodeIds: string[],
+  style: 'component' | 'instance',
+): HTMLDivElement {
+  const wrap = document.createElement('div')
+  wrap.className = 'hover-color'
+
+  const trigger = document.createElement('button')
+  trigger.type = 'button'
+  trigger.className = 'hover-color-trigger'
+  trigger.title = 'ハイライト色'
+  trigger.setAttribute('aria-label', 'ハイライト色')
+  const swatch = document.createElement('span')
+  swatch.className = 'hover-color-swatch'
+  const current = highlightColorByKey.get(key) ?? (style === 'component' ? 'purple' : 'green')
+  swatch.style.background =
+    current === 'red' ? '#ff3b30' : current === 'yellow' ? '#ffcc00' : current === 'green' ? '#00ff40' : '#a154f2'
+  trigger.append(swatch)
+
+  const menu = document.createElement('div')
+  menu.className = 'hover-color-menu'
+  menu.hidden = true
+
+  const colors: Array<'red' | 'yellow' | 'green' | 'purple'> = ['red', 'yellow', 'green', 'purple']
+  const hex: Record<string, string> = {
+    red: '#ff3b30',
+    yellow: '#ffcc00',
+    green: '#00ff40',
+    purple: '#a154f2',
+  }
+  for (const color of colors) {
+    const option = document.createElement('button')
+    option.type = 'button'
+    option.className = 'hover-color-option'
+    option.title = color
+    const s = document.createElement('span')
+    s.className = 'hover-color-swatch'
+    s.style.background = hex[color]
+    option.append(s)
+    option.addEventListener('click', (event) => {
+      event.stopPropagation()
+      highlightColorByKey.set(key, color)
+      swatch.style.background = hex[color]
+      menu.hidden = true
+      if (pinnedHighlightKeys.has(key)) {
+        post({
+          type: 'hover-highlight',
+          nodeIds,
+          style,
+          color,
+        })
+      }
+    })
+    menu.append(option)
+  }
+
+  trigger.addEventListener('click', (event) => {
+    event.stopPropagation()
+    const willOpen = menu.hidden
+    document.querySelectorAll('.hover-color-menu').forEach((el) => {
+      (el as HTMLElement).hidden = true
+    })
+    if (willOpen) {
+      menu.hidden = false
+    }
+  })
+
+  wrap.addEventListener('click', (event) => {
+    event.stopPropagation()
+  })
+
+  wrap.append(trigger, menu)
+  return wrap
+}
+
+function createSelectToggle(key: string): HTMLButtonElement {
+  const btn = document.createElement('button')
+  btn.type = 'button'
+  btn.className = 'select-btn' + (activeSelectKeys.has(key) ? ' is-on' : '')
+  btn.title = 'キャンバス上で選択 / 解除'
+  btn.innerHTML = SELECT_ICON
+
+  btn.addEventListener('click', (event) => {
+    event.stopPropagation()
+    if (activeSelectKeys.has(key)) {
       activeSelectKeys.delete(key)
+    } else {
+      activeSelectKeys.add(key)
     }
     syncCanvasSelection()
     renderComponents()
@@ -213,8 +324,7 @@ function createSelectToggle(key: string): HTMLLabelElement {
     }
   })
 
-  label.append(input, track)
-  return label
+  return btn
 }
 
 function pruneActiveSelectKeys(): void {
@@ -499,9 +609,24 @@ function createComponentRow(
     })
   }
 
-  row.addEventListener('mouseenter', options.instanceIds ? highlightInstances : highlightComponent)
+  const highlightKey = `component:${component.id}`
+  const primaryStyle: 'component' | 'instance' = options.instanceIds ? 'instance' : 'component'
+  const primaryNodeIds = options.instanceIds ? rowInstanceIds : [component.id]
+  const sendHighlight = () => {
+    post({
+      type: 'hover-highlight',
+      nodeIds: primaryNodeIds,
+      style: primaryStyle,
+      color: highlightColorByKey.get(highlightKey),
+    })
+  }
+  row.addEventListener('mouseenter', () => {
+    sendHighlight()
+  })
   row.addEventListener('mouseleave', () => {
-    post({ type: 'clear-hover-highlight' })
+    if (!pinnedHighlightKeys.has(highlightKey)) {
+      post({ type: 'clear-hover-highlight' })
+    }
   })
 
   if (options.expand === 'spacer') {
@@ -530,7 +655,7 @@ function createComponentRow(
   const nameBtn = document.createElement('button')
   nameBtn.type = 'button'
   nameBtn.className = 'name-btn'
-  nameBtn.append(createSquareIcon('filled'), document.createTextNode(label))
+  nameBtn.append(document.createTextNode(label))
   nameBtn.title = component.name
   if (component.canJump) {
     nameBtn.addEventListener('click', () => {
@@ -562,7 +687,11 @@ function createComponentRow(
 
   const actions = document.createElement('div')
   actions.className = 'actions'
-  actions.append(createSelectToggle(options.toggleKey))
+  actions.append(
+    createHoverPinButton(highlightKey, primaryNodeIds, primaryStyle),
+    createHoverColorSelect(highlightKey, primaryNodeIds, primaryStyle),
+    createSelectToggle(options.toggleKey),
+  )
 
   row.append(main, actions)
   return row
@@ -574,15 +703,23 @@ function createLayerInstanceElement(item: InstanceItem): HTMLElement {
   const row = document.createElement('div')
   row.className = 'row' + (item.children.length > 0 ? ' has-expand' : '') + (selected ? ' is-selected' : '')
 
+  const highlightKey = `instance:${item.id}`
   const highlightInstance = () => {
-    post({ type: 'hover-highlight', nodeIds: [item.id], style: 'instance' })
+    post({
+      type: 'hover-highlight',
+      nodeIds: [item.id],
+      style: 'instance',
+      color: highlightColorByKey.get(highlightKey),
+    })
   }
   const highlightMain = () => {
     post({ type: 'hover-highlight', nodeIds: [component.id], style: 'component' })
   }
   row.addEventListener('mouseenter', highlightInstance)
   row.addEventListener('mouseleave', () => {
-    post({ type: 'clear-hover-highlight' })
+    if (!pinnedHighlightKeys.has(highlightKey)) {
+      post({ type: 'clear-hover-highlight' })
+    }
   })
 
   if (item.children.length > 0) {
@@ -612,52 +749,41 @@ function createLayerInstanceElement(item: InstanceItem): HTMLElement {
     post({ type: 'jump-node', nodeId: item.id })
   })
 
+  const topLine = document.createElement('div')
+  topLine.className = 'row-top'
+  topLine.append(nameBtn)
+
   const meta = document.createElement('div')
   meta.className = 'meta'
   const mainLabel = component.name
-  const mainEl = document.createElement('span')
+  const mainEl = document.createElement('button')
+  mainEl.type = 'button'
+  mainEl.className = 'link-btn'
   mainEl.textContent = mainLabel
   mainEl.title = mainLabel
+  if (component.canJump) {
+    mainEl.addEventListener('click', () => {
+      post({ type: 'jump-node', nodeId: component.id })
+    })
+  } else {
+    mainEl.disabled = true
+    mainEl.title = `${mainLabel}（ジャンプ不可）`
+  }
   meta.append(mainEl)
   meta.append(createLocalBadge(component.isLocal))
 
-  const countBtn = document.createElement('button')
-  countBtn.type = 'button'
-  countBtn.className = 'link-btn'
-  countBtn.title = `${component.instances.length} instances`
-  countBtn.append(createSquareIcon('empty'), document.createTextNode(String(component.instances.length)))
-  countBtn.addEventListener('click', () => {
-    goToInstances(component.id)
-  })
-  countBtn.addEventListener('mouseenter', () => {
-    post({
-      type: 'hover-highlight',
-      nodeIds: component.instances.map((i) => i.id),
-      style: 'instance',
-    })
-  })
-  countBtn.addEventListener('mouseleave', highlightInstance)
-  meta.append(countBtn)
 
-  if (component.canJump) {
-    const mainLink = document.createElement('button')
-    mainLink.type = 'button'
-    mainLink.className = 'link-btn'
-    mainLink.textContent = 'メインへ'
-    mainLink.addEventListener('click', () => {
-      post({ type: 'jump-node', nodeId: component.id })
-    })
-    mainLink.addEventListener('mouseenter', highlightMain)
-    mainLink.addEventListener('mouseleave', highlightInstance)
-    meta.append(mainLink)
-  }
+  const icons = document.createElement('div')
+  icons.className = 'row-icons'
+  icons.append(
+    createHoverPinButton(highlightKey, [item.id], 'instance'),
+    createHoverColorSelect(highlightKey, [item.id], 'instance'),
+    createSelectToggle(`item:${item.key}`),
+  )
+  topLine.append(icons)
 
-  main.append(nameBtn, meta)
-
-  const actions = document.createElement('div')
-  actions.className = 'actions'
-  actions.append(createSelectToggle(`item:${item.key}`))
-  row.append(main, actions)
+  main.append(topLine, meta)
+  row.append(main)
 
   if (item.children.length > 0 && expandedGroupIds.has(item.key)) {
     const group = document.createElement('div')
@@ -775,15 +901,23 @@ function createSetRow(options: SetRowOptions): HTMLDivElement {
   const row = document.createElement('div')
   row.className = 'row has-expand' + (options.selected ? ' is-selected' : '')
 
+  const highlightKey = `set:${options.nodeId}`
   const highlightSet = () => {
-    post({ type: 'hover-highlight', nodeIds: [options.nodeId], style: 'component' })
+    post({
+      type: 'hover-highlight',
+      nodeIds: [options.nodeId],
+      style: 'component',
+      color: highlightColorByKey.get(highlightKey),
+    })
   }
   const highlightInstances = () => {
     post({ type: 'hover-highlight', nodeIds: options.instanceIds, style: 'instance' })
   }
   row.addEventListener('mouseenter', highlightSet)
   row.addEventListener('mouseleave', () => {
-    post({ type: 'clear-hover-highlight' })
+    if (!pinnedHighlightKeys.has(highlightKey)) {
+      post({ type: 'clear-hover-highlight' })
+    }
   })
 
   const expandBtn = document.createElement('button')
@@ -804,7 +938,7 @@ function createSetRow(options: SetRowOptions): HTMLDivElement {
   const nameBtn = document.createElement('button')
   nameBtn.type = 'button'
   nameBtn.className = 'name-btn'
-  nameBtn.append(createSquareIcon('filled'), document.createTextNode(options.name))
+  nameBtn.append(document.createTextNode(options.name))
   nameBtn.title = options.name
   if (options.canJump) {
     nameBtn.addEventListener('click', () => {
@@ -844,7 +978,11 @@ function createSetRow(options: SetRowOptions): HTMLDivElement {
 
   const actions = document.createElement('div')
   actions.className = 'actions'
-  actions.append(createSelectToggle(options.toggleKey))
+  actions.append(
+    createHoverPinButton(highlightKey, [options.nodeId], 'component'),
+    createHoverColorSelect(highlightKey, [options.nodeId], 'component'),
+    createSelectToggle(options.toggleKey),
+  )
 
   row.append(main, actions)
 
@@ -1305,6 +1443,9 @@ document.addEventListener('click', (event) => {
     return
   }
   setSearchPopoverOpen(false)
+  document.querySelectorAll('.hover-color-menu').forEach((el) => {
+    (el as HTMLElement).hidden = true
+  })
 })
 
 let resizingUi = false
@@ -1356,6 +1497,11 @@ window.addEventListener('pointerup', () => {
 })
 window.addEventListener('pointercancel', () => {
   endUiResize()
+})
+
+reloadListBtn.addEventListener('click', (event) => {
+  event.stopPropagation()
+  post({ type: 'reload' })
 })
 
 for (const input of document.querySelectorAll<HTMLInputElement>(
