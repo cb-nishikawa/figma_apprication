@@ -621,6 +621,24 @@ function createLayerInstanceElement(item: InstanceItem): HTMLElement {
   meta.append(mainEl)
   meta.append(createLocalBadge(component.isLocal))
 
+  const countBtn = document.createElement('button')
+  countBtn.type = 'button'
+  countBtn.className = 'link-btn'
+  countBtn.title = `${component.instances.length} instances`
+  countBtn.append(createSquareIcon('empty'), document.createTextNode(String(component.instances.length)))
+  countBtn.addEventListener('click', () => {
+    goToInstances(component.id)
+  })
+  countBtn.addEventListener('mouseenter', () => {
+    post({
+      type: 'hover-highlight',
+      nodeIds: component.instances.map((i) => i.id),
+      style: 'instance',
+    })
+  })
+  countBtn.addEventListener('mouseleave', highlightInstance)
+  meta.append(countBtn)
+
   if (component.canJump) {
     const mainLink = document.createElement('button')
     mainLink.type = 'button'
@@ -738,48 +756,146 @@ function attachComponentHover(header: HTMLElement, nodeId: string): void {
   })
 }
 
+type SetRowOptions = {
+  name: string
+  canJump: boolean
+  isLocal: boolean
+  variantCount: number
+  instanceCount: number
+  instanceIds: string[]
+  nodeId: string
+  selected: boolean
+  expanded: boolean
+  toggle: (event?: MouseEvent) => void
+  toggleKey: string
+  onJump?: () => void
+}
+
+function createSetRow(options: SetRowOptions): HTMLDivElement {
+  const row = document.createElement('div')
+  row.className = 'row has-expand' + (options.selected ? ' is-selected' : '')
+
+  const highlightSet = () => {
+    post({ type: 'hover-highlight', nodeIds: [options.nodeId], style: 'component' })
+  }
+  const highlightInstances = () => {
+    post({ type: 'hover-highlight', nodeIds: options.instanceIds, style: 'instance' })
+  }
+  row.addEventListener('mouseenter', highlightSet)
+  row.addEventListener('mouseleave', () => {
+    post({ type: 'clear-hover-highlight' })
+  })
+
+  const expandBtn = document.createElement('button')
+  expandBtn.type = 'button'
+  expandBtn.className = 'acc-expand'
+  expandBtn.textContent = options.expanded ? '▾' : '▸'
+  expandBtn.setAttribute('aria-expanded', String(options.expanded))
+  expandBtn.setAttribute('aria-label', options.expanded ? '閉じる' : '開く')
+  expandBtn.addEventListener('click', (event) => {
+    event.stopPropagation()
+    options.toggle(event)
+  })
+  row.append(expandBtn)
+
+  const main = document.createElement('div')
+  main.className = 'row-main'
+
+  const nameBtn = document.createElement('button')
+  nameBtn.type = 'button'
+  nameBtn.className = 'name-btn'
+  nameBtn.append(createSquareIcon('filled'), document.createTextNode(options.name))
+  nameBtn.title = options.name
+  if (options.canJump) {
+    nameBtn.addEventListener('click', () => {
+      if (options.onJump) {
+        options.onJump()
+      } else {
+        post({ type: 'jump-node', nodeId: options.nodeId })
+      }
+    })
+  } else {
+    nameBtn.disabled = true
+    nameBtn.title = `${options.name}（ジャンプ不可）`
+  }
+
+  const meta = document.createElement('div')
+  meta.className = 'meta'
+  meta.append(createLocalBadge(options.isLocal))
+
+  const variantCountEl = document.createElement('span')
+  variantCountEl.title = `${options.variantCount} variants`
+  variantCountEl.append(createSquareIcon('filled'), document.createTextNode(` ${options.variantCount}`))
+  meta.append(variantCountEl)
+
+  const instanceCountEl = document.createElement('button')
+  instanceCountEl.type = 'button'
+  instanceCountEl.className = 'link-btn'
+  instanceCountEl.title = `${options.instanceCount} instances`
+  instanceCountEl.append(createSquareIcon('empty'), document.createTextNode(` ${options.instanceCount}`))
+  instanceCountEl.addEventListener('click', () => {
+    // no-op; could open instances
+  })
+  instanceCountEl.addEventListener('mouseenter', highlightInstances)
+  instanceCountEl.addEventListener('mouseleave', highlightSet)
+  meta.append(instanceCountEl)
+
+  main.append(nameBtn, meta)
+
+  const actions = document.createElement('div')
+  actions.className = 'actions'
+  actions.append(createSelectToggle(options.toggleKey))
+
+  row.append(main, actions)
+
+  row.addEventListener('click', (event) => {
+    const target = event.target
+    if (target instanceof Element && target.closest('button, label')) {
+      return
+    }
+    options.toggle(event)
+  })
+
+  return row
+}
+
 function createSetGroup(entry: SetEntry): HTMLDivElement {
   const group = document.createElement('div')
   group.className = 'acc-group'
 
   const expanded = expandedSetIds.has(entry.id)
-  const toggle = () => toggleExpanded(expandedSetIds, entry.id)
+  const toggle = (event?: MouseEvent) => toggleExpanded(expandedSetIds, entry.id, event)
 
   const instanceCount = entry.variants.reduce(
     (sum, variant) => sum + variant.instances.length,
     0,
   )
-  const counts = document.createElement('span')
-  counts.className = 'acc-count'
-  counts.title = `${entry.variants.length} variants · ${instanceCount} instances`
-  counts.append(
-    createSquareIcon('filled'),
-    document.createTextNode(` ${entry.variants.length} `),
-    createSquareIcon('empty'),
-    document.createTextNode(` ${instanceCount}`),
+  const instanceIds = entry.variants.flatMap((variant) =>
+    variant.instances.map((instance) => instance.id),
   )
 
-  const header = createAccordionHeader({
-    expanded,
-    label: entry.name,
-    icon: createSquareIcon('filled'),
-    labelTitle: entry.canJump ? entry.name : `${entry.name}（ジャンプ不可）`,
-    labelDisabled: !entry.canJump,
+  const row = createSetRow({
+    name: entry.name,
+    canJump: entry.canJump,
+    isLocal: entry.isLocal,
+    variantCount: entry.variants.length,
+    instanceCount,
+    instanceIds,
+    nodeId: entry.id,
     selected:
       activeSelectKeys.has(`set:${entry.id}`) ||
       entry.variants.some((variant) => isComponentHighlighted(variant.id)),
-    onToggle: toggle,
-    onLabelClick: entry.canJump
+    expanded,
+    toggle,
+    toggleKey: `set:${entry.id}`,
+    onJump: entry.canJump
       ? () => {
           post({ type: 'jump-node', nodeId: entry.id })
         }
       : undefined,
-    meta: [createLocalBadge(entry.isLocal), counts],
-    actions: [createSelectToggle(`set:${entry.id}`)],
   })
-  attachComponentHover(header, entry.id)
-  attachHeaderToggle(header, toggle)
-  group.append(header)
+  attachComponentHover(row, entry.id)
+  group.append(row)
 
   if (expanded) {
     const variants = document.createElement('div')
@@ -858,7 +974,7 @@ function createLayerComponentElement(
     expand: expandable
       ? {
           expanded,
-          onToggle: () => toggleExpanded(expandedGroupIds, item.key),
+          onToggle: (event) => toggleExpanded(expandedGroupIds, item.key, event),
         }
       : alignWithExpandable
         ? 'spacer'
@@ -885,47 +1001,39 @@ function createLayerSetElement(item: SetItem): HTMLDivElement {
   group.className = 'acc-group'
 
   const expanded = expandedGroupIds.has(item.key)
-  const toggle = () => toggleExpanded(expandedGroupIds, item.key)
+  const toggle = (event?: MouseEvent) => toggleExpanded(expandedGroupIds, item.key, event)
   const toggleKey = `item:${item.key}`
 
   const instanceCount = item.children.reduce(
     (sum, child) => sum + child.component.instances.length,
     0,
   )
-  const counts = document.createElement('span')
-  counts.className = 'acc-count'
-  counts.title = `${item.children.length} variants · ${instanceCount} instances`
-  counts.append(
-    createSquareIcon('filled'),
-    document.createTextNode(` ${item.children.length} `),
-    createSquareIcon('empty'),
-    document.createTextNode(` ${instanceCount}`),
+  const instanceIds = item.children.flatMap((child) =>
+    child.component.instances.map((instance) => instance.id),
   )
 
-  const meta: HTMLElement[] = [createLocalBadge(item.isLocal)]
-  meta.push(counts)
-
-  const header = createAccordionHeader({
-    expanded,
-    label: item.name,
-    icon: createSquareIcon('filled'),
-    labelTitle: item.canJump ? item.name : `${item.name}（ジャンプ不可）`,
-    labelDisabled: !item.canJump,
+  const row = createSetRow({
+    name: item.name,
+    canJump: item.canJump,
+    isLocal: item.isLocal,
+    variantCount: item.children.length,
+    instanceCount,
+    instanceIds,
+    nodeId: item.id,
     selected:
       activeSelectKeys.has(toggleKey) ||
       item.children.some((child) => isComponentHighlighted(child.component.id)),
-    onToggle: toggle,
-    onLabelClick: item.canJump
+    expanded,
+    toggle,
+    toggleKey,
+    onJump: item.canJump
       ? () => {
           post({ type: 'jump-node', nodeId: item.id })
         }
       : undefined,
-    meta,
-    actions: [createSelectToggle(toggleKey)],
   })
-  attachComponentHover(header, item.id)
-  attachHeaderToggle(header, toggle)
-  group.append(header)
+  attachComponentHover(row, item.id)
+  group.append(row)
 
   if (expanded) {
     const children = document.createElement('div')
@@ -942,7 +1050,7 @@ function createLayerGroupElement(item: GroupItem): HTMLDivElement {
   group.className = 'acc-group'
 
   const expanded = expandedGroupIds.has(item.key)
-  const toggle = () => toggleExpanded(expandedGroupIds, item.key)
+  const toggle = (event?: MouseEvent) => toggleExpanded(expandedGroupIds, item.key, event)
 
   const header = createAccordionHeader({
     expanded,
