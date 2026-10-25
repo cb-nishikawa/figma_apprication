@@ -73,6 +73,7 @@ let selectedComponentId: string | null = null
 /** Instances shown in the Instance view; null shows all instances of the component. */
 let selectedInstanceIds: string[] | null = null
 let componentSearchQuery = ""
+const componentPropertiesByNodeId = new Map<string, { name: string; options: string[] }[]>()
 let searchScopeComponents = true
 let searchScopeInstances = true
 let searchScopeLocal = true
@@ -997,6 +998,7 @@ function createSetRow(options: SetRowOptions): HTMLDivElement {
   const actions = document.createElement('div')
   actions.className = 'actions'
   actions.append(
+    createSetRowMenu(options.nodeId, options.canJump),
     createHoverPinButton(highlightKey, [options.nodeId], 'component'),
     createHoverColorSelect(highlightKey, [options.nodeId], 'component'),
     createSelectToggle(options.toggleKey),
@@ -1013,6 +1015,105 @@ function createSetRow(options: SetRowOptions): HTMLDivElement {
   })
 
   return row
+}
+
+function closeAllRowMenus(): void {
+  document.querySelectorAll('.row-menu-panel').forEach((el) => {
+    (el as HTMLElement).hidden = true
+  })
+}
+
+function createSetRowMenu(nodeId: string, canJump: boolean): HTMLDivElement {
+  const wrap = document.createElement('div')
+  wrap.className = 'row-menu'
+
+  const trigger = document.createElement('button')
+  trigger.type = 'button'
+  trigger.className = 'row-menu-trigger'
+  trigger.textContent = '⋯'
+  trigger.title = 'メニュー'
+  trigger.setAttribute('aria-label', 'メニュー')
+  if (!canJump) {
+    trigger.disabled = true
+  }
+
+  const panel = document.createElement('div')
+  panel.className = 'row-menu-panel'
+  panel.hidden = true
+  panel.setAttribute('role', 'menu')
+  panel.dataset.nodeId = nodeId
+
+  const renderPanel = () => {
+    panel.replaceChildren()
+    const props = componentPropertiesByNodeId.get(nodeId)
+    if (!props) {
+      const loading = document.createElement('div')
+      loading.className = 'row-menu-item'
+      loading.textContent = '読み込み中…'
+      panel.append(loading)
+      return
+    }
+    if (props.length === 0) {
+      const empty = document.createElement('div')
+      empty.className = 'row-menu-item'
+      empty.textContent = 'プロパティがありません'
+      panel.append(empty)
+      return
+    }
+    for (const prop of props) {
+      const row = document.createElement('div')
+      row.className = 'property-row'
+
+      const label = document.createElement('span')
+      label.className = 'property-name'
+      label.textContent = prop.name
+      label.title = prop.options.join(', ')
+
+      const input = document.createElement('input')
+      input.type = 'text'
+      input.className = 'property-input'
+      input.value = prop.name
+
+      const applyBtn = document.createElement('button')
+      applyBtn.type = 'button'
+      applyBtn.className = 'property-apply'
+      applyBtn.textContent = '変更'
+      applyBtn.addEventListener('click', (event) => {
+        event.stopPropagation()
+        const newName = input.value.trim()
+        if (!newName || newName === prop.name) {
+          return
+        }
+        post({
+          type: 'rename-component-property',
+          nodeId,
+          propertyName: prop.name,
+          newName,
+        })
+      })
+
+      row.append(label, input, applyBtn)
+      panel.append(row)
+    }
+  }
+
+  trigger.addEventListener('click', (event) => {
+    event.stopPropagation()
+    const willOpen = panel.hidden
+    closeAllRowMenus()
+    if (willOpen) {
+      panel.hidden = false
+      renderPanel()
+      post({ type: 'get-component-properties', nodeId })
+    }
+  })
+
+  panel.addEventListener('click', (event) => {
+    event.stopPropagation()
+  })
+
+  wrap.append(trigger, panel)
+  return wrap
 }
 
 function createSetGroup(entry: SetEntry): HTMLDivElement {
@@ -1544,6 +1645,12 @@ document.addEventListener('click', (event) => {
   document.querySelectorAll('.hover-color-menu').forEach((el) => {
     (el as HTMLElement).hidden = true
   })
+  if (
+    target instanceof Node &&
+    !(target as Element).closest?.('.row-menu')
+  ) {
+    closeAllRowMenus()
+  }
 })
 
 let resizingUi = false
@@ -1807,6 +1914,60 @@ window.onmessage = (event: MessageEvent) => {
       if (view === 'instances') {
         renderInstances()
       }
+      break
+
+    case 'component-properties':
+      componentPropertiesByNodeId.set(msg.nodeId, msg.properties)
+      document.querySelectorAll('.row-menu-panel').forEach((panel) => {
+        const el = panel as HTMLElement
+        if (el.dataset.nodeId === msg.nodeId) {
+          // re-render
+          el.replaceChildren()
+          const props = msg.properties
+          if (props.length === 0) {
+            const empty = document.createElement('div')
+            empty.className = 'row-menu-item'
+            empty.textContent = 'プロパティがありません'
+            el.append(empty)
+            return
+          }
+          for (const prop of props) {
+            const row = document.createElement('div')
+            row.className = 'property-row'
+
+            const label = document.createElement('span')
+            label.className = 'property-name'
+            label.textContent = prop.name
+            label.title = prop.options.join(', ')
+
+            const input = document.createElement('input')
+            input.type = 'text'
+            input.className = 'property-input'
+            input.value = prop.name
+
+            const applyBtn = document.createElement('button')
+            applyBtn.type = 'button'
+            applyBtn.className = 'property-apply'
+            applyBtn.textContent = '変更'
+            applyBtn.addEventListener('click', (event) => {
+              event.stopPropagation()
+              const newName = input.value.trim()
+              if (!newName || newName === prop.name) {
+                return
+              }
+              post({
+                type: 'rename-component-property',
+                nodeId: msg.nodeId,
+                propertyName: prop.name,
+                newName,
+              })
+            })
+
+            row.append(label, input, applyBtn)
+            el.append(row)
+          }
+        }
+      })
       break
 
     case 'error':

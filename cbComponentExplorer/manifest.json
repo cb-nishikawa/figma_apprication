@@ -1,12 +1,16 @@
 {
   "name": "コンポーネント一覧くん",
-  "id": "cb-component-explorer",
+  "id": "1696021865954190602",
   "api": "1.0.0",
   "main": "dist/code.js",
   "ui": "dist/ui.html",
-  "editorType": ["figma"],
+  "editorType": [
+    "figma"
+  ],
   "documentAccess": "dynamic-page",
   "networkAccess": {
-    "allowedDomains": ["none"]
+    "allowedDomains": [
+      "none"
+    ]
   }
 }

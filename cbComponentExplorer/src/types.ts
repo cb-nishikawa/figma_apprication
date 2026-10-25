@@ -73,6 +73,13 @@ export type UiToPluginMessage =
   | { type: 'hide-target-overlay' }
   | { type: 'resize-ui'; height: number }
   | { type: 'ready' }
+  | { type: 'get-component-properties'; nodeId: string }
+  | {
+      type: 'rename-component-property'
+      nodeId: string
+      propertyName: string
+      newName: string
+    }
   | { type: 'reload' }
 
 export type PluginToUiMessage =
@@ -93,3 +100,8 @@ export type PluginToUiMessage =
       clearToggles?: boolean
     }
   | { type: 'error'; message: string }
+  | {
+      type: 'component-properties'
+      nodeId: string
+      properties: { name: string; options: string[] }[]
+    }

@@ -378,6 +378,40 @@ figma.ui.onmessage = (msg: UiToPluginMessage) => {
         await runScan()
         break
 
+      case 'get-component-properties': {
+        const node = await figma.getNodeByIdAsync(msg.nodeId)
+        if (node && node.type === 'COMPONENT_SET') {
+          const props = Object.entries(node.componentPropertyDefinitions)
+            .filter(([, def]) => def.type === 'VARIANT')
+            .map(([name, def]) => ({
+              name,
+              options: def.variantOptions ?? [],
+            }))
+          post({ type: 'component-properties', nodeId: msg.nodeId, properties: props })
+        }
+        break
+      }
+
+      case 'rename-component-property': {
+        const node = await figma.getNodeByIdAsync(msg.nodeId)
+        if (node && node.type === 'COMPONENT_SET') {
+          try {
+            node.editComponentProperty(msg.propertyName, { name: msg.newName })
+            const props = Object.entries(node.componentPropertyDefinitions)
+              .filter(([, def]) => def.type === 'VARIANT')
+              .map(([name, def]) => ({
+                name,
+                options: def.variantOptions ?? [],
+              }))
+            post({ type: 'component-properties', nodeId: msg.nodeId, properties: props })
+            await runScan()
+          } catch (error) {
+            post({ type: 'error', message: 'プロパティ名の変更に失敗しました' })
+          }
+        }
+        break
+      }
+
       case 'set-pinned-node':
         await commitPinnedNode(msg.pinnedNodeId)
         break
