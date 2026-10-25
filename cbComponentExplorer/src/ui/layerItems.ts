@@ -170,7 +170,7 @@ export function indexItemNodeIds(
   return out
 }
 
-export type SearchScope = { components: boolean; instances: boolean; local: boolean; library: boolean }
+export type SearchScope = { components: boolean; instances: boolean; local: boolean; library: boolean; highlightedComponents?: Set<string>; highlightedInstances?: Set<string> }
 
 /**
  * Filter items by the search scope and query.
@@ -225,6 +225,8 @@ export function filterLayerItems(
   const expandedKeys: string[] = []
   const matches = (text: string) => text.toLowerCase().includes(q)
   const passesScope = (isLocal: boolean) => (isLocal ? scope.local : scope.library)
+  const isHighlightedComponent = (id: string) => scope.highlightedComponents?.has(id) ?? false
+  const isHighlightedInstance = (id: string) => scope.highlightedInstances?.has(id) ?? false
   const containing = collectLibraryContainingKeys(items)
 
   const scopeOnly = (list: readonly LayerItem[]): LayerItem[] => {
@@ -236,15 +238,15 @@ export function filterLayerItems(
           out.push({ ...item, children })
         }
       } else if (item.kind === 'instance') {
-        if (scope.instances && (passesScope(item.component.isLocal) || (scope.library && containing.instances.has(item.id)))) {
+        if (scope.instances && (isHighlightedInstance(item.id) || passesScope(item.component.isLocal) || (scope.library && containing.instances.has(item.id)))) {
           out.push({ ...item, children: scopeOnly(item.children) })
         }
       } else if (item.kind === 'component') {
-        if (scope.components && (passesScope(item.component.isLocal) || (scope.library && containing.components.has(item.component.id)))) {
+        if (scope.components && (isHighlightedComponent(item.component.id) || passesScope(item.component.isLocal) || (scope.library && containing.components.has(item.component.id)))) {
           out.push({ ...item, children: scopeOnly(item.children) })
         }
       } else if (scope.components) {
-        const variants = item.children.filter((c) => passesScope(c.component.isLocal) || (scope.library && containing.components.has(c.component.id)))
+        const variants = item.children.filter((c) => isHighlightedComponent(c.component.id) || passesScope(c.component.isLocal) || (scope.library && containing.components.has(c.component.id)))
         if (variants.length > 0) {
           out.push({ ...item, children: variants.map((c) => ({ ...c, children: scopeOnly(c.children) })) })
         }
@@ -283,13 +285,14 @@ export function filterLayerItems(
         continue
       }
       if (item.kind === 'instance') {
-        if (!scope.instances || !(passesScope(item.component.isLocal) || (scope.library && containing.instances.has(item.id)))) {
+        if (!scope.instances || !(isHighlightedInstance(item.id) || passesScope(item.component.isLocal) || (scope.library && containing.instances.has(item.id)))) {
           continue
         }
         const row = filterRow(
           item,
           matches(item.name) ||
             matches(item.component.name) ||
+            isHighlightedInstance(item.id) ||
             (scope.library && containing.instances.has(item.id)),
         )
         if (row) {
@@ -298,12 +301,13 @@ export function filterLayerItems(
         continue
       }
       if (item.kind === 'component') {
-        if (!scope.components || !(passesScope(item.component.isLocal) || (scope.library && (containing.components.has(item.component.id) || item.component.instances.some((inst) => containing.instances.has(inst.id)))))) {
+        if (!scope.components || !(isHighlightedComponent(item.component.id) || passesScope(item.component.isLocal) || (scope.library && (containing.components.has(item.component.id) || item.component.instances.some((inst) => containing.instances.has(inst.id)))))) {
           continue
         }
         const row = filterRow(
           item,
           matches(item.component.name) ||
+            isHighlightedComponent(item.component.id) ||
             (scope.library &&
               (containing.components.has(item.component.id) ||
                 item.component.instances.some((inst) => containing.instances.has(inst.id)))),
@@ -316,7 +320,7 @@ export function filterLayerItems(
       if (!scope.components) {
         continue
       }
-      const eligibleChildren = item.children.filter((c) => passesScope(c.component.isLocal) || (scope.library && (containing.components.has(c.component.id) || c.component.instances.some((inst) => containing.instances.has(inst.id)))))
+      const eligibleChildren = item.children.filter((c) => isHighlightedComponent(c.component.id) || passesScope(c.component.isLocal) || (scope.library && (containing.components.has(c.component.id) || c.component.instances.some((inst) => containing.instances.has(inst.id)))))
       if (eligibleChildren.length === 0) {
         continue
       }
@@ -325,7 +329,10 @@ export function filterLayerItems(
           containing.components.has(c.component.id) ||
           c.component.instances.some((inst) => containing.instances.has(inst.id)),
       )
-      if (matches(item.name) || (scope.library && setContainsLibrary)) {
+      const setHighlighted = eligibleChildren.some((c) =>
+        isHighlightedComponent(c.component.id),
+      )
+      if (matches(item.name) || (scope.library && setContainsLibrary) || setHighlighted) {
         out.push({ ...item, children: eligibleChildren.map((c) => ({ ...c, children: scopeOnly(c.children) })) })
         continue
       }
@@ -335,6 +342,7 @@ export function filterLayerItems(
           child,
           matches(child.component.variantName) ||
             matches(child.component.name) ||
+            isHighlightedComponent(child.component.id) ||
             (scope.library &&
               (containing.components.has(child.component.id) ||
                 child.component.instances.some((inst) => containing.instances.has(inst.id)))),
@@ -352,4 +360,36 @@ export function filterLayerItems(
   }
 
   return { items: q ? filter(items) : scopeOnly(items), expandedKeys }
+}
+
+export function collectAncestorKeys(
+  items: readonly LayerItem[],
+  predicate: (item: LayerItem) => boolean,
+): Set<string> {
+  const result = new Set<string>()
+
+  const visit = (list: readonly LayerItem[], ancestors: string[]): boolean => {
+    let found = false
+    for (const item of list) {
+      const nextAncestors = [...ancestors, item.key]
+      const selfMatch = predicate(item)
+      let childMatch = false
+      if ('children' in item && Array.isArray(item.children)) {
+        childMatch = visit(item.children, nextAncestors)
+      }
+      if (selfMatch || childMatch) {
+        for (const key of ancestors) {
+          result.add(key)
+        }
+        if (childMatch) {
+          result.add(item.key)
+        }
+        found = true
+      }
+    }
+    return found
+  }
+
+  visit(items, [])
+  return result
 }

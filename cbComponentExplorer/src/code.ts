@@ -166,9 +166,27 @@ function syncSelectionHighlight(clearToggles = false): void {
   const listedComponentIds = new Set(latestComponents.map((c) => c.id))
   const instanceToComponent = buildInstanceToComponentMap()
 
+  const variantsBySet = new Map<string, string[]>()
+  for (const component of latestComponents) {
+    const setId = component.componentSet?.id
+    if (!setId) {
+      continue
+    }
+    if (!variantsBySet.has(setId)) {
+      variantsBySet.set(setId, [])
+    }
+    variantsBySet.get(setId)!.push(component.id)
+  }
+
   for (const node of figma.currentPage.selection) {
     if (node.type === 'COMPONENT' && listedComponentIds.has(node.id)) {
       componentIds.add(node.id)
+      continue
+    }
+    if (node.type === 'COMPONENT_SET' && variantsBySet.has(node.id)) {
+      for (const variantId of variantsBySet.get(node.id)!) {
+        componentIds.add(variantId)
+      }
       continue
     }
     if (node.type === 'INSTANCE') {

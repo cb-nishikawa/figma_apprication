@@ -8,6 +8,7 @@ import {
   type InstanceItem,
   type LayerItem,
   type SetItem,
+  collectAncestorKeys,
   collectLibraryContainingKeys,
   filterLayerItems,
 } from './layerItems'
@@ -133,6 +134,9 @@ function showView(next: View): void {
   view = next
   viewComponentsEl.hidden = next !== 'components'
   viewInstancesEl.hidden = next !== 'instances'
+  if (next === 'components') {
+    componentsEl.scrollTop = 0
+  }
 }
 
 function goToComponents(): void {
@@ -600,6 +604,8 @@ function createComponentRow(
     'row' +
     (options.expand ? ' has-expand' : '') +
     (selected ? ' is-selected' : '')
+  row.dataset.componentId = component.id
+  row.tabIndex = -1
 
   const highlightComponent = () => {
     post({
@@ -710,6 +716,8 @@ function createLayerInstanceElement(item: InstanceItem): HTMLElement {
   const selected = activeSelectKeys.has(`item:${item.key}`) || isInstanceHighlighted(item.id)
   const row = document.createElement('div')
   row.className = 'row' + (item.children.length > 0 ? ' has-expand' : '') + (selected ? ' is-selected' : '')
+  row.dataset.instanceId = item.id
+  row.tabIndex = -1
 
   const highlightKey = `instance:${item.id}`
   const highlightInstance = () => {
@@ -908,6 +916,8 @@ type SetRowOptions = {
 function createSetRow(options: SetRowOptions): HTMLDivElement {
   const row = document.createElement('div')
   row.className = 'row has-expand' + (options.selected ? ' is-selected' : '')
+  row.dataset.setId = options.nodeId
+  row.tabIndex = -1
 
   const highlightKey = `set:${options.nodeId}`
   const highlightSet = () => {
@@ -1248,6 +1258,8 @@ function getFilteredLayerItemsForRender(): LayerItem[] {
     instances: searchScopeInstances,
     local: searchScopeLocal,
     library: searchScopeLibrary,
+    highlightedComponents: highlightedComponentIds,
+    highlightedInstances: highlightedInstanceIds,
   })
   const sig = searchSignature()
   if (sig !== lastSearchSignature) {
@@ -1275,10 +1287,11 @@ function getFilteredSortedEntriesForRender(): ListEntry[] {
         const containsLib =
           containing.components.has(entry.component.id) ||
           entry.component.instances.some((inst) => containing.instances.has(inst.id))
-        if (!(isLib ? searchScopeLibrary : searchScopeLocal) && !(searchScopeLibrary && containsLib)) {
+        const isHighlighted = highlightedComponentIds.has(entry.component.id)
+        if (!isHighlighted && !(isLib ? searchScopeLibrary : searchScopeLocal) && !(searchScopeLibrary && containsLib)) {
           continue
         }
-        if (matches(entry.component.name) || (searchScopeLibrary && containsLib)) {
+        if (matches(entry.component.name) || isHighlighted || (searchScopeLibrary && containsLib)) {
           entries.push(entry)
         }
         continue
@@ -1291,6 +1304,10 @@ function getFilteredSortedEntriesForRender(): ListEntry[] {
         const containsLib =
           containing.components.has(v.id) ||
           v.instances.some((inst) => containing.instances.has(inst.id))
+        const isHighlighted = highlightedComponentIds.has(v.id)
+        if (isHighlighted) {
+          return true
+        }
         if (isLib) {
           return searchScopeLibrary
         }
@@ -1307,15 +1324,21 @@ function getFilteredSortedEntriesForRender(): ListEntry[] {
           containing.components.has(v.id) ||
           v.instances.some((inst) => containing.instances.has(inst.id)),
       )
+      const setHidden = scopeVariants.some((v) => highlightedComponentIds.has(v.id))
       const variants = scopeVariants.filter(
         (v) =>
           matches(v.variantName) ||
           matches(v.name) ||
+          highlightedComponentIds.has(v.id) ||
           (searchScopeLibrary &&
             (containing.components.has(v.id) ||
               v.instances.some((inst) => containing.instances.has(inst.id)))),
       )
-      if (matches(entry.name) || (searchScopeLibrary && setContainsLib)) {
+      if (
+        matches(entry.name) ||
+        (searchScopeLibrary && setContainsLib) ||
+        setHidden
+      ) {
         if (variants.length > 0) {
           if (autoExpand) expandedSetIds.add(entry.id)
           entries.push({ ...entry, variants })
@@ -1328,12 +1351,14 @@ function getFilteredSortedEntriesForRender(): ListEntry[] {
     for (const item of nameOrderInstanceItems()) {
       const isLib = !item.component.isLocal
       const containsLib = containing.instances.has(item.id)
-      if (!(isLib ? searchScopeLibrary : searchScopeLocal) && !(searchScopeLibrary && containsLib)) {
+      const isHighlighted = highlightedInstanceIds.has(item.id)
+      if (!isHighlighted && !(isLib ? searchScopeLibrary : searchScopeLocal) && !(searchScopeLibrary && containsLib)) {
         continue
       }
       if (
         matches(item.name) ||
         matches(item.component.name) ||
+        isHighlighted ||
         (searchScopeLibrary && containsLib)
       ) {
         entries.push({ kind: 'instance', item })
@@ -1493,6 +1518,7 @@ function applyResult(next: ComponentInfo[], layerTree: LayerNode[]): void {
     showView('components')
   }
   renderComponents()
+  componentsEl.scrollTop = 0
   if (view === 'instances') {
     renderInstances()
   }
@@ -1686,7 +1712,98 @@ window.onmessage = (event: MessageEvent) => {
       if (msg.clearToggles) {
         activeSelectKeys.clear()
       }
+      if (allLayerItems.length > 0) {
+        const compKeys = collectAncestorKeys(allLayerItems, (item) =>
+          item.kind === 'component' &&
+          highlightedComponentIds.has(item.component.id),
+        )
+        const instKeys = collectAncestorKeys(allLayerItems, (item) =>
+          item.kind === 'instance' &&
+          highlightedInstanceIds.has(item.id),
+        )
+        for (const key of compKeys) {
+          expandedGroupIds.add(key)
+        }
+        for (const key of instKeys) {
+          expandedGroupIds.add(key)
+        }
+      }
+      for (const entry of getSortedEntries()) {
+        if (
+          entry.kind === 'set' &&
+          entry.variants.some((variant) =>
+            highlightedComponentIds.has(variant.id),
+          )
+        ) {
+          expandedSetIds.add(entry.id)
+        }
+      }
       renderComponents()
+      if (allLayerItems.length > 0) {
+        let target: Element | null = null
+        const firstInstanceId = highlightedInstanceIds.size
+          ? highlightedInstanceIds.values().next().value
+          : null
+        const firstComponentId = highlightedComponentIds.size
+          ? highlightedComponentIds.values().next().value
+          : null
+        if (firstInstanceId) {
+          target = componentsEl.querySelector(
+            `[data-instance-id="${firstInstanceId}"]`,
+          )
+        }
+        if (!target && firstComponentId) {
+          target = componentsEl.querySelector(
+            `[data-component-id="${firstComponentId}"]`,
+          )
+        }
+        if (!target && firstComponentId) {
+          let setId: string | null = null
+          // layer order
+          const findSetInLayer = (items: readonly LayerItem[]): string | null => {
+            for (const item of items) {
+              if (item.kind === 'set' && item.children.some((c) => c.component.id === firstComponentId)) {
+                return item.id
+              }
+              if ('children' in item && Array.isArray(item.children)) {
+                const found = findSetInLayer(item.children)
+                if (found) {
+                  return found
+                }
+              }
+            }
+            return null
+          }
+          setId = findSetInLayer(allLayerItems)
+          // name order fallback
+          if (!setId) {
+            for (const entry of getSortedEntries()) {
+              if (
+                entry.kind === 'set' &&
+                entry.variants.some((variant) => variant.id === firstComponentId)
+              ) {
+                setId = entry.id
+                break
+              }
+            }
+          }
+          if (setId) {
+            target = componentsEl.querySelector(`[data-set-id="${setId}"]`)
+          }
+        }
+        if (target) {
+          setTimeout(() => {
+            const el = target as HTMLElement
+            componentsEl.scrollTop =
+              el.offsetTop - componentsEl.clientHeight / 2 + el.clientHeight / 2
+            try {
+              el.focus({ preventScroll: true })
+            } catch {
+              // ignore
+            }
+          }, 0)
+        }
+      }
       if (view === 'instances') {
         renderInstances()
       }
