@@ -8,6 +8,7 @@ import {
   type InstanceItem,
   type LayerItem,
   type SetItem,
+  collectLibraryContainingKeys,
   filterLayerItems,
 } from './layerItems'
 import type {
@@ -39,6 +40,8 @@ const componentSearchInput = document.getElementById('component-search-input') a
 const reloadListBtn = document.getElementById('reload-list') as HTMLButtonElement
 const searchScopeComponentsEl = document.getElementById('search-scope-components') as HTMLInputElement
 const searchScopeInstancesEl = document.getElementById('search-scope-instances') as HTMLInputElement
+const searchScopeLocalEl = document.getElementById('search-scope-local') as HTMLInputElement
+const searchScopeLibraryEl = document.getElementById('search-scope-library') as HTMLInputElement
 const instancesEl = document.getElementById('instances') as HTMLDivElement
 const instancesEmptyEl = document.getElementById(
   'instances-empty',
@@ -58,6 +61,7 @@ let view: View = 'components'
 let components: ComponentInfo[] = []
 let layerItems: LayerItem[] = []
 let allLayerItems: LayerItem[] = []
+let lastSearchSignature = ''
 let autoOpenedTargetId: string | null = null
 /** Row key (`item:<path>`) to the canvas node ids that the row's toggle selects. */
 let itemNodeIds = new Map<string, string[]>()
@@ -70,6 +74,8 @@ let selectedInstanceIds: string[] | null = null
 let componentSearchQuery = ""
 let searchScopeComponents = true
 let searchScopeInstances = true
+let searchScopeLocal = true
+let searchScopeLibrary = true
 const pinnedHighlightKeys = new Set<string>()
 const highlightColorByKey = new Map<string, 'red' | 'yellow' | 'green' | 'purple'>()
 let pinTargets: PinTarget[] = []
@@ -86,7 +92,9 @@ function isSearchFilterActive(): boolean {
   return (
     componentSearchQuery.trim() !== '' ||
     !searchScopeComponents ||
-    !searchScopeInstances
+    !searchScopeInstances ||
+    !searchScopeLocal ||
+    !searchScopeLibrary
   )
 }
 
@@ -1220,6 +1228,17 @@ function createLayerGroupElement(item: GroupItem): HTMLDivElement {
   return group
 }
 
+function searchSignature(): string {
+  return [
+    componentSearchQuery.trim(),
+    sortMode,
+    searchScopeComponents,
+    searchScopeInstances,
+    searchScopeLocal,
+    searchScopeLibrary,
+  ].join('|')
+}
+
 function getFilteredLayerItemsForRender(): LayerItem[] {
   if (!isSearchFilterActive()) {
     return allLayerItems
@@ -1227,9 +1246,15 @@ function getFilteredLayerItemsForRender(): LayerItem[] {
   const result = filterLayerItems(allLayerItems, componentSearchQuery, {
     components: searchScopeComponents,
     instances: searchScopeInstances,
+    local: searchScopeLocal,
+    library: searchScopeLibrary,
   })
-  for (const key of result.expandedKeys) {
-    expandedGroupIds.add(key)
+  const sig = searchSignature()
+  if (sig !== lastSearchSignature) {
+    for (const key of result.expandedKeys) {
+      expandedGroupIds.add(key)
+    }
+    lastSearchSignature = sig
   }
   return result.items
 }
@@ -1239,10 +1264,21 @@ function getFilteredSortedEntriesForRender(): ListEntry[] {
   const matches = (text: string) => !q || text.toLowerCase().includes(q)
   const entries: ListEntry[] = []
 
+  const sig = searchSignature()
+  const autoExpand = sig !== lastSearchSignature
+
+  const containing = collectLibraryContainingKeys(allLayerItems)
   if (searchScopeComponents) {
     for (const entry of getSortedEntries()) {
       if (entry.kind === 'component') {
-        if (matches(entry.component.name)) {
+        const isLib = !entry.component.isLocal
+        const containsLib =
+          containing.components.has(entry.component.id) ||
+          entry.component.instances.some((inst) => containing.instances.has(inst.id))
+        if (!(isLib ? searchScopeLibrary : searchScopeLocal) && !(searchScopeLibrary && containsLib)) {
+          continue
+        }
+        if (matches(entry.component.name) || (searchScopeLibrary && containsLib)) {
           entries.push(entry)
         }
         continue
@@ -1250,28 +1286,64 @@ function getFilteredSortedEntriesForRender(): ListEntry[] {
       if (entry.kind !== 'set') {
         continue
       }
-      if (matches(entry.name)) {
-        entries.push(entry)
+      const scopeVariants = entry.variants.filter((v) => {
+        const isLib = !v.isLocal
+        const containsLib =
+          containing.components.has(v.id) ||
+          v.instances.some((inst) => containing.instances.has(inst.id))
+        if (isLib) {
+          return searchScopeLibrary
+        }
+        if (searchScopeLocal) {
+          return true
+        }
+        return searchScopeLibrary && containsLib
+      })
+      if (scopeVariants.length === 0) {
         continue
       }
-      const variants = entry.variants.filter(
-        (v) => matches(v.variantName) || matches(v.name),
+      const setContainsLib = scopeVariants.some(
+        (v) =>
+          containing.components.has(v.id) ||
+          v.instances.some((inst) => containing.instances.has(inst.id)),
       )
-      if (variants.length > 0) {
-        expandedSetIds.add(entry.id)
-        entries.push({ ...entry, variants })
+      const variants = scopeVariants.filter(
+        (v) =>
+          matches(v.variantName) ||
+          matches(v.name) ||
+          (searchScopeLibrary &&
+            (containing.components.has(v.id) ||
+              v.instances.some((inst) => containing.instances.has(inst.id)))),
+      )
+      if (matches(entry.name) || (searchScopeLibrary && setContainsLib)) {
+        if (variants.length > 0) {
+          if (autoExpand) expandedSetIds.add(entry.id)
+          entries.push({ ...entry, variants })
+        }
       }
     }
   }
 
   if (searchScopeInstances) {
     for (const item of nameOrderInstanceItems()) {
-      if (matches(item.name) || matches(item.component.name)) {
+      const isLib = !item.component.isLocal
+      const containsLib = containing.instances.has(item.id)
+      if (!(isLib ? searchScopeLibrary : searchScopeLocal) && !(searchScopeLibrary && containsLib)) {
+        continue
+      }
+      if (
+        matches(item.name) ||
+        matches(item.component.name) ||
+        (searchScopeLibrary && containsLib)
+      ) {
         entries.push({ kind: 'instance', item })
       }
     }
   }
 
+  if (autoExpand) {
+    lastSearchSignature = sig
+  }
   entries.sort((a, b) => entryName(a).localeCompare(entryName(b), 'ja'))
   return entries
 }
@@ -1542,6 +1614,22 @@ if (searchScopeInstancesEl) {
   searchScopeInstances = true
   searchScopeInstancesEl.addEventListener('change', () => {
     searchScopeInstances = searchScopeInstancesEl.checked
+    applyComponentSearch()
+  })
+}
+if (searchScopeLocalEl) {
+  searchScopeLocalEl.checked = true
+  searchScopeLocal = true
+  searchScopeLocalEl.addEventListener('change', () => {
+    searchScopeLocal = searchScopeLocalEl.checked
+    applyComponentSearch()
+  })
+}
+if (searchScopeLibraryEl) {
+  searchScopeLibraryEl.checked = true
+  searchScopeLibrary = true
+  searchScopeLibraryEl.addEventListener('change', () => {
+    searchScopeLibrary = searchScopeLibraryEl.checked
     applyComponentSearch()
   })
 }
