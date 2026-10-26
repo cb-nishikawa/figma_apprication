@@ -1,4 +1,5 @@
 import type { PluginToUiMessage, SitemapNode, UiToPluginMessage } from './types'
+import { hexToRgb, resolveColor } from './palette'
 
 const UI_WIDTH = 360
 const DEFAULT_UI_HEIGHT = 560
@@ -78,6 +79,7 @@ function createSitemapFrame(roots: SitemapNode[]): FrameNode {
   }
 
   rootColumn.setPluginData('sitemap', JSON.stringify({ version: 1, roots }))
+  rootColumn.fills = []
   return rootColumn
 }
 
@@ -112,13 +114,15 @@ async function sendSelection(): Promise<void> {
 }
 
 /** 親パーツ。ページ名を書いた箱。 */
-function createBox(name: string): FrameNode {
+function createBox(node: SitemapNode): FrameNode {
   const frame = figma.createFrame()
-  frame.name = '親パーツ'
+  frame.name = node.name
   frame.resize(NODE_W, NODE_H)
   frame.cornerRadius = 8
-  frame.fills = [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }]
-  frame.strokes = [{ type: 'SOLID', color: LINE_COLOR }]
+  const fillHex = resolveColor(node.fill, 'fill')
+  const textHex = resolveColor(node.textColor, 'text')
+  frame.fills = [{ type: 'SOLID', color: hexToRgb(fillHex) }]
+  frame.strokes = [{ type: 'SOLID', color: { r: 0.15, g: 0.15, b: 0.15 } }]
   frame.strokeWeight = 1
   frame.layoutMode = 'HORIZONTAL'
   frame.primaryAxisAlignItems = 'CENTER'
@@ -135,7 +139,8 @@ function createBox(name: string): FrameNode {
   text.textAlignVertical = 'CENTER'
   text.textAutoResize = 'HEIGHT'
   text.resize(NODE_W - 16, 10)
-  text.characters = name
+  text.characters = node.name
+  text.fills = [{ type: 'SOLID', color: hexToRgb(textHex) }]
   frame.appendChild(text)
 
   return frame
@@ -222,7 +227,7 @@ function createChildPart(child: SitemapNode, first: boolean, hasNext: boolean): 
 
 /** 子がなければ親パーツだけ。子があれば親パーツの右に子パーツ1・子パーツ2 を縦に並べる。 */
 function buildSubtree(node: SitemapNode): FrameNode {
-  const box = createBox(node.name)
+  const box = createBox(node)
   if (node.children.length === 0) {
     return box
   }
@@ -311,6 +316,7 @@ figma.ui.onmessage = (msg: UiToPluginMessage) => {
         }
         break
       case 'clear-target':
+        figma.currentPage.selection = []
         break
       default:
         break

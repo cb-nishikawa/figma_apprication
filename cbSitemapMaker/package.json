@@ -6,7 +6,8 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "watch": "node scripts/build.mjs --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "pack:share": "npm run build && node scripts/pack-share.mjs"
   },
   "devDependencies": {
     "@figma/plugin-typings": "^1.138.0",

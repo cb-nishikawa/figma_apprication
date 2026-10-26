@@ -1,4 +1,5 @@
 import type { PluginToUiMessage, SitemapNode, UiToPluginMessage } from '../types'
+import { FILL_COLOR_HEX, HEX_PATTERN, TEXT_COLOR_HEX, resolveColor } from '../palette'
 
 const MIN_UI_HEIGHT = 320
 const MAX_UI_HEIGHT = 900
@@ -54,15 +55,6 @@ function findLocation(
   return null
 }
 
-function addChild(id: string): void {
-  const node = findNode(id)
-  if (!node) {
-    return
-  }
-  node.children.push(newNode())
-  render()
-}
-
 function addRoot(): void {
   roots.push(newNode())
   render()
@@ -111,7 +103,9 @@ function moveTo(id: string, targetId: string, position: DropPosition): void {
 
 const treeEl = document.getElementById('tree') as HTMLDivElement
 const statusEl = document.getElementById('status') as HTMLParagraphElement
-const editingEl = document.getElementById('editing') as HTMLParagraphElement
+const editingEl = document.getElementById('editing') as HTMLDivElement
+const editingLabelEl = document.getElementById('editing-label') as HTMLSpanElement
+const newMapBtn = document.getElementById('new-map') as HTMLButtonElement
 const addRootBtn = document.getElementById('add-root') as HTMLButtonElement
 const updateBtn = document.getElementById('update') as HTMLButtonElement
 const generateBtn = document.getElementById('generate') as HTMLButtonElement
@@ -132,12 +126,12 @@ function setTarget(id: string | null, name?: string): void {
   updateBtn.hidden = !targetId
   if (targetId) {
     editingEl.hidden = false
-    editingEl.textContent = name ? `編集中: ${name}` : '編集中'
+    editingLabelEl.textContent = name ? `編集中: ${name}` : '編集中'
     updateBtn.classList.add('btn-primary')
     generateBtn.classList.remove('btn-primary')
   } else {
     editingEl.hidden = true
-    editingEl.textContent = ''
+    editingLabelEl.textContent = ''
     updateBtn.classList.remove('btn-primary')
     generateBtn.classList.add('btn-primary')
   }
@@ -204,13 +198,65 @@ function setupDrag(row: HTMLElement, handle: HTMLElement, id: string): void {
   })
 }
 
+function createColorSelect(node: SitemapNode, kind: 'fill' | 'textColor'): HTMLLabelElement {
+  const wrap = document.createElement('label')
+  wrap.className = 'color-select-trigger'
+  wrap.title = kind === 'fill' ? '背景色' : '文字色'
+  wrap.setAttribute('aria-label', wrap.title)
+
+  const swatch = document.createElement('span')
+  swatch.className = 'color-select-swatch'
+
+  // 文字色は白地に色付きの「A」と下の帯で見せる（背景まで塗ると「A」が見えなくなる）。
+  let letter: HTMLSpanElement | null = null
+  if (kind === 'textColor') {
+    swatch.classList.add('is-text')
+    letter = document.createElement('span')
+    letter.className = 'color-select-letter'
+    letter.textContent = 'A'
+    swatch.appendChild(letter)
+  }
+
+  const input = document.createElement('input')
+  input.type = 'color'
+  input.className = 'color-select-input'
+
+  function paint(hex: string): void {
+    if (letter) {
+      swatch.style.setProperty('--swatch', hex)
+      letter.style.color = hex
+    } else {
+      swatch.style.background = hex
+    }
+  }
+
+  const current = kind === 'fill' ? node.fill : node.textColor
+  const hex = resolveColor(current, kind === 'fill' ? 'fill' : 'text')
+  input.value = hex
+  paint(hex)
+
+  input.addEventListener('input', () => {
+    const value = input.value
+    if (kind === 'fill') {
+      node.fill = value
+    } else {
+      node.textColor = value
+    }
+    paint(value)
+  })
+
+  wrap.appendChild(swatch)
+  wrap.appendChild(input)
+  return wrap
+}
+
 function renderNode(node: SitemapNode, container: HTMLElement, depth: number): void {
   const row = document.createElement('div')
   row.className = 'node-row'
   row.style.paddingLeft = `${depth * 16}px`
 
   const handle = document.createElement('span')
-  handle.className = 'drag-handle'
+  handle.className = 'node-handle'
   handle.textContent = '⋮⋮'
   handle.title = 'ドラッグで並び替え'
   handle.setAttribute('aria-hidden', 'true')
@@ -226,6 +272,9 @@ function renderNode(node: SitemapNode, container: HTMLElement, depth: number): v
   })
   row.appendChild(input)
 
+  row.appendChild(createColorSelect(node, 'fill'))
+  row.appendChild(createColorSelect(node, 'textColor'))
+
   const makeBtn = (label: string, onClick: () => void): HTMLButtonElement => {
     const b = document.createElement('button')
     b.type = 'button'
@@ -238,7 +287,6 @@ function renderNode(node: SitemapNode, container: HTMLElement, depth: number): v
     return b
   }
 
-  row.appendChild(makeBtn('+子', () => addChild(node.id)))
   row.appendChild(makeBtn('×', () => deleteNode(node.id)))
 
   container.appendChild(row)
@@ -259,6 +307,14 @@ function render(): void {
 
 addRootBtn.addEventListener('click', () => {
   addRoot()
+})
+
+newMapBtn.addEventListener('click', () => {
+  roots = []
+  setTarget(null)
+  render()
+  setStatus(null)
+  post({ type: 'clear-target' })
 })
 
 updateBtn.addEventListener('click', () => {
@@ -285,12 +341,14 @@ window.onmessage = (event: MessageEvent) => {
   }
   switch (msg.type) {
     case 'sitemap-selected':
-      if (msg.id && msg.roots) {
-        roots = JSON.parse(JSON.stringify(msg.roots)) as SitemapNode[]
-        setTarget(msg.id, msg.name)
-        render()
-      } else if (!msg.id) {
-        setTarget(null)
+      if (msg.id) {
+        if (msg.id !== targetId && msg.roots) {
+          roots = JSON.parse(JSON.stringify(msg.roots)) as SitemapNode[]
+          setTarget(msg.id, msg.name)
+          render()
+        } else if (msg.id !== targetId) {
+          setTarget(msg.id, msg.name)
+        }
       }
       break
     case 'generated':

@@ -1,7 +1,13 @@
+export type ColorKey = 'default' | 'black' | 'white' | 'red' | 'yellow' | 'green' | 'purple'
+
+export type ColorValue = ColorKey | string
+
 export interface SitemapNode {
   id: string
   name: string
   children: SitemapNode[]
+  fill?: ColorValue
+  textColor?: ColorValue
 }
 
 export type UiToPluginMessage =
