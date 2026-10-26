@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>サイトマップ作るくん</title>
+    <!-- inject:css -->
+  </head>
+  <body>
+    <div class="app">
+      <p id="editing" class="status" hidden></p>
+      <div id="tree" class="tree"></div>
+      <button id="add-root" class="btn-add" type="button" aria-label="ページを追加" title="ページを追加">＋</button>
+      <footer class="footer">
+        <p id="status" class="status" hidden></p>
+        <button id="update" class="btn" type="button" hidden>更新</button>
+        <button id="generate" class="btn btn-primary" type="button">作成</button>
+      </footer>
+    </div>
+    <div
+      id="resize-handle"
+      class="resize-handle"
+      title="高さをドラッグで調整"
+      aria-label="高さをドラッグで調整"
+      role="separator"
+      aria-orientation="horizontal"
+    ></div>
+
+    <!-- inject:js -->
+  </body>
+</html>
