@@ -236,8 +236,14 @@ function dumpDiagnostics(roots: SceneNode[]): void {
  * Uses findAll (not manual child recursion) so that content inside
  * instances / slots is reliably included.
  */
-export function collectImageTargets(roots: SceneNode[]): SceneNode[] {
-  const byId = new Map<string, SceneNode>();
+export interface CollectedRow {
+  node: SceneNode;
+  /** true: 画像の行（画像一覧に出す）/ false: エクスポート設定だけの行。 */
+  isImage: boolean;
+}
+
+export function collectImageTargets(roots: SceneNode[]): CollectedRow[] {
+  const byId = new Map<string, CollectedRow>();
   const rootIds = new Set(roots.map((root) => root.id));
 
   for (const root of roots) {
@@ -267,7 +273,7 @@ export function collectImageTargets(roots: SceneNode[]): SceneNode[] {
           );
         }
         if (!byId.has(node.id)) {
-          byId.set(node.id, node);
+          byId.set(node.id, { node, isImage: true });
         }
         continue;
       }
@@ -277,7 +283,7 @@ export function collectImageTargets(roots: SceneNode[]): SceneNode[] {
         );
       }
       if (!byId.has(row.id)) {
-        byId.set(row.id, row);
+        byId.set(row.id, { node: row, isImage: true });
       }
     }
 
@@ -307,7 +313,7 @@ export function collectImageTargets(roots: SceneNode[]): SceneNode[] {
         );
       }
       if (!byId.has(node.id)) {
-        byId.set(node.id, node);
+        byId.set(node.id, { node, isImage: false });
       }
     }
   }
@@ -316,7 +322,7 @@ export function collectImageTargets(roots: SceneNode[]): SceneNode[] {
   if (DEBUG) {
     console.log(
       "[cbImageExport] collected rows:",
-      collected.map((n) => `${n.type} ${n.name} (${n.id})`)
+      collected.map(({ node: n }) => `${n.type} ${n.name} (${n.id})`)
     );
     dumpDiagnostics(roots);
   }

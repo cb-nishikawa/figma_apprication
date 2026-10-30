@@ -30,6 +30,17 @@ export interface ImageListItem {
   thumbBytes?: number[];
   /** レイヤーのエクスポート設定から読み取った書き出し設定（空なら未設定）。 */
   exportConfigs?: ExportConfig[];
+  /** true: 画像の行（画像一覧に出す）/ false: エクスポート設定だけの行。 */
+  isImage: boolean;
+}
+
+/** 「選択中のレイヤー」欄の 1 行。 */
+export interface SelectedLayer {
+  id: string;
+  name: string;
+  thumbBytes?: number[];
+  /** 対象フレームの中（子孫）のレイヤーなら true。対象フレーム自身は false。 */
+  inTarget: boolean;
 }
 
 /** 書き出し単位の設定（形式 + サイズ指定）。 */

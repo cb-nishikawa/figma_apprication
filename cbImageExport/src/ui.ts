@@ -14,6 +14,7 @@ import type {
   FrameTarget,
   ImageListItem,
   RecentFrame,
+  SelectedLayer,
 } from "./types";
 import {
   DEFAULT_EXCLUDE_OPTIONS,
@@ -45,6 +46,11 @@ const assetUrlTriggerEl = document.getElementById(
   "asset-url-trigger"
 ) as HTMLButtonElement;
 const resultsEl = document.getElementById("results") as HTMLUListElement;
+const selectionListEl = document.getElementById(
+  "selection-list"
+) as HTMLUListElement;
+const imageListEl = document.getElementById("image-list") as HTMLUListElement;
+const exportCountEl = document.getElementById("export-count") as HTMLSpanElement;
 const errorEl = document.getElementById("error") as HTMLParagraphElement;
 const statusEl = document.getElementById("status") as HTMLParagraphElement;
 const resizeHandle = document.getElementById(
@@ -52,6 +58,9 @@ const resizeHandle = document.getElementById(
 ) as HTMLDivElement;
 
 let items: ImageListItem[] = [];
+let selectedLayers: SelectedLayer[] = [];
+/** スキャン時のメッセージ（画像一覧が空のときに表示）。 */
+let scanMessage = "";
 let frameTargets: FrameTarget[] = [];
 let recentFrames: RecentFrame[] = [];
 let targetId: string | null = null;
@@ -177,7 +186,21 @@ function excludeOptionsFor(id: string): ExportOptions {
   return excludeOptionsById.get(id) ?? { ...DEFAULT_EXCLUDE_OPTIONS };
 }
 
-function nameFor(item: ImageListItem): string {
+interface NamedRow {
+  id: string;
+  name: string;
+  thumbBytes?: number[];
+}
+
+function isExportRow(id: string): boolean {
+  return configsFor(id).length > 0;
+}
+
+function exportItems(): ImageListItem[] {
+  return items.filter((item) => isExportRow(item.id));
+}
+
+function nameFor(item: NamedRow): string {
   const override = nameOverridesById.get(item.id)?.trim();
   return override || item.name;
 }
@@ -430,7 +453,7 @@ function createConstraintInput(
   return input;
 }
 
-function createNameInput(item: ImageListItem): HTMLInputElement {
+function createNameInput(item: NamedRow): HTMLInputElement {
   const input = document.createElement("input");
   input.className = "result-name-input";
   input.type = "text";
@@ -446,7 +469,13 @@ function createNameInput(item: ImageListItem): HTMLInputElement {
       return;
     }
     nameOverridesById.set(item.id, next);
+    for (const layer of selectedLayers) {
+      if (layer.id === item.id) {
+        layer.name = next;
+      }
+    }
     postToPlugin({ type: "RENAME_NODE", nodeId: item.id, name: next });
+    renderList();
   });
   return input;
 }
@@ -460,16 +489,125 @@ function createAddButton(id: string): HTMLButtonElement {
   btn.setAttribute("aria-label", "書き出し形式を追加");
   btn.addEventListener("click", (event) => {
     event.stopPropagation();
-    const existing = configsByNode.get(id);
-    if (existing) {
-      existing.push({ ...DEFAULT_CONFIG });
-    } else {
-      configsByNode.set(id, [{ ...DEFAULT_CONFIG }]);
-    }
-    syncExportSettings(id);
-    renderList();
+    addConfig(id);
   });
   return btn;
+}
+
+function newDefaultConfig(): ExportConfig {
+  return { ...DEFAULT_CONFIG, constraint: { ...DEFAULT_CONFIG.constraint } };
+}
+
+function addConfig(id: string): void {
+  if (!items.some((item) => item.id === id)) {
+    // 一覧にないレイヤーは設定を書き込んでから再スキャンで一覧に載せる
+    postToPlugin({
+      type: "SET_EXPORT_SETTINGS",
+      nodeId: id,
+      configs: [newDefaultConfig()],
+    });
+    postToPlugin({ type: "SCAN_TARGET" });
+    return;
+  }
+  const existing = configsByNode.get(id);
+  if (existing) {
+    existing.push(newDefaultConfig());
+  } else {
+    configsByNode.set(id, [newDefaultConfig()]);
+  }
+  syncExportSettings(id);
+  renderList();
+}
+
+function createThumb(row: NamedRow): HTMLElement {
+  let thumb: HTMLElement;
+  if (row.thumbBytes && row.thumbBytes.length > 0) {
+    const img = document.createElement("img");
+    img.className = "result-thumb";
+    img.alt = "";
+    img.src = bytesToObjectUrl(row.thumbBytes, "image/png");
+    thumb = img;
+  } else {
+    const placeholder = document.createElement("div");
+    placeholder.className = "result-thumb is-placeholder";
+    placeholder.textContent = "—";
+    thumb = placeholder;
+  }
+  thumb.addEventListener("click", () => {
+    postToPlugin({ type: "FOCUS_NODE", nodeId: row.id });
+  });
+  return thumb;
+}
+
+function addHoverHighlight(li: HTMLElement, id: string): void {
+  li.addEventListener("mouseenter", () => {
+    postToPlugin({ type: "HOVER_ROW", nodeId: id });
+  });
+  li.addEventListener("mouseleave", () => {
+    postToPlugin({ type: "HOVER_ROW", nodeId: null });
+  });
+}
+
+function emptyRow(text: string): HTMLLIElement {
+  const li = document.createElement("li");
+  li.className = "empty";
+  li.textContent = text;
+  return li;
+}
+
+/** 選択中のレイヤー・画像一覧の行（サムネイル・名前・+）。 */
+function createSimpleRow(row: NamedRow, outsideNote?: string): HTMLLIElement {
+  const li = document.createElement("li");
+  li.className = "simple-row";
+  if (outsideNote) {
+    li.classList.add("is-outside");
+    li.title = outsideNote;
+  }
+  addHoverHighlight(li, row.id);
+
+  const body = document.createElement("div");
+  body.className = "simple-body";
+  body.appendChild(createNameInput(row));
+  if (outsideNote) {
+    const note = document.createElement("span");
+    note.className = "simple-note";
+    note.textContent = outsideNote;
+    body.appendChild(note);
+  }
+
+  const add = createAddButton(row.id);
+  add.disabled = Boolean(outsideNote);
+
+  li.append(createThumb(row), body, add);
+  return li;
+}
+
+function renderSelection(): void {
+  selectionListEl.innerHTML = "";
+  if (selectedLayers.length === 0) {
+    selectionListEl.appendChild(emptyRow("レイヤーを選択してください"));
+    return;
+  }
+  for (const layer of selectedLayers) {
+    selectionListEl.appendChild(
+      createSimpleRow(
+        layer,
+        layer.inTarget ? undefined : "ターゲット外のレイヤーです"
+      )
+    );
+  }
+}
+
+function renderImageList(): void {
+  imageListEl.innerHTML = "";
+  const images = items.filter((item) => item.isImage);
+  if (images.length === 0) {
+    imageListEl.appendChild(emptyRow(scanMessage || "画像がありません"));
+    return;
+  }
+  for (const item of images) {
+    imageListEl.appendChild(createSimpleRow(item));
+  }
 }
 
 function createExportButton(id: string): HTMLButtonElement {
@@ -496,6 +634,9 @@ function createRemoveButton(id: string, index: number): HTMLButtonElement {
   btn.addEventListener("click", (event) => {
     event.stopPropagation();
     configsByNode.get(id)?.splice(index, 1);
+    if (!isExportRow(id)) {
+      checkedIds.delete(id);
+    }
     syncExportSettings(id);
     renderList();
   });
@@ -1019,15 +1160,22 @@ function createConfigRow(id: string, config: ExportConfig, index: number): HTMLE
 }
 
 function renderList(): void {
-  resultsEl.innerHTML = "";
+  renderImageList();
+  renderExportList();
+  renderSelection();
+}
 
-  if (items.length === 0) {
-    const li = document.createElement("li");
-    li.className = "empty";
-    li.textContent = statusEl.hidden
-      ? "まだ画像やエクスポート設定のあるレイヤーがありません"
-      : statusEl.textContent || "まだ画像やエクスポート設定のあるレイヤーがありません";
-    resultsEl.appendChild(li);
+function renderExportList(): void {
+  resultsEl.innerHTML = "";
+  const rows = exportItems();
+  exportCountEl.textContent = rows.length > 0 ? `(${rows.length})` : "";
+
+  if (rows.length === 0) {
+    resultsEl.appendChild(
+      emptyRow(
+        "書き出し設定のあるレイヤーはまだありません（画像一覧・選択中のレイヤーの「+」で追加）"
+      )
+    );
     selectAllEl.checked = false;
     exportAllBtn.disabled = true;
     return;
@@ -1036,7 +1184,7 @@ function renderList(): void {
   exportAllBtn.disabled = false;
 
   let allChecked = true;
-  for (const item of items) {
+  for (const item of rows) {
     if (!checkedIds.has(item.id)) {
       allChecked = false;
     }
@@ -1047,13 +1195,7 @@ function renderList(): void {
       li.classList.add("is-error");
       li.title = rowErrorById.get(item.id) ?? "";
     }
-
-    li.addEventListener("mouseenter", () => {
-      postToPlugin({ type: "HOVER_ROW", nodeId: item.id });
-    });
-    li.addEventListener("mouseleave", () => {
-      postToPlugin({ type: "HOVER_ROW", nodeId: null });
-    });
+    addHoverHighlight(li, item.id);
 
     const check = document.createElement("input");
     check.type = "checkbox";
@@ -1069,29 +1211,12 @@ function renderList(): void {
       renderList();
     });
 
-    let thumb: HTMLElement;
-    if (item.thumbBytes && item.thumbBytes.length > 0) {
-      const img = document.createElement("img");
-      img.className = "result-thumb";
-      img.alt = "";
-      img.src = bytesToObjectUrl(item.thumbBytes, "image/png");
-      thumb = img;
-    } else {
-      const placeholder = document.createElement("div");
-      placeholder.className = "result-thumb is-placeholder";
-      placeholder.textContent = "—";
-      thumb = placeholder;
-    }
-    thumb.addEventListener("click", () => {
-      postToPlugin({ type: "FOCUS_NODE", nodeId: item.id });
-    });
-
     const head = document.createElement("div");
     head.className = "result-head";
     const nameInput = createNameInput(item);
     head.append(
       check,
-      thumb,
+      createThumb(item),
       nameInput,
       createExcludeMenu(item.id),
       createExportButton(item.id),
@@ -1109,7 +1234,7 @@ function renderList(): void {
     resultsEl.appendChild(li);
   }
 
-  selectAllEl.checked = items.length > 0 && allChecked;
+  selectAllEl.checked = allChecked;
 }
 
 async function handleExportResults(results: ExportResultItem[]): Promise<void> {
@@ -1255,10 +1380,42 @@ async function exportRows(targetIds: string[]): Promise<void> {
   postToPlugin({ type: "EXPORT_NODES", items: requests });
 }
 
+type TabName = "layers" | "export";
+
+const tabPanelsEl = document.querySelector(".tab-panels") as HTMLElement;
+const tabScrollTop: Record<TabName, number> = { layers: 0, export: 0 };
+let activeTab: TabName = "layers";
+
+function showTab(name: TabName): void {
+  tabScrollTop[activeTab] = tabPanelsEl.scrollTop;
+  activeTab = name;
+  document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) => {
+    const selected = tab.dataset.tab === name;
+    tab.setAttribute("aria-selected", String(selected));
+    tab.classList.toggle("is-active", selected);
+  });
+  (document.getElementById("panel-layers") as HTMLElement).hidden =
+    name !== "layers";
+  (document.getElementById("panel-export") as HTMLElement).hidden =
+    name !== "export";
+  tabPanelsEl.scrollTop = tabScrollTop[name];
+}
+
+function setupTabs(): void {
+  document.querySelectorAll<HTMLButtonElement>(".tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      showTab(tab.dataset.tab === "export" ? "export" : "layers");
+    });
+  });
+  showTab("layers");
+}
+
 exportAllBtn.addEventListener("click", () => {
-  const targets = items.filter((item) => checkedIds.has(item.id));
+  // 書き出しの状態やエラーはエクスポートタブに出るため切り替える
+  showTab("export");
+  const targets = exportItems().filter((item) => checkedIds.has(item.id));
   if (targets.length === 0) {
-    showError("書き出す画像にチェックを入れてください");
+    showError("エクスポートの項目にチェックを入れてください");
     return;
   }
   exportRows(targets.map((item) => item.id));
@@ -1266,7 +1423,7 @@ exportAllBtn.addEventListener("click", () => {
 
 selectAllEl.addEventListener("change", () => {
   if (selectAllEl.checked) {
-    for (const item of items) {
+    for (const item of exportItems()) {
       checkedIds.add(item.id);
     }
   } else {
@@ -1287,6 +1444,11 @@ window.onmessage = (event: MessageEvent) => {
     currentAssetPath = msg.assetUrlPath;
     targetPicker?.refresh();
     assetUrlInputSync?.();
+    return;
+  }
+  if (msg.type === "SELECTION_LAYERS") {
+    selectedLayers = msg.layers;
+    renderSelection();
     return;
   }
   if (msg.type === "SELECTION_EMPTY") {
@@ -1381,7 +1543,12 @@ window.onmessage = (event: MessageEvent) => {
         uriWaiters.delete(id);
       }
     }
-    showStatus(msg.message ?? null);
+    for (const id of [...checkedIds]) {
+      if (!isExportRow(id)) {
+        checkedIds.delete(id);
+      }
+    }
+    scanMessage = msg.message ?? "";
     showError(null);
     renderList();
     return;
@@ -1432,6 +1599,7 @@ function setupResize(): void {
 }
 
 setupResize();
+setupTabs();
 mountTargetPicker();
 setupAssetUrlMenu();
 postToPlugin({ type: "LIST_FRAME_TARGETS" });

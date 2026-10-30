@@ -23,11 +23,70 @@ body {
 .app {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  padding: 12px 14px 16px;
+  overflow: hidden;
+  padding: 12px 14px 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.app > * {
+  flex-shrink: 0;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid #e5e5e5;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  margin-bottom: -1px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  color: #888;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: #333;
+}
+
+.tab.is-active {
+  color: #18a0fb;
+  border-bottom-color: #18a0fb;
+}
+
+.tab-count {
+  font-weight: 400;
+}
+
+.app > .tab-panels {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 16px;
+}
+
+.tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tab-panel[hidden] {
+  display: none;
+}
+
+.results-section .results-head {
+  justify-content: flex-end;
 }
 
 .resize-handle {
@@ -463,6 +522,68 @@ body.is-resizing * {
 .results .empty {
   color: #888;
   padding: 8px 0;
+}
+
+.selection-section h2,
+.image-section h2 {
+  margin-bottom: 8px;
+}
+
+.selection-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.selection-list .empty {
+  color: #888;
+  padding: 4px 0;
+}
+
+.simple-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+
+.simple-row:hover {
+  background: #f3f3f3;
+}
+
+.simple-row.is-outside {
+  opacity: 0.55;
+}
+
+.simple-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.simple-note {
+  font-size: 10px;
+  color: #888;
+}
+
+.simple-row .config-add {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.simple-row .config-add:disabled {
+  cursor: not-allowed;
+  background: #fff;
+  border-color: #d0d0d0;
+  color: #bbb;
 }
 
 .result-row {

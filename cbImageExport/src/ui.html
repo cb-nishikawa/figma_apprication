@@ -62,11 +62,49 @@
         </div>
       </section>
 
+      <div class="tabs" role="tablist">
+        <button
+          id="tab-layers"
+          class="tab"
+          type="button"
+          role="tab"
+          data-tab="layers"
+          aria-controls="panel-layers"
+          aria-selected="true"
+        >
+          レイヤー
+        </button>
+        <button
+          id="tab-export"
+          class="tab"
+          type="button"
+          role="tab"
+          data-tab="export"
+          aria-controls="panel-export"
+          aria-selected="false"
+        >
+          エクスポート <span id="export-count" class="tab-count"></span>
+        </button>
+      </div>
+
+      <div class="tab-panels">
+      <div id="panel-layers" class="tab-panel" role="tabpanel" aria-labelledby="tab-layers">
+      <section class="section selection-section" aria-labelledby="selection-label">
+        <h2 id="selection-label">選択中のレイヤー</h2>
+        <ul id="selection-list" class="selection-list"></ul>
+      </section>
+
       <hr class="divider" />
 
-      <section class="section results-section" aria-labelledby="results-label">
+      <section class="section image-section" aria-labelledby="image-list-label">
+        <h2 id="image-list-label">画像一覧</h2>
+        <ul id="image-list" class="results image-list"></ul>
+      </section>
+      </div>
+
+      <div id="panel-export" class="tab-panel" role="tabpanel" aria-labelledby="tab-export" hidden>
+      <section class="section results-section" aria-labelledby="tab-export">
         <div class="results-head">
-          <h2 id="results-label">画像一覧</h2>
           <div class="results-actions">
             <label class="select-all">
               <input id="select-all" type="checkbox" />
@@ -90,6 +128,8 @@
         <p id="status" class="status" hidden></p>
         <ul id="results" class="results"></ul>
       </section>
+      </div>
+      </div>
     </div>
     <div
       id="resize-handle"

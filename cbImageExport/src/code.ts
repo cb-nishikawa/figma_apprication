@@ -11,6 +11,7 @@ import type {
   FrameTargetKind,
   ImageListItem,
   RecentFrame,
+  SelectedLayer,
 } from "./types";
 import { DEFAULT_QUALITY } from "./types";
 
@@ -39,11 +40,17 @@ let frameAssetPaths: Record<string, string> = {};
  * recent scan also keeps the SceneNode reference itself as a fallback.
  */
 const nodeCache = new Map<string, SceneNode>();
+/** Nodes shown in the "選択中のレイヤー" section (same fallback reason). */
+const selectionCache = new Map<string, SceneNode>();
 
 function resolveNode(nodeId: string): SceneNode | null {
   const cached = nodeCache.get(nodeId) ?? null;
   if (cached && !cached.removed) {
     return cached;
+  }
+  const selected = selectionCache.get(nodeId) ?? null;
+  if (selected && !selected.removed) {
+    return selected;
   }
   const fromId = figma.getNodeById(nodeId) ?? null;
   if (fromId && "exportAsync" in fromId) {
@@ -374,15 +381,15 @@ async function scanTarget(): Promise<void> {
 
   const collected = collectImageTargets([node as SceneNode]);
   nodeCache.clear();
-  for (const target of collected) {
+  for (const { node: target } of collected) {
     nodeCache.set(target.id, target);
   }
   const sentinelConfigs = restoreSentinelConfigs(
     node as SceneNode,
-    new Set(collected.map((target) => target.id))
+    new Set(collected.map(({ node: target }) => target.id))
   );
   const items: ImageListItem[] = [];
-  for (const target of collected) {
+  for (const { node: target, isImage } of collected) {
     const thumbBytes = await makeThumb(target);
     const exportConfigs = exportSettingsToConfigs(target);
     const rowSentinels = sentinelConfigs.get(target.id);
@@ -403,6 +410,7 @@ async function scanTarget(): Promise<void> {
       name: target.name || "(untitled)",
       thumbBytes,
       exportConfigs,
+      isImage,
     });
   }
 
@@ -414,6 +422,57 @@ async function scanTarget(): Promise<void> {
         ? "表示中の画像やエクスポート設定のあるレイヤーが見つかりませんでした"
         : undefined,
   });
+}
+
+const MAX_SELECTED_LAYERS = 20;
+let selectionSeq = 0;
+
+function isPluginHelperNode(node: SceneNode): boolean {
+  return (
+    node.name.startsWith("hoverEffect@") ||
+    node.name === EXPORT_SENTINEL_CONTAINER ||
+    node.name.startsWith(EXPORT_SENTINEL_PREFIX) ||
+    node.name.startsWith(LEGACY_WEBP_SENTINEL_PREFIX)
+  );
+}
+
+function isInTarget(node: SceneNode): boolean {
+  if (!targetNodeId) {
+    return false;
+  }
+  let current: BaseNode | null = node.parent;
+  while (current && current.type !== "PAGE" && current.type !== "DOCUMENT") {
+    if (current.id === targetNodeId) {
+      return true;
+    }
+    current = current.parent;
+  }
+  return false;
+}
+
+async function postSelection(): Promise<void> {
+  const seq = ++selectionSeq;
+  const nodes = figma.currentPage.selection
+    .filter((node) => !isPluginHelperNode(node))
+    .slice(0, MAX_SELECTED_LAYERS);
+  const layers: SelectedLayer[] = [];
+  for (const node of nodes) {
+    const thumbBytes = await makeThumb(node);
+    if (seq !== selectionSeq) {
+      return;
+    }
+    layers.push({
+      id: node.id,
+      name: node.name || "(untitled)",
+      thumbBytes,
+      inTarget: isInTarget(node),
+    });
+  }
+  selectionCache.clear();
+  for (const node of nodes) {
+    selectionCache.set(node.id, node);
+  }
+  postToUi({ type: "SELECTION_LAYERS", layers });
 }
 
 function exportSettings(
@@ -1041,6 +1100,7 @@ async function main(): Promise<void> {
           recordRecentFrame(fromSelection);
           postFrameTargets();
           await scanTarget();
+          await postSelection();
           break;
         }
         case "SET_FRAME_NODE":
@@ -1050,6 +1110,7 @@ async function main(): Promise<void> {
           }
           postFrameTargets();
           await scanTarget();
+          await postSelection();
           break;
         case "SCAN_TARGET":
           await scanTarget();
@@ -1115,6 +1176,11 @@ async function main(): Promise<void> {
     hideHoverOverlay();
     postFrameTargets();
     void scanTarget();
+    void postSelection();
+  });
+
+  figma.on("selectionchange", () => {
+    void postSelection();
   });
 
   figma.on("close", () => {
@@ -1122,6 +1188,7 @@ async function main(): Promise<void> {
   });
 
   postFrameTargets();
+  void postSelection();
 }
 
 void main();

@@ -7,6 +7,7 @@ import type {
   FrameTarget,
   ImageListItem,
   RecentFrame,
+  SelectedLayer,
 } from "./types";
 
 export type UiToPluginMessage =
@@ -46,6 +47,7 @@ export type PluginToUiMessage =
     }
   | { type: "IMAGE_LIST"; items: ImageListItem[]; message?: string }
   | { type: "SELECTION_EMPTY" }
+  | { type: "SELECTION_LAYERS"; layers: SelectedLayer[] }
   | { type: "EXPORT_RESULT"; results: ExportResultItem[] }
   | { type: "ERROR"; message: string }
   | { type: "ASSET_URL_CONFIG"; nodeId: string | null; path: string }
