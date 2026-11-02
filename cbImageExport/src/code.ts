@@ -1,4 +1,5 @@
 import { collectImageTargets } from "./collectImages";
+import { getLocale, isLocale, setLocale, t } from "./i18n";
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
 import type {
   ExportConfig,
@@ -20,6 +21,7 @@ const MIN_UI_HEIGHT = 320;
 const MAX_UI_HEIGHT = 900;
 const DEFAULT_UI_HEIGHT = 480;
 const UI_HEIGHT_STORAGE_KEY = "cbImageExport.uiHeight";
+const LOCALE_STORAGE_KEY = "cbImageExport.locale";
 const THUMB_WIDTH = 80;
 const EXPORT_SENTINEL_CONTAINER = "__cb_export__";
 const EXPORT_SENTINEL_PREFIX = "__cfg__";
@@ -362,7 +364,7 @@ async function scanTarget(): Promise<void> {
     postToUi({
       type: "IMAGE_LIST",
       items: [],
-      message: "対象フレームを選択してください",
+      message: t("selectTargetFrame"),
     });
     return;
   }
@@ -374,7 +376,7 @@ async function scanTarget(): Promise<void> {
     postToUi({
       type: "IMAGE_LIST",
       items: [],
-      message: "対象フレームが見つかりません",
+      message: t("targetNotFound"),
     });
     return;
   }
@@ -419,7 +421,7 @@ async function scanTarget(): Promise<void> {
     items,
     message:
       items.length === 0
-        ? "表示中の画像やエクスポート設定のあるレイヤーが見つかりませんでした"
+        ? t("noImagesFound")
         : undefined,
   });
 }
@@ -573,7 +575,7 @@ async function exportNodes(requests: ExportRequest[]): Promise<void> {
         format: req.format,
         constraint: req.constraint,
         ok: false,
-        message: "ノードが見つからないか書き出せません",
+        message: t("nodeNotExportable"),
       });
       continue;
     }
@@ -600,7 +602,7 @@ async function exportNodes(requests: ExportRequest[]): Promise<void> {
         format: req.format,
         constraint: req.constraint,
         ok: false,
-        message: `${req.format} 書き出しに失敗: ${message}`,
+        message: t("formatExportFailed", { format: req.format, message }),
       });
     }
   }
@@ -732,7 +734,7 @@ async function fetchSvgCode(
       type: "SVG_CODE",
       nodeId,
       svg: "",
-      message: "ノードが見つからないか書き出せません",
+      message: t("nodeNotExportable"),
     });
     return;
   }
@@ -757,7 +759,7 @@ async function fetchSvgCode(
         type: "SVG_CODE",
         nodeId,
         svg: "",
-        message: "空の SVG が返されました",
+        message: t("emptySvg"),
       });
       return;
     }
@@ -769,7 +771,7 @@ async function fetchSvgCode(
       type: "SVG_CODE",
       nodeId,
       svg: "",
-      message: `SVG 書き出しに失敗: ${message}`,
+      message: t("svgExportFailed", { message }),
     });
   }
 }
@@ -785,7 +787,7 @@ async function fetchUriData(
       type: "URI_DATA",
       nodeId,
       bytes: [],
-      message: "ノードが見つからないか書き出せません",
+      message: t("nodeNotExportable"),
     });
     return;
   }
@@ -810,7 +812,7 @@ async function fetchUriData(
         type: "URI_DATA",
         nodeId,
         bytes: [],
-        message: "空の画像データが返されました",
+        message: t("emptyImageData"),
       });
       return;
     }
@@ -821,7 +823,7 @@ async function fetchUriData(
       type: "URI_DATA",
       nodeId,
       bytes: [],
-      message: `画像データの取得に失敗: ${message}`,
+      message: t("imageDataFailed", { message }),
     });
   }
 }
@@ -1066,11 +1068,15 @@ async function main(): Promise<void> {
   recentFrames = await loadRecentFrames();
   frameAssetPaths = await loadAssetUrlConfig();
   const uiHeight = await initUiHeight();
+  const storedLocale = await figma.clientStorage.getAsync(LOCALE_STORAGE_KEY);
+  setLocale(isLocale(storedLocale) ? storedLocale : "ja");
   figma.showUI(__html__, {
     width: UI_WIDTH,
     height: uiHeight,
     themeColors: true,
+    title: t("pluginName"),
   });
+  postToUi({ type: "LOCALE", locale: getLocale() });
   postToUi({
     type: "ASSET_URL_CONFIG",
     nodeId: targetNodeId,
@@ -1092,7 +1098,7 @@ async function main(): Promise<void> {
           if (!fromSelection) {
             postToUi({
               type: "ERROR",
-              message: "選択から対象フレームを解決できません",
+              message: t("cannotResolveTarget"),
             });
             break;
           }
@@ -1158,6 +1164,13 @@ async function main(): Promise<void> {
           break;
         case "EXPORT_NODES":
           await exportNodes(raw.items);
+          break;
+        case "SET_LOCALE":
+          setLocale(raw.locale);
+          void figma.clientStorage.setAsync(LOCALE_STORAGE_KEY, raw.locale);
+          postToUi({ type: "LOCALE", locale: raw.locale });
+          postFrameTargets();
+          await scanTarget();
           break;
         case "RESIZE_UI": {
           const height = clampUiHeight(raw.height);

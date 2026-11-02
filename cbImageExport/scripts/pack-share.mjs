@@ -21,8 +21,8 @@ const shareManifest = {
   ui: "ui.html",
 };
 
-const readmeTxt = `画像一括書き出しくん（共有パック）
-========================
+const readmeTxt = `画像一括書き出しくん / Mr. Bulk Image Exporter（共有パック）
+==================================================
 
 このフォルダだけで Figma に読み込めます。Node.js / npm は不要です。
 

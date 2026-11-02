@@ -1,4 +1,5 @@
 import { zlibSync } from "fflate";
+import { t } from "./i18n";
 
 /**
  * PNG の「圧縮率（%）」は色数削減（量子化）で実現する。可逆画像のため
@@ -44,7 +45,7 @@ export async function quantizePng(
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) {
     bitmap.close();
-    throw new Error("canvas 2D を取得できません");
+    throw new Error(t("canvasUnavailable"));
   }
   try {
     ctx.drawImage(bitmap, 0, 0);

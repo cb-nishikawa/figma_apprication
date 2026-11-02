@@ -12,11 +12,102 @@
           <div id="target-picker-root" class="target-picker-row"></div>
           <div class="scope-actions">
             <button
+              id="rescan"
+              class="btn-icon"
+              type="button"
+              title="再読み込み"
+              aria-label="再読み込み"
+              data-i18n-title="rescan"
+              data-i18n-aria-label="rescan"
+            >
+              <svg
+                width="14"
+                height="16"
+                viewBox="0 0 14 16"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                aria-hidden="true"
+              >
+                <path
+                  d="M12.6 12C11.4 13.5 9.6 14.5 7.5 14.5C3.9 14.5 1 11.6 1 8C1 4.4 3.9 1.5 7.5 1.5C9.7 1.5 11.6 2.6 12.8 4.2M13 1V4C13 4.3 12.8 4.5 12.5 4.5H9.5"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                />
+              </svg>
+            </button>
+            <button
+              id="app-menu-trigger"
+              class="btn-icon app-menu-trigger"
+              type="button"
+              title="メニュー"
+              aria-label="メニュー"
+              data-i18n-title="menu"
+              data-i18n-aria-label="menu"
+              aria-haspopup="true"
+              aria-expanded="false"
+            ></button>
+          </div>
+        </div>
+      </section>
+
+      <div class="tabs" role="tablist">
+        <button
+          id="tab-layers"
+          class="tab"
+          type="button"
+          role="tab"
+          data-tab="layers"
+          aria-controls="panel-layers"
+          aria-selected="true"
+        >
+          <span data-i18n="tabLayers">レイヤー</span>
+        </button>
+        <button
+          id="tab-export"
+          class="tab"
+          type="button"
+          role="tab"
+          data-tab="export"
+          aria-controls="panel-export"
+          aria-selected="false"
+        >
+          <span data-i18n="tabExport">エクスポート</span>
+          <span id="export-count" class="tab-count"></span>
+        </button>
+      </div>
+
+      <div class="tab-panels">
+      <div id="panel-layers" class="tab-panel" role="tabpanel" aria-labelledby="tab-layers">
+      <section class="section selection-section" aria-labelledby="selection-label">
+        <h2 id="selection-label" data-i18n="selectedLayers">選択中のレイヤー</h2>
+        <ul id="selection-list" class="selection-list"></ul>
+      </section>
+
+      <hr class="divider" />
+
+      <section class="section image-section" aria-labelledby="image-list-label">
+        <h2 id="image-list-label" data-i18n="imageList">画像一覧</h2>
+        <ul id="image-list" class="results image-list"></ul>
+      </section>
+      </div>
+
+      <div id="panel-export" class="tab-panel" role="tabpanel" aria-labelledby="tab-export" hidden>
+      <section class="section results-section" aria-labelledby="tab-export">
+        <div class="results-head">
+          <label class="select-all">
+            <input id="select-all" type="checkbox" />
+            <span data-i18n="selectAll">すべて</span>
+          </label>
+          <div class="results-actions">
+            <button
               id="export-all"
               class="btn-icon primary"
               type="button"
               title="書き出し"
               aria-label="書き出し"
+              data-i18n-title="exportAll"
+              data-i18n-aria-label="exportAll"
             >
               <svg
                 width="14"
@@ -35,82 +126,7 @@
                 />
               </svg>
             </button>
-            <button
-              id="rescan"
-              class="btn-icon"
-              type="button"
-              title="再読み込み"
-              aria-label="再読み込み"
-            >
-              <svg
-                width="14"
-                height="16"
-                viewBox="0 0 14 16"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-                aria-hidden="true"
-              >
-                <path
-                  d="M12.6 12C11.4 13.5 9.6 14.5 7.5 14.5C3.9 14.5 1 11.6 1 8C1 4.4 3.9 1.5 7.5 1.5C9.7 1.5 11.6 2.6 12.8 4.2M13 1V4C13 4.3 12.8 4.5 12.5 4.5H9.5"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                />
-              </svg>
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <div class="tabs" role="tablist">
-        <button
-          id="tab-layers"
-          class="tab"
-          type="button"
-          role="tab"
-          data-tab="layers"
-          aria-controls="panel-layers"
-          aria-selected="true"
-        >
-          レイヤー
-        </button>
-        <button
-          id="tab-export"
-          class="tab"
-          type="button"
-          role="tab"
-          data-tab="export"
-          aria-controls="panel-export"
-          aria-selected="false"
-        >
-          エクスポート <span id="export-count" class="tab-count"></span>
-        </button>
-      </div>
-
-      <div class="tab-panels">
-      <div id="panel-layers" class="tab-panel" role="tabpanel" aria-labelledby="tab-layers">
-      <section class="section selection-section" aria-labelledby="selection-label">
-        <h2 id="selection-label">選択中のレイヤー</h2>
-        <ul id="selection-list" class="selection-list"></ul>
-      </section>
-
-      <hr class="divider" />
-
-      <section class="section image-section" aria-labelledby="image-list-label">
-        <h2 id="image-list-label">画像一覧</h2>
-        <ul id="image-list" class="results image-list"></ul>
-      </section>
-      </div>
-
-      <div id="panel-export" class="tab-panel" role="tabpanel" aria-labelledby="tab-export" hidden>
-      <section class="section results-section" aria-labelledby="tab-export">
-        <div class="results-head">
-          <div class="results-actions">
-            <label class="select-all">
-              <input id="select-all" type="checkbox" />
-              <span>すべて</span>
-            </label>
-            <button id="asset-url-trigger" class="btn-icon asset-url-trigger" type="button" title="URL コピー設定" aria-label="URL コピー設定" aria-haspopup="true" aria-expanded="false">
+            <button id="asset-url-trigger" class="btn-icon asset-url-trigger" type="button" title="URL コピー設定" aria-label="URL コピー設定" data-i18n-title="assetUrlSettings" data-i18n-aria-label="assetUrlSettings" aria-haspopup="true" aria-expanded="false">
               <svg
                 width="14"
                 height="14"
@@ -136,6 +152,8 @@
       class="resize-handle"
       title="高さをドラッグで調整"
       aria-label="高さをドラッグで調整"
+      data-i18n-title="resizeHandle"
+      data-i18n-aria-label="resizeHandle"
       role="separator"
       aria-orientation="horizontal"
     ></div>

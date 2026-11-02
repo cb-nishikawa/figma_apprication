@@ -85,9 +85,6 @@ body {
   display: none;
 }
 
-.results-section .results-head {
-  justify-content: flex-end;
-}
 
 .resize-handle {
   position: relative;
@@ -157,6 +154,7 @@ body.is-resizing * {
 }
 
 .scope-actions {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -177,42 +175,95 @@ body.is-resizing * {
   min-width: 0;
 }
 
-.target-picker-btn {
+.target-picker-control {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   width: 100%;
-  min-height: 28px;
-  padding: 4px 8px;
-  border: 1px solid #cfcfcf;
-  border-radius: 4px;
-  background: #fff;
-  color: #333;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  overflow: hidden;
 }
 
-.target-picker-btn:hover:not(:disabled) {
+.target-picker-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  padding: 0;
+  border: 1px solid #cfcfcf;
+  border-left: none;
+  border-radius: 0 4px 4px 0;
+  background: #fff;
+  color: #666;
+  cursor: pointer;
+}
+
+.target-picker-chevron:hover:not(:disabled),
+.target-picker-chevron[aria-expanded="true"] {
   border-color: #18a0fb;
   background: #f5fbff;
+  color: #18a0fb;
 }
 
-.target-picker-btn:disabled {
+.target-picker-chevron:disabled {
   opacity: 0.55;
   cursor: default;
 }
 
-.target-picker-btn-label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.target-picker-apply {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 28px;
+  padding: 0;
+  border: 1px solid #cfcfcf;
+  border-right: none;
+  border-radius: 4px 0 0 4px;
+  background: #fff;
+  color: #666;
+  cursor: pointer;
 }
 
-.target-picker-btn.is-empty .target-picker-btn-label {
+.target-picker-apply:hover:not(:disabled) {
+  border-color: #18a0fb;
+  background: #f5fbff;
+  color: #18a0fb;
+}
+
+.target-picker-apply:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.target-picker-input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid #cfcfcf;
+  border-radius: 0;
+  background: #fff;
+  color: #333;
+  font: inherit;
+  box-sizing: border-box;
+  text-overflow: ellipsis;
+}
+
+.target-picker-input::placeholder {
   color: #999;
+}
+
+.target-picker-input:hover:not(:disabled) {
+  border-color: #18a0fb;
+}
+
+.target-picker-input:focus {
+  outline: none;
+  border-color: #18a0fb;
+}
+
+.target-picker-input:disabled {
+  opacity: 0.55;
 }
 
 .target-picker-popover {
@@ -223,9 +274,8 @@ body.is-resizing * {
   z-index: 30;
   display: flex;
   flex-direction: column;
-  gap: 6px;
   min-width: 180px;
-  padding: 8px;
+  padding: 4px;
   border: 1px solid #d8d8d8;
   border-radius: 6px;
   background: #fff;
@@ -236,32 +286,12 @@ body.is-resizing * {
   display: none !important;
 }
 
-.target-picker-filter {
-  display: block;
-  width: 100%;
-  height: 28px;
-  padding: 0 8px;
-  border: 1px solid #cfcfcf;
-  border-radius: 4px;
-  background: #fff;
-  color: #333;
-  font: inherit;
-  box-sizing: border-box;
-}
-
-.target-picker-filter:focus {
-  outline: none;
-  border-color: #18a0fb;
-}
-
 .target-picker-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  max-height: 168px;
+  max-height: 200px;
   overflow-y: auto;
-  border: 1px solid #eee;
-  border-radius: 4px;
 }
 
 .target-picker-option {
@@ -290,87 +320,6 @@ body.is-resizing * {
   padding: 8px;
   color: #999;
   font-size: 11px;
-}
-
-/* 未選択時に表示する「最近選択したフレーム」履歴ポップオーバー。
-   .exclude-popover と同形状（右上配置の小カード）。 */
-.target-picker-history {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: 30;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 220px;
-  padding: 10px;
-  border: 1px solid #d8d8d8;
-  border-radius: 6px;
-  background: #fff;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
-}
-
-.target-picker-history[hidden] {
-  display: none !important;
-}
-
-.target-picker-history-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  max-height: 240px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.target-picker-history-list:not(:empty) {
-  border-top: 1px solid #eee;
-  padding-top: 6px;
-}
-
-.target-picker-history-item {
-  display: block;
-  width: 100%;
-  padding: 6px 8px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: #333;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.target-picker-history-item:hover {
-  background: #eaf6ff;
-}
-
-.target-picker-history-item.is-selected {
-  background: #d6eeff;
-  font-weight: 600;
-}
-
-.target-picker-history-footer {
-  display: block;
-  width: 100%;
-  padding: 4px 0 0;
-  border: 0;
-  border-top: 1px solid #eee;
-  background: transparent;
-  color: #18a0fb;
-  font: inherit;
-  font-size: 11px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.target-picker-history-footer:hover {
-  color: #0b79c9;
 }
 
 .btn-icon {
@@ -481,6 +430,105 @@ body.is-resizing * {
 
 .asset-url-trigger:disabled {
   opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.results-actions .btn-icon {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.exclude-popover.app-menu-popover {
+  right: 0;
+  top: calc(100% + 4px);
+  width: 140px;
+  padding: 4px;
+  gap: 0;
+}
+
+.app-menu-popover[hidden] {
+  display: none !important;
+}
+
+.app-menu-item {
+  position: relative;
+}
+
+.app-menu-item-label,
+.app-menu-lang-btn {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: #333;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* ウィンドウ右端に寄っているため、サブメニューは左側に開く */
+.app-menu-item-label::before {
+  content: "";
+  width: 0;
+  height: 0;
+  margin-right: 6px;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-right: 4px solid #888;
+}
+
+.app-menu-item:hover > .app-menu-item-label,
+.app-menu-item:focus-within > .app-menu-item-label,
+.app-menu-lang-btn:hover:not(:disabled) {
+  background: #f3f3f3;
+}
+
+.app-menu-submenu {
+  position: absolute;
+  top: -4px;
+  right: calc(100% + 4px);
+  display: flex;
+  flex-direction: column;
+  width: 120px;
+  padding: 4px;
+  border: 1px solid #d8d8d8;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 親とサブメニューの隙間でホバーが切れないようにする */
+.app-menu-submenu::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: -6px;
+  width: 6px;
+  height: 100%;
+}
+
+.app-menu-item:hover > .app-menu-submenu,
+.app-menu-item:focus-within > .app-menu-submenu {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.app-menu-lang-btn.is-active {
+  color: #18a0fb;
+  font-weight: 600;
+}
+
+.app-menu-lang-btn:disabled {
+  opacity: 0.45;
   cursor: not-allowed;
 }
 

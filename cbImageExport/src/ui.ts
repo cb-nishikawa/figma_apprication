@@ -4,6 +4,7 @@ import exportIcon from "./assets/export.svg?raw";
 import hamburgerIcon from "./assets/hamburger.svg?raw";
 import type { PluginToUiMessage, UiToPluginMessage } from "./messages";
 import { closeAllTargetPopovers, createTargetPicker, unregisterPicker } from "./targetPicker";
+import { getLocale, isLocale, setLocale, t, type Locale, type MessageKey } from "./i18n";
 import type {
   ExportConfig,
   ExportConstraint,
@@ -13,7 +14,6 @@ import type {
   ExportResultItem,
   FrameTarget,
   ImageListItem,
-  RecentFrame,
   SelectedLayer,
 } from "./types";
 import {
@@ -38,6 +38,9 @@ const targetPickerRoot = document.getElementById(
   "target-picker-root"
 ) as HTMLDivElement;
 const rescanBtn = document.getElementById("rescan") as HTMLButtonElement;
+const appMenuTriggerEl = document.getElementById(
+  "app-menu-trigger"
+) as HTMLButtonElement;
 const exportAllBtn = document.getElementById(
   "export-all"
 ) as HTMLButtonElement;
@@ -61,8 +64,46 @@ let items: ImageListItem[] = [];
 let selectedLayers: SelectedLayer[] = [];
 /** スキャン時のメッセージ（画像一覧が空のときに表示）。 */
 let scanMessage = "";
+let syncLangMenu: (() => void) | null = null;
+
+type I18nAttr = "text" | "title" | "aria-label" | "placeholder";
+
+/** 言語切替時に applyStaticI18n で差し替えられるよう、要素に辞書キーを持たせる。 */
+function setI18n(el: HTMLElement, key: MessageKey, attr: I18nAttr = "text"): void {
+  if (attr === "text") {
+    el.dataset.i18n = key;
+    el.textContent = t(key);
+    return;
+  }
+  el.setAttribute(`data-i18n-${attr}`, key);
+  el.setAttribute(attr, t(key));
+}
+
+function applyStaticI18n(root: ParentNode = document): void {
+  root.querySelectorAll<HTMLElement>("[data-i18n]").forEach((el) => {
+    el.textContent = t(el.dataset.i18n as MessageKey);
+  });
+  for (const attr of ["title", "aria-label", "placeholder"] as const) {
+    root
+      .querySelectorAll<HTMLElement>(`[data-i18n-${attr}]`)
+      .forEach((el) => {
+        const key = el.getAttribute(`data-i18n-${attr}`) as MessageKey;
+        el.setAttribute(attr, t(key));
+      });
+  }
+  document.documentElement.lang = getLocale();
+  document.title = t("pluginName");
+}
+
+/** UI 内の文言を新しい言語で描き直す（ウィンドウタイトルは次回起動時に反映）。 */
+function applyLocale(locale: Locale): void {
+  setLocale(locale);
+  applyStaticI18n();
+  mountTargetPicker();
+  renderList();
+  syncLangMenu?.();
+}
 let frameTargets: FrameTarget[] = [];
-let recentFrames: RecentFrame[] = [];
 let targetId: string | null = null;
 const checkedIds = new Set<string>();
 const configsByNode = new Map<string, ExportConfig[]>();
@@ -106,19 +147,15 @@ function mountTargetPicker(): void {
     unregisterPicker(targetPicker);
   }
   targetPicker = createTargetPicker({
-    emptyLabel: "フレーム未選択",
-    ariaLabel: "対象フレーム",
+    emptyLabel: t("targetEmpty"),
+    ariaLabel: t("targetAria"),
     getLabel: () => getSelectedTarget()?.label ?? "",
     getSelectedId: () => targetId,
     getTargets: () => frameTargets,
-    getRecent: () => recentFrames,
     onApplySelection: () => {
       postToPlugin({ type: "SET_FRAME_FROM_SELECTION" });
     },
     onPick: (id) => {
-      postToPlugin({ type: "SET_FRAME_NODE", nodeId: id });
-    },
-    onPickRecent: (id) => {
       postToPlugin({ type: "SET_FRAME_NODE", nodeId: id });
     },
   });
@@ -355,7 +392,7 @@ async function pngToImageData(pngBytes: number[]): Promise<ImageData> {
   const ctx = canvas.getContext("2d");
   if (!ctx) {
     bitmap.close();
-    throw new Error("canvas 2D を取得できません");
+    throw new Error(t("canvasUnavailable"));
   }
   try {
     ctx.drawImage(bitmap, 0, 0);
@@ -381,20 +418,20 @@ async function canvasEncode(
   canvas.height = imageData.height;
   const ctx = canvas.getContext("2d");
   if (!ctx) {
-    throw new Error("canvas 2D を取得できません");
+    throw new Error(t("canvasUnavailable"));
   }
   ctx.putImageData(imageData, 0, 0);
   const out = await new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
       (b) =>
-        b ? resolve(b) : reject(new Error("画像変換に失敗しました")),
+        b ? resolve(b) : reject(new Error(t("convertFailed"))),
       mime,
       quality
     );
   });
   if (out.type !== mime) {
     throw new Error(
-      `画像変換の出力形式が想定と異なります（${out.type || "不明"}）。対応していない形式です`
+      t("convertUnexpectedType", { type: out.type || t("unknown") })
     );
   }
   return new Uint8Array(await out.arrayBuffer());
@@ -406,7 +443,7 @@ function createFormatSelect(
 ): HTMLSelectElement {
   const select = document.createElement("select");
   select.className = "config-format";
-  select.setAttribute("aria-label", "書き出し形式");
+  select.setAttribute("aria-label", t("exportFormat"));
   for (const format of EXPORT_FORMATS) {
     const option = document.createElement("option");
     option.value = format;
@@ -432,8 +469,8 @@ function createConstraintInput(
   input.type = "text";
   input.inputMode = "decimal";
   input.value = formatConstraint(config.constraint);
-  input.setAttribute("aria-label", "書き出しサイズ");
-  input.title = "倍率・寸法: 1x / 2x / 0.5x / 512w / 512h";
+  input.setAttribute("aria-label", t("exportSize"));
+  input.title = t("exportSizeHint");
   input.addEventListener("click", (event) => event.stopPropagation());
   input.addEventListener("input", () => {
     const parsed = parseConstraint(input.value);
@@ -458,8 +495,8 @@ function createNameInput(item: NamedRow): HTMLInputElement {
   input.className = "result-name-input";
   input.type = "text";
   input.value = nameFor(item);
-  input.setAttribute("aria-label", "レイヤー名");
-  input.title = "レイヤー名";
+  input.setAttribute("aria-label", t("layerName"));
+  input.title = t("layerName");
   input.addEventListener("click", (event) => event.stopPropagation());
   input.addEventListener("change", () => {
     const next = input.value.trim();
@@ -485,8 +522,8 @@ function createAddButton(id: string): HTMLButtonElement {
   btn.type = "button";
   btn.className = "config-add";
   btn.textContent = "+";
-  btn.title = "書き出し形式を追加";
-  btn.setAttribute("aria-label", "書き出し形式を追加");
+  btn.title = t("addFormat");
+  btn.setAttribute("aria-label", t("addFormat"));
   btn.addEventListener("click", (event) => {
     event.stopPropagation();
     addConfig(id);
@@ -585,14 +622,14 @@ function createSimpleRow(row: NamedRow, outsideNote?: string): HTMLLIElement {
 function renderSelection(): void {
   selectionListEl.innerHTML = "";
   if (selectedLayers.length === 0) {
-    selectionListEl.appendChild(emptyRow("レイヤーを選択してください"));
+    selectionListEl.appendChild(emptyRow(t("selectLayerPrompt")));
     return;
   }
   for (const layer of selectedLayers) {
     selectionListEl.appendChild(
       createSimpleRow(
         layer,
-        layer.inTarget ? undefined : "ターゲット外のレイヤーです"
+        layer.inTarget ? undefined : t("outsideTarget")
       )
     );
   }
@@ -602,7 +639,7 @@ function renderImageList(): void {
   imageListEl.innerHTML = "";
   const images = items.filter((item) => item.isImage);
   if (images.length === 0) {
-    imageListEl.appendChild(emptyRow(scanMessage || "画像がありません"));
+    imageListEl.appendChild(emptyRow(scanMessage || t("noImages")));
     return;
   }
   for (const item of images) {
@@ -614,8 +651,8 @@ function createExportButton(id: string): HTMLButtonElement {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "btn-icon row-export";
-  btn.title = "この行を書き出し";
-  btn.setAttribute("aria-label", "この行を書き出し");
+  btn.title = t("exportRow");
+  btn.setAttribute("aria-label", t("exportRow"));
   btn.innerHTML = exportIcon;
   btn.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -629,8 +666,8 @@ function createRemoveButton(id: string, index: number): HTMLButtonElement {
   btn.type = "button";
   btn.className = "config-remove";
   btn.textContent = "-";
-  btn.title = "この書き出し形式を削除";
-  btn.setAttribute("aria-label", "この書き出し形式を削除");
+  btn.title = t("removeFormat");
+  btn.setAttribute("aria-label", t("removeFormat"));
   btn.addEventListener("click", (event) => {
     event.stopPropagation();
     configsByNode.get(id)?.splice(index, 1);
@@ -645,14 +682,12 @@ function createRemoveButton(id: string, index: number): HTMLButtonElement {
 
 const EXCLUDE_OPTION_DEFS: Array<{
   key: keyof ExportOptions;
-  label: string;
+  label: MessageKey;
 }> = [
-  { key: "excludeEffects", label: "エフェクト" },
-  { key: "excludeStrokes", label: "線" },
-  { key: "excludeCornerRadius", label: "角丸" },
+  { key: "excludeEffects", label: "excludeEffects" },
+  { key: "excludeStrokes", label: "excludeStrokes" },
+  { key: "excludeCornerRadius", label: "excludeCornerRadius" },
 ];
-
-const EXCLUDE_POPOVER_TITLE = "チェック項目を除外する";
 
 function closeAllExcludeMenus(except?: HTMLElement): void {
   document.querySelectorAll<HTMLElement>(".exclude-popover").forEach((panel) => {
@@ -674,8 +709,8 @@ function createExcludeMenu(id: string): HTMLElement {
   const trigger = document.createElement("button");
   trigger.type = "button";
   trigger.className = "btn-icon exclude-trigger";
-  trigger.title = EXCLUDE_POPOVER_TITLE;
-  trigger.setAttribute("aria-label", EXCLUDE_POPOVER_TITLE);
+  trigger.title = t("excludeTitle");
+  trigger.setAttribute("aria-label", t("excludeTitle"));
   trigger.setAttribute("aria-haspopup", "true");
   trigger.setAttribute("aria-expanded", "false");
   trigger.innerHTML = excludeIcon;
@@ -684,18 +719,18 @@ function createExcludeMenu(id: string): HTMLElement {
   panel.className = "exclude-popover";
   panel.hidden = true;
   panel.setAttribute("role", "group");
-  panel.setAttribute("aria-label", EXCLUDE_POPOVER_TITLE);
+  panel.setAttribute("aria-label", t("excludeTitle"));
 
   const title = document.createElement("div");
   title.className = "exclude-title";
-  title.textContent = EXCLUDE_POPOVER_TITLE;
+  title.textContent = t("excludeTitle");
 
   const checks = document.createElement("div");
   checks.className = "exclude-checks";
   for (const def of EXCLUDE_OPTION_DEFS) {
     const wrap = document.createElement("label");
     wrap.className = "exclude-check";
-    wrap.title = `${def.label}を除外する`;
+    wrap.title = t("excludeItem", { label: t(def.label) });
 
     const input = document.createElement("input");
     input.type = "checkbox";
@@ -707,7 +742,7 @@ function createExcludeMenu(id: string): HTMLElement {
     });
 
     const text = document.createElement("span");
-    text.textContent = def.label;
+    text.textContent = t(def.label);
 
     wrap.append(input, text);
     checks.append(wrap);
@@ -733,8 +768,6 @@ function createExcludeMenu(id: string): HTMLElement {
   return menu;
 }
 
-const COPY_POPOVER_TITLE = "urlをコピー";
-
 function closeAllCopyMenus(except?: HTMLElement): void {
   document.querySelectorAll<HTMLElement>(".copy-popover").forEach((panel) => {
     if (except && panel === except) {
@@ -755,6 +788,14 @@ function closeAssetUrlPopover(): void {
     panel.hidden = true;
   }
   assetUrlTriggerEl.setAttribute("aria-expanded", "false");
+}
+
+function closeAppMenuPopover(): void {
+  const panel = document.querySelector<HTMLElement>(".app-menu-popover");
+  if (panel) {
+    panel.hidden = true;
+  }
+  appMenuTriggerEl.setAttribute("aria-expanded", "false");
 }
 
 async function copyText(text: string): Promise<boolean> {
@@ -787,8 +828,8 @@ function createCopyMenu(id: string, config: ExportConfig): HTMLElement {
   const trigger = document.createElement("button");
   trigger.type = "button";
   trigger.className = "btn-icon copy-trigger";
-  trigger.title = COPY_POPOVER_TITLE;
-  trigger.setAttribute("aria-label", COPY_POPOVER_TITLE);
+  trigger.title = t("copyUrl");
+  trigger.setAttribute("aria-label", t("copyUrl"));
   trigger.setAttribute("aria-haspopup", "true");
   trigger.setAttribute("aria-expanded", "false");
   trigger.innerHTML = hamburgerIcon;
@@ -797,17 +838,17 @@ function createCopyMenu(id: string, config: ExportConfig): HTMLElement {
   panel.className = "exclude-popover copy-popover";
   panel.hidden = true;
   panel.setAttribute("role", "menu");
-  panel.setAttribute("aria-label", COPY_POPOVER_TITLE);
+  panel.setAttribute("aria-label", t("copyUrl"));
 
   const urlBtn = document.createElement("button");
   urlBtn.type = "button";
   urlBtn.className = "btn-primary copy-button";
-  urlBtn.textContent = "urlをコピー";
+  urlBtn.textContent = t("copyUrl");
   urlBtn.addEventListener("click", async () => {
     const ok = await copyText(assetUrlFor(id, config));
-    urlBtn.textContent = ok ? "コピーしました" : "コピーに失敗";
+    urlBtn.textContent = ok ? t("copied") : t("copyFailed");
     window.setTimeout(() => {
-      urlBtn.textContent = "urlをコピー";
+      urlBtn.textContent = t("copyUrl");
     }, 1200);
   });
 
@@ -819,7 +860,7 @@ function createCopyMenu(id: string, config: ExportConfig): HTMLElement {
     const svgBtn = document.createElement("button");
     svgBtn.type = "button";
     svgBtn.className = "btn-secondary copy-button";
-    svgBtn.textContent = "埋め込みコードをコピー";
+    svgBtn.textContent = t("copySvgCode");
 
     requestSvg = (): void => {
       if (
@@ -849,13 +890,13 @@ function createCopyMenu(id: string, config: ExportConfig): HTMLElement {
           error.length > 32 ? `${error.slice(0, 32)}…` : error;
       } else if (cached) {
         svgBtn.removeAttribute("title");
-        svgBtn.textContent = "埋め込みコードをコピー";
+        svgBtn.textContent = t("copySvgCode");
       } else if (svgPending.has(id)) {
         svgBtn.removeAttribute("title");
-        svgBtn.textContent = "読み込み中…";
+        svgBtn.textContent = t("loading");
       } else {
         svgBtn.removeAttribute("title");
-        svgBtn.textContent = "埋め込みコードをコピー";
+        svgBtn.textContent = t("copySvgCode");
       }
     };
 
@@ -863,7 +904,7 @@ function createCopyMenu(id: string, config: ExportConfig): HTMLElement {
       const cached = svgCodeById.get(id);
       if (cached) {
         const ok = await copyText(cached);
-        svgBtn.textContent = ok ? "コピーしました" : "コピーに失敗";
+        svgBtn.textContent = ok ? t("copied") : t("copyFailed");
         window.setTimeout(renderSvgBtn, 1200);
         return;
       }
@@ -882,7 +923,7 @@ function createCopyMenu(id: string, config: ExportConfig): HTMLElement {
   const uriBtn = document.createElement("button");
   uriBtn.type = "button";
   uriBtn.className = "btn-secondary copy-button";
-  uriBtn.textContent = "Data URI をコピー";
+  uriBtn.textContent = t("copyDataUri");
   const isSvgRow = config.format === "SVG";
 
   const renderUriBtn = (): void => {
@@ -895,13 +936,13 @@ function createCopyMenu(id: string, config: ExportConfig): HTMLElement {
         error.length > 32 ? `${error.slice(0, 32)}…` : error;
     } else if (ready) {
       uriBtn.removeAttribute("title");
-      uriBtn.textContent = "Data URI をコピー";
+      uriBtn.textContent = t("copyDataUri");
     } else if (pending) {
       uriBtn.removeAttribute("title");
-      uriBtn.textContent = "読み込み中…";
+      uriBtn.textContent = t("loading");
     } else {
       uriBtn.removeAttribute("title");
-      uriBtn.textContent = "Data URI をコピー";
+      uriBtn.textContent = t("copyDataUri");
     }
   };
 
@@ -929,7 +970,7 @@ function createCopyMenu(id: string, config: ExportConfig): HTMLElement {
         new TextEncoder().encode(svg)
       )}`;
       const ok = await copyText(dataUri);
-      uriBtn.textContent = ok ? "コピーしました" : "コピーに失敗";
+      uriBtn.textContent = ok ? t("copied") : t("copyFailed");
       window.setTimeout(renderUriBtn, 1200);
       return;
     }
@@ -965,7 +1006,7 @@ function createCopyMenu(id: string, config: ExportConfig): HTMLElement {
         finalBytes
       )}`;
       const ok = await copyText(dataUri);
-      uriBtn.textContent = ok ? "コピーしました" : "コピーに失敗";
+      uriBtn.textContent = ok ? t("copied") : t("copyFailed");
       window.setTimeout(renderUriBtn, 1200);
     } catch (err) {
       uriErrorById.set(
@@ -989,7 +1030,7 @@ function createCopyMenu(id: string, config: ExportConfig): HTMLElement {
     if (willOpen && config.format === "SVG") {
       requestSvg?.();
     }
-    urlBtn.textContent = "urlをコピー";
+    urlBtn.textContent = t("copyUrl");
     panel.hidden = !willOpen;
     trigger.setAttribute("aria-expanded", willOpen ? "true" : "false");
   });
@@ -1013,15 +1054,17 @@ function setupAssetUrlMenu(): void {
   panel.className = "exclude-popover asset-url-popover";
   panel.hidden = true;
   panel.setAttribute("role", "group");
-  panel.setAttribute("aria-label", "URL コピー設定");
+  setI18n(panel, "assetUrlSettings", "aria-label");
 
   const title = document.createElement("div");
   title.className = "exclude-title";
-  title.textContent = "URL コピー設定";
+  setI18n(title, "assetUrlSettings");
 
   const field = document.createElement("label");
   field.className = "asset-url-field";
-  field.textContent = "書き出し先パス";
+  const fieldText = document.createElement("span");
+  setI18n(fieldText, "assetUrlPath");
+  field.append(fieldText);
 
   const input = document.createElement("input");
   input.type = "text";
@@ -1062,7 +1105,7 @@ function setupAssetUrlMenu(): void {
     }
     closeAllExcludeMenus();
     closeAllCopyMenus();
-    closeAssetUrlPopover();
+    closeAppMenuPopover();
     const willOpen = panel.hidden;
     syncInput();
     panel.hidden = !willOpen;
@@ -1075,6 +1118,81 @@ function setupAssetUrlMenu(): void {
   wrapper.appendChild(panel);
   syncInput();
   assetUrlInputSync = syncInput;
+}
+
+function setupAppMenu(): void {
+  appMenuTriggerEl.innerHTML = hamburgerIcon;
+  const wrapper = appMenuTriggerEl.parentElement;
+  if (!wrapper) {
+    return;
+  }
+
+  const panel = document.createElement("div");
+  panel.className = "exclude-popover app-menu-popover";
+  panel.hidden = true;
+  panel.setAttribute("role", "menu");
+  setI18n(panel, "menu", "aria-label");
+
+  const langItem = document.createElement("div");
+  langItem.className = "app-menu-item";
+
+  const langLabel = document.createElement("button");
+  langLabel.type = "button";
+  langLabel.className = "app-menu-item-label";
+  langLabel.setAttribute("aria-haspopup", "true");
+  langLabel.textContent = "Language";
+
+  const submenu = document.createElement("div");
+  submenu.className = "app-menu-submenu";
+  submenu.setAttribute("role", "menu");
+  submenu.setAttribute("aria-label", "Language");
+
+  const langButtons: Array<{ locale: Locale; btn: HTMLButtonElement }> = [];
+  syncLangMenu = (): void => {
+    for (const { locale, btn } of langButtons) {
+      const active = getLocale() === locale;
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-checked", String(active));
+    }
+  };
+
+  const makeLangBtn = (locale: Locale, label: string): HTMLButtonElement => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "app-menu-lang-btn";
+    btn.setAttribute("role", "menuitemradio");
+    btn.textContent = label;
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (locale !== getLocale()) {
+        applyLocale(locale);
+        postToPlugin({ type: "SET_LOCALE", locale });
+      }
+      closeAppMenuPopover();
+    });
+    langButtons.push({ locale, btn });
+    return btn;
+  };
+
+  submenu.append(makeLangBtn("ja", "日本語"), makeLangBtn("en", "English"));
+  syncLangMenu();
+  langItem.append(langLabel, submenu);
+  panel.append(langItem);
+
+  appMenuTriggerEl.addEventListener("click", (event) => {
+    event.stopPropagation();
+    closeAllExcludeMenus();
+    closeAllCopyMenus();
+    closeAssetUrlPopover();
+    const willOpen = panel.hidden;
+    panel.hidden = !willOpen;
+    appMenuTriggerEl.setAttribute("aria-expanded", willOpen ? "true" : "false");
+  });
+  panel.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+
+  wrapper.appendChild(panel);
 }
 
 function createQualityInput(
@@ -1090,8 +1208,8 @@ function createQualityInput(
   input.max = "100";
   input.step = "1";
   input.value = String(config.quality ?? defaultQualityFor(config.format));
-  input.setAttribute("aria-label", "圧縮率");
-  input.title = "圧縮率（%）";
+  input.setAttribute("aria-label", t("quality"));
+  input.title = t("qualityHint");
   input.addEventListener("click", (event) => event.stopPropagation());
   input.addEventListener("change", () => {
     const parsed = Math.round(Number(input.value));
@@ -1172,9 +1290,7 @@ function renderExportList(): void {
 
   if (rows.length === 0) {
     resultsEl.appendChild(
-      emptyRow(
-        "書き出し設定のあるレイヤーはまだありません（画像一覧・選択中のレイヤーの「+」で追加）"
-      )
+      emptyRow(t("exportEmpty"))
     );
     selectAllEl.checked = false;
     exportAllBtn.disabled = true;
@@ -1247,7 +1363,7 @@ async function handleExportResults(results: ExportResultItem[]): Promise<void> {
       if (!result.ok || !result.bytes) {
         rowErrorById.set(
           result.id,
-          result.message ?? "書き出しに失敗しました"
+          result.message ?? t("exportFailed")
         );
         continue;
       }
@@ -1266,7 +1382,7 @@ async function handleExportResults(results: ExportResultItem[]): Promise<void> {
         okCount += 1;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        rowErrorById.set(result.id, `保存に失敗: ${message}`);
+        rowErrorById.set(result.id, t("saveFailed", { message }));
       }
     }
   } else {
@@ -1297,12 +1413,12 @@ async function handleExportResults(results: ExportResultItem[]): Promise<void> {
           okCount += 1;
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          rowErrorById.set(result.id, `書き出しに失敗: ${message}`);
+          rowErrorById.set(result.id, t("exportFailedDetail", { message }));
         }
       } else {
         rowErrorById.set(
           result.id,
-          result.message ?? "書き出しに失敗しました"
+          result.message ?? t("exportFailed")
         );
       }
     }
@@ -1317,8 +1433,8 @@ async function handleExportResults(results: ExportResultItem[]): Promise<void> {
   if (failed.length > 0) {
     showError(
       failed.length === 1
-        ? failed[0].message ?? "書き出しに失敗しました"
-        : `${failed.length} 件の書き出しに失敗しました`
+        ? failed[0].message ?? t("exportFailed")
+        : t("exportFailedCount", { count: failed.length })
     );
   }
   renderList();
@@ -1342,12 +1458,16 @@ document.addEventListener(
     if (target && target.closest?.(".asset-url-popover")) {
       return;
     }
-    if (target === assetUrlTriggerEl) {
+    if (target && target.closest?.(".app-menu-popover")) {
+      return;
+    }
+    if (target === assetUrlTriggerEl || target === appMenuTriggerEl) {
       return;
     }
     closeAllExcludeMenus();
     closeAllCopyMenus();
     closeAssetUrlPopover();
+    closeAppMenuPopover();
   },
   true
 );
@@ -1365,7 +1485,7 @@ async function exportRows(targetIds: string[]): Promise<void> {
     }
   }
   if (requests.length === 0) {
-    showError("書き出し設定がありません");
+    showError(t("noExportConfigs"));
     return;
   }
   if (typeof window.showDirectoryPicker === "function") {
@@ -1376,7 +1496,7 @@ async function exportRows(targetIds: string[]): Promise<void> {
     }
   }
   showError(null);
-  showStatus("書き出し中…");
+  showStatus(t("exporting"));
   postToPlugin({ type: "EXPORT_NODES", items: requests });
 }
 
@@ -1411,11 +1531,9 @@ function setupTabs(): void {
 }
 
 exportAllBtn.addEventListener("click", () => {
-  // 書き出しの状態やエラーはエクスポートタブに出るため切り替える
-  showTab("export");
   const targets = exportItems().filter((item) => checkedIds.has(item.id));
   if (targets.length === 0) {
-    showError("エクスポートの項目にチェックを入れてください");
+    showError(t("checkExportItems"));
     return;
   }
   exportRows(targets.map((item) => item.id));
@@ -1439,11 +1557,16 @@ window.onmessage = (event: MessageEvent) => {
   }
   if (msg.type === "FRAME_TARGETS") {
     frameTargets = msg.targets;
-    recentFrames = msg.recent;
     targetId = msg.targetId;
     currentAssetPath = msg.assetUrlPath;
     targetPicker?.refresh();
     assetUrlInputSync?.();
+    return;
+  }
+  if (msg.type === "LOCALE") {
+    if (isLocale(msg.locale) && msg.locale !== getLocale()) {
+      applyLocale(msg.locale);
+    }
     return;
   }
   if (msg.type === "SELECTION_LAYERS") {
@@ -1452,7 +1575,7 @@ window.onmessage = (event: MessageEvent) => {
     return;
   }
   if (msg.type === "SELECTION_EMPTY") {
-    targetPicker?.openHistoryPopover();
+    targetPicker?.openPopover();
     return;
   }
   if (msg.type === "ASSET_URL_CONFIG") {
@@ -1600,6 +1723,7 @@ function setupResize(): void {
 
 setupResize();
 setupTabs();
+setupAppMenu();
 mountTargetPicker();
 setupAssetUrlMenu();
 postToPlugin({ type: "LIST_FRAME_TARGETS" });

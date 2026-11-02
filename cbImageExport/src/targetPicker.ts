@@ -1,4 +1,5 @@
-import type { FrameTarget, RecentFrame } from "./types";
+import { t } from "./i18n";
+import type { FrameTarget } from "./types";
 
 export interface TargetPickerOptions {
   emptyLabel: string;
@@ -6,19 +7,13 @@ export interface TargetPickerOptions {
   getLabel: () => string;
   getSelectedId: () => string | null;
   getTargets: () => FrameTarget[];
-  /** 過去に選択した対象フレームの履歴（最大 20 件・直近が先頭）。 */
-  getRecent: () => RecentFrame[];
   onApplySelection: () => void;
   onPick: (id: string) => void;
-  /** 履歴項目が選ばれたとき（候補一覧の onPick と同じ扱い）。 */
-  onPickRecent: (id: string) => void;
 }
 
 export interface TargetPickerController {
   root: HTMLDivElement;
   openPopover: () => void;
-  /** 未選択時の「最近選択したフレーム」履歴ポップオーバーを開く。 */
-  openHistoryPopover: () => void;
   closePopover: () => void;
   refresh: () => void;
   setDisabled: (disabled: boolean) => void;
@@ -44,53 +39,48 @@ export function createTargetPicker(
   const root = document.createElement("div");
   root.className = "target-picker";
 
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "target-picker-btn is-empty";
-  button.setAttribute("aria-label", options.ariaLabel);
-  button.setAttribute("aria-haspopup", "dialog");
-  button.setAttribute("aria-expanded", "false");
+  const applyBtn = document.createElement("button");
+  applyBtn.type = "button";
+  applyBtn.className = "target-picker-apply";
+  applyBtn.title = t("applyTargetFromSelection");
+  applyBtn.setAttribute("aria-label", t("applyTargetFromSelection"));
+  applyBtn.innerHTML =
+    '<svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.25" stroke="currentColor" stroke-width="1.5"/><circle cx="7" cy="7" r="1.25" fill="currentColor"/><path d="M7 0.75V2.5M7 11.5V13.25M0.75 7H2.5M11.5 7H13.25" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
 
-  const labelEl = document.createElement("span");
-  labelEl.className = "target-picker-btn-label";
-  button.append(labelEl);
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "target-picker-input";
+  input.placeholder = options.emptyLabel;
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.setAttribute("role", "combobox");
+  input.setAttribute("aria-label", options.ariaLabel);
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-expanded", "false");
+
+  const chevron = document.createElement("button");
+  chevron.type = "button";
+  chevron.className = "target-picker-chevron";
+  chevron.tabIndex = -1;
+  chevron.setAttribute("aria-label", options.ariaLabel);
+  chevron.setAttribute("aria-expanded", "false");
+  chevron.innerHTML =
+    '<svg width="10" height="6" viewBox="0 0 10 6" fill="none" aria-hidden="true"><path d="M1 1L5 5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  const control = document.createElement("div");
+  control.className = "target-picker-control";
+  control.append(applyBtn, input, chevron);
 
   const popover = document.createElement("div");
   popover.className = "target-picker-popover";
   popover.hidden = true;
 
-  const filter = document.createElement("input");
-  filter.className = "target-picker-filter";
-  filter.type = "text";
-  filter.placeholder = "名前で検索";
-  filter.autocomplete = "off";
-  filter.spellcheck = false;
-
   const list = document.createElement("ul");
   list.className = "target-picker-list";
   list.setAttribute("role", "listbox");
 
-  popover.append(filter, list);
-
-  const history = document.createElement("div");
-  history.className = "target-picker-history";
-  history.hidden = true;
-  history.setAttribute("role", "menu");
-
-  const historyTitle = document.createElement("div");
-  historyTitle.className = "exclude-title";
-  historyTitle.textContent = "最近選択したフレーム";
-
-  const historyList = document.createElement("ul");
-  historyList.className = "target-picker-history-list";
-
-  const historyFooter = document.createElement("button");
-  historyFooter.type = "button";
-  historyFooter.className = "target-picker-history-footer";
-  historyFooter.textContent = "候補一覧から選ぶ…";
-
-  history.append(historyTitle, historyList, historyFooter);
-  root.append(button, popover, history);
+  popover.append(list);
+  root.append(control, popover);
 
   let filterQuery = "";
   let activeIndex = -1;
@@ -110,16 +100,12 @@ export function createTargetPicker(
   }
 
   function refreshLabel(): void {
-    const label = options.getLabel().trim();
-    if (label) {
-      labelEl.textContent = label;
-      button.classList.remove("is-empty");
-      button.title = label;
-    } else {
-      labelEl.textContent = options.emptyLabel;
-      button.classList.add("is-empty");
-      button.title = options.emptyLabel;
+    if (open) {
+      return;
     }
+    const label = options.getLabel().trim();
+    input.value = label;
+    input.title = label || options.emptyLabel;
   }
 
   function renderList(): void {
@@ -129,7 +115,9 @@ export function createTargetPicker(
       const empty = document.createElement("li");
       empty.className = "target-picker-empty";
       empty.textContent =
-        options.getTargets().length === 0 ? "候補がありません" : "該当なし";
+        options.getTargets().length === 0
+          ? t("targetNoCandidates")
+          : t("targetNoMatch");
       list.append(empty);
       activeIndex = -1;
       return;
@@ -144,6 +132,7 @@ export function createTargetPicker(
       opt.type = "button";
       opt.className = "target-picker-option";
       opt.setAttribute("role", "option");
+      opt.tabIndex = -1;
       opt.textContent = target.label;
       opt.title = target.label;
       if (target.id === selectedId) {
@@ -151,73 +140,46 @@ export function createTargetPicker(
       }
       if (index === activeIndex) {
         opt.classList.add("is-active");
+        window.setTimeout(() => opt.scrollIntoView({ block: "nearest" }), 0);
       }
       opt.addEventListener("mousedown", (event) => {
         event.preventDefault();
       });
       opt.addEventListener("click", () => {
-        options.onPick(target.id);
-        controller.closePopover();
+        pick(target.id);
       });
       li.append(opt);
       list.append(li);
     });
   }
 
-  function renderRecent(): void {
-    historyList.replaceChildren();
-    const recent = options.getRecent();
-    if (recent.length === 0) {
-      const empty = document.createElement("li");
-      empty.className = "target-picker-empty";
-      empty.textContent = "履歴はまだありません";
-      historyList.append(empty);
-      return;
-    }
-    const selectedId = options.getSelectedId();
-    for (const entry of recent) {
-      const li = document.createElement("li");
-      const opt = document.createElement("button");
-      opt.type = "button";
-      opt.className = "target-picker-history-item";
-      opt.setAttribute("role", "menuitem");
-      opt.textContent = entry.label;
-      opt.title = entry.label;
-      if (entry.id === selectedId) {
-        opt.classList.add("is-selected");
-      }
-      opt.addEventListener("mousedown", (event) => {
-        event.preventDefault();
-      });
-      opt.addEventListener("click", () => {
-        options.onPickRecent(entry.id);
-        controller.closePopover();
-      });
-      li.append(opt);
-      historyList.append(li);
-    }
+  function pick(id: string): void {
+    options.onPick(id);
+    closePopover();
+    input.blur();
   }
 
   function openPopover(): void {
-    closeAllTargetPopovers(controller);
-    open = true;
-    popover.hidden = false;
-    history.hidden = true;
-    button.setAttribute("aria-expanded", "true");
-    filterQuery = "";
-    filter.value = "";
-    activeIndex = 0;
-    renderList();
-    window.setTimeout(() => filter.focus(), 0);
-  }
-
-  function openHistoryPopover(): void {
-    closeAllTargetPopovers(controller);
-    open = true;
-    popover.hidden = true;
-    history.hidden = false;
-    button.setAttribute("aria-expanded", "true");
-    renderRecent();
+    if (input.disabled) {
+      return;
+    }
+    if (!open) {
+      closeAllTargetPopovers(controller);
+      open = true;
+      popover.hidden = false;
+      input.setAttribute("aria-expanded", "true");
+      chevron.setAttribute("aria-expanded", "true");
+      filterQuery = "";
+      const selectedIndex = options
+        .getTargets()
+        .findIndex((target) => target.id === options.getSelectedId());
+      activeIndex = selectedIndex >= 0 ? selectedIndex : 0;
+      renderList();
+    }
+    if (document.activeElement !== input) {
+      input.focus();
+    }
+    input.select();
   }
 
   function closePopover(): void {
@@ -226,27 +188,27 @@ export function createTargetPicker(
     }
     open = false;
     popover.hidden = true;
-    history.hidden = true;
-    button.setAttribute("aria-expanded", "false");
+    input.setAttribute("aria-expanded", "false");
+    chevron.setAttribute("aria-expanded", "false");
     filterQuery = "";
-    filter.value = "";
     activeIndex = -1;
+    refreshLabel();
   }
 
   const controller: TargetPickerController = {
     root,
     openPopover,
-    openHistoryPopover,
     closePopover,
     refresh: () => {
       refreshLabel();
       if (open) {
         renderList();
-        renderRecent();
       }
     },
     setDisabled: (disabled: boolean) => {
-      button.disabled = disabled;
+      applyBtn.disabled = disabled;
+      input.disabled = disabled;
+      chevron.disabled = disabled;
       if (disabled) {
         closePopover();
       }
@@ -254,25 +216,55 @@ export function createTargetPicker(
     isOpen: () => open,
   };
 
-  button.addEventListener("click", (event) => {
+  applyBtn.addEventListener("click", (event) => {
     event.stopPropagation();
-    if (button.disabled) {
+    if (applyBtn.disabled) {
+      return;
+    }
+    closePopover();
+    options.onApplySelection();
+  });
+
+  input.addEventListener("click", (event) => {
+    event.stopPropagation();
+  });
+
+  input.addEventListener("focus", () => {
+    openPopover();
+  });
+
+  chevron.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+  });
+
+  chevron.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (chevron.disabled) {
       return;
     }
     if (open) {
       closePopover();
+      input.blur();
       return;
     }
-    options.onApplySelection();
+    openPopover();
   });
 
-  filter.addEventListener("input", () => {
-    filterQuery = filter.value;
+  input.addEventListener("input", () => {
+    if (!open) {
+      openPopover();
+    }
+    filterQuery = input.value;
     activeIndex = 0;
     renderList();
   });
 
-  filter.addEventListener("keydown", (event) => {
+  input.addEventListener("keydown", (event) => {
+    if (!open && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      event.preventDefault();
+      openPopover();
+      return;
+    }
     const targets = filteredTargets();
     if (event.key === "ArrowDown") {
       event.preventDefault();
@@ -291,35 +283,28 @@ export function createTargetPicker(
     }
     if (event.key === "Enter") {
       event.preventDefault();
-      if (activeIndex >= 0 && targets[activeIndex]) {
-        options.onPick(targets[activeIndex].id);
-        closePopover();
+      if (open && activeIndex >= 0 && targets[activeIndex]) {
+        pick(targets[activeIndex].id);
       }
       return;
     }
     if (event.key === "Escape") {
       event.preventDefault();
       closePopover();
+      input.blur();
     }
+  });
+
+  input.addEventListener("blur", () => {
+    window.setTimeout(() => {
+      if (document.activeElement !== input) {
+        closePopover();
+      }
+    }, 0);
   });
 
   popover.addEventListener("click", (event) => {
     event.stopPropagation();
-  });
-
-  history.addEventListener("click", (event) => {
-    event.stopPropagation();
-  });
-
-  historyFooter.addEventListener("click", () => {
-    openPopover();
-  });
-
-  history.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closePopover();
-    }
   });
 
   pickers.add(controller);

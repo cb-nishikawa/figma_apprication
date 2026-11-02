@@ -1,5 +1,5 @@
 {
-  "name": "画像一括書き出しくん",
+  "name": "画像一括書き出しくん / Mr. Bulk Image Exporter",
   "id": "1685150965482188427",
   "api": "1.0.0",
   "main": "dist/code.js",

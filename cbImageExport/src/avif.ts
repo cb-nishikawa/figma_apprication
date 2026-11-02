@@ -1,5 +1,6 @@
 import glueFactoryRaw from "@jsquash/avif/codec/enc/avif_enc.js";
 import wasmUrl from "@jsquash/avif/codec/enc/avif_enc.wasm?url";
+import { t } from "./i18n";
 
 interface AvifEncodeOptions {
   quality: number;
@@ -99,7 +100,7 @@ export async function avifEncode(
   );
   const output = module.encode(rgba, data.width, data.height, options);
   if (!output || !isAvifBrand(output)) {
-    throw new Error("AVIF エンコードに失敗しました（出力形式の検証に失敗）");
+    throw new Error(t("avifEncodeFailed"));
   }
   // module.encode の返り値は WASM ヒープのビュー。次回エンコードで破棄されるためコピーする。
   return new Uint8Array(output);

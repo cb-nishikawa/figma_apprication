@@ -1,3 +1,4 @@
+import type { Locale } from "./i18n";
 import type {
   ExportConfig,
   ExportConstraint,
@@ -21,6 +22,7 @@ export type UiToPluginMessage =
   | { type: "HOVER_ROW"; nodeId: string | null }
   | { type: "EXPORT_NODES"; items: ExportRequest[] }
   | { type: "RESIZE_UI"; height: number }
+  | { type: "SET_LOCALE"; locale: Locale }
   | { type: "SET_ASSET_URL_CONFIG"; nodeId: string | null; path: string }
   | {
       type: "FETCH_SVG_CODE";
@@ -47,6 +49,7 @@ export type PluginToUiMessage =
     }
   | { type: "IMAGE_LIST"; items: ImageListItem[]; message?: string }
   | { type: "SELECTION_EMPTY" }
+  | { type: "LOCALE"; locale: Locale }
   | { type: "SELECTION_LAYERS"; layers: SelectedLayer[] }
   | { type: "EXPORT_RESULT"; results: ExportResultItem[] }
   | { type: "ERROR"; message: string }
